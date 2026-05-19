@@ -1,0 +1,9 @@
+openai
+python-telegram-bot
+tiktoken
+ddgs>=6.0
+aiohttp>=3.9
+aiosqlite>=0.20
+beautifulsoup4>=4.12
+dotenv
+telegramify-markdown
