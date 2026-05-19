@@ -4,7 +4,7 @@ A Telegram chatbot that connects to any OpenAI-compatible API, with tool calling
 
 This project is based on [openai-telegram-chatbot](https://github.com/ogfirstofhisname/openai-telegram-chatbot).
 
-Tested with Python 3.10 on Windows and Linux. Suitable for running on a Raspberry Pi, cloud server, or any machine that can stay online.
+Tested with Python 3.14 on Windows and Linux. Suitable for running on a Raspberry Pi, cloud server, or any machine that can stay online.
 
 If you find this project useful, please [buy me a coffee](https://ko-fi.com/siliconjunction)
 
