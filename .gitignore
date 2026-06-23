@@ -160,8 +160,6 @@ cython_debug/
 #.idea/
 
 # key and token files
-src/files/openai_api_key
-src/files/telegram_api_token
-src/files/allowed_ids
+src/system_prompt
 src/store.db
 store.db
