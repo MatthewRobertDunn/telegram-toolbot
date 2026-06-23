@@ -73,7 +73,7 @@ def _validate_config():
 def main():
     _validate_config()
     print("Starting bot...")
-    user_settings.DEFAULT_SYSTEM_PROMPT = read_file("../system_prompt") or 'You are a helpful assistant in a Telegram chat bot platform.'
+    user_settings.DEFAULT_SYSTEM_PROMPT = read_file("./system_prompt") or 'You are a helpful assistant in a Telegram chat bot platform.'
 
     application = (
         ApplicationBuilder()
