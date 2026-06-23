@@ -1,13 +1,44 @@
+from telegram.constants import ChatType
+
 from chat_update_context import ChatUpdateContext
 from handlers.middleware import handler
 from handlers.run_with_tools import run_with_tools
 from messaging import run_with_typing, send_message
 
 
+async def group_text_message_handler(ctx: ChatUpdateContext):
+    text = ctx.message.text or ctx.message.caption
+    should_respond = f"@{ctx.bot.username}" in text # type: ignore
+    text = text.replace(f"@{ctx.bot.username}", "").strip() # type: ignore
+
+    ctx.conversation.append({
+        'role': 'user',
+        'content': f"{ctx.message.from_user.first_name or ''} {ctx.message.from_user.last_name or ''}: {text}" # type: ignore
+    })
+
+    if not should_respond:
+        return
+    
+    text = text.replace(f"@{ctx.bot.username}", "").strip() # type: ignore
+
+    gpt_response = await run_with_typing(ctx,
+        run_with_tools(ctx))
+
+    await send_message(ctx, gpt_response, parse_mode='LLM')
+    ctx.conversation.append({
+        'role': 'assistant',
+        'content': gpt_response
+    })
+
+
 @handler
 async def text_message_handler(ctx: ChatUpdateContext):
     text = ctx.message.text or ctx.message.caption
     if not text:
+        return
+    
+    if ctx.message.chat.type == ChatType.GROUP or ctx.message.chat.type == ChatType.SUPERGROUP:
+        await group_text_message_handler(ctx)
         return
 
     ctx.conversation.append({
