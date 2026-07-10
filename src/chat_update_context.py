@@ -17,6 +17,7 @@ class ChatUpdateContext:
     user: User
     message: Message
     user_data: dict
+    chat_data: dict | None
     command_text: str
     command_name: str
 
@@ -42,6 +43,18 @@ class ChatUpdateContext:
     @conversation.setter
     def conversation(self, value: list) -> None:
         self.user_data['conversation'] = value
+
+    @property
+    def group_conversation(self) -> list:
+        if self.chat_data is None:
+            raise ValueError("Chat data is not available for this context")
+        return self.chat_data['conversation']
+    
+    @group_conversation.setter
+    def group_conversation(self, value: list) -> None:
+        if self.chat_data is None:
+            raise ValueError("Chat data is not available for this context")
+        self.chat_data['conversation'] = value
 
     @property
     def settings(self) -> "UserSettings":
@@ -104,6 +117,7 @@ def create_chat_update_context(
     user_data = context.user_data
     assert user_data is not None
     text = message.text or message.caption or ''
+    chat_data = context.chat_data
     return ChatUpdateContext(
         update=update,
         context=context,
@@ -112,6 +126,7 @@ def create_chat_update_context(
         user=user,
         message=message,
         user_data=user_data,
+        chat_data=chat_data,
         command_text=_parse_command_text(text),
         command_name=_parse_command_name(text),
     )
