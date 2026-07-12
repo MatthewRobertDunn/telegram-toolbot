@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from telegram import constants
 from telegram.error import BadRequest
 from telegram.helpers import escape_markdown
@@ -6,6 +7,8 @@ from chat_update_context import ChatUpdateContext
 from telegramify_markdown import ContentType, telegramify
 from telegramify_markdown.config import get_runtime_config
 import html
+
+logger = logging.getLogger(__name__)
 cfg = get_runtime_config()
 cfg.markdown_symbol.heading_level_1 = "🔴"
 cfg.markdown_symbol.heading_level_2 = "🟠"
@@ -104,7 +107,7 @@ async def _send_typing_periodically(ctx: ChatUpdateContext, stop_event: asyncio.
         try:
             await ctx.bot.send_chat_action(chat_id=ctx.chat_id, action=constants.ChatAction.TYPING)
         except Exception as e:
-            print(f"Error occurred while sending typing action: {e}")
+            logger.exception("Error occurred while sending typing action: %s", e)
             pass
         await asyncio.sleep(5)
 

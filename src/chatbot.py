@@ -1,3 +1,7 @@
+import asyncio
+import logging
+import sys
+
 import config
 from telegram import BotCommand
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, filters
@@ -33,6 +37,18 @@ from handlers.store_handlers import (
 )
 from tool_registration import register_tools
 import user_settings
+
+logger = logging.getLogger(__name__)
+
+
+def configure_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s",
+        stream=sys.stdout,
+    )
+    for name in ("httpx", "httpcore", "openai"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 async def post_init(application: Application):
@@ -75,8 +91,9 @@ def _validate_config():
 
 
 def main():
+    configure_logging()
     _validate_config()
-    print("Starting bot...")
+    logger.info("Starting bot...")
     user_settings.DEFAULT_SYSTEM_PROMPT = read_file("./system_prompt") or 'You are a helpful assistant in a Telegram chat bot platform.'
 
     application = (

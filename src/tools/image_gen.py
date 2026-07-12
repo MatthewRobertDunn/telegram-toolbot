@@ -1,8 +1,12 @@
 import base64
+import logging
+
 import requests
 import config
 from chat_update_context import context_tool, ChatUpdateContext
 from messaging import send_image
+
+logger = logging.getLogger(__name__)
 
 
 async def generate_image(prompt: str, width: int = 1024, height: int = 1024, seed: int = 0, steps: int = 4) -> str:
@@ -32,7 +36,7 @@ async def generate_and_send_image(ctx: ChatUpdateContext, prompt: str) -> str:
         await send_image(ctx, image_bytes)
         return f"Image sent to chat (prompt: {prompt})"
     except Exception as e:
-        print(f"Error generating image: {e}")
+        logger.exception("Error generating image: %s", e)
         return "Failed to generate image"          
 
 TOOL_NAME = "generate_image"    

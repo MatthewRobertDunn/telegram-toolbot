@@ -1,10 +1,14 @@
 import asyncio
 import json
+import logging
+
 import config
 from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
 from chat_update_context import ChatUpdateContext
 from messaging import send_message
 from openai import AsyncOpenAI
+
+logger = logging.getLogger(__name__)
 
 client = AsyncOpenAI(api_key=config.OPENAI_KEY,
                      base_url=config.OPENAI_BASE_URL)
@@ -67,7 +71,7 @@ async def run_with_tools(ctx: ChatUpdateContext,
                 response = await client.chat.completions.create(**create_kwargs)
                 break
             except Exception as e:
-                print(f'{type(e).__name__}: {e}, trying again...')
+                logger.warning('%s: %s, trying again...', type(e).__name__, e)
                 await asyncio.sleep(time_to_wait)
                 time_to_wait = time_to_wait * 2
 
@@ -103,11 +107,11 @@ async def run_with_tools(ctx: ChatUpdateContext,
         for tc in message.tool_calls:
             name = tc.function.name
             args = tc.function.arguments
-            print(f"tool call: {name}({args})")
+            logger.info("tool call: %s(%s)", name, args)
             if ctx.settings.show_tool_output:
                 await send_message(ctx, f"Tool call: `{name}`\n```json\n{args[:1024]}\n```")
             result = await execute_tool_call(ctx, tc)
-            print(f"tool result ({name}): {result[:200]}...")
+            logger.info("tool result (%s): %s...", name, result[:200])
             conversation.append({
                 "role": "tool",
                 "tool_call_id": tc.id,

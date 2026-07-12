@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import sys
 
@@ -13,6 +14,10 @@ if _HERE not in sys.path:
 # upward by default, so we point it at the file explicitly.
 from dotenv import load_dotenv
 load_dotenv(os.path.join(_HERE, '.env'))
+
+# Silence all logging for the duration of integration tests so the test
+# runner output isn't drowned in tool-call chatter.
+logging.disable(logging.CRITICAL)
 
 # Add src to sys.path AFTER .env is loaded so config picks up the env vars.
 _SRC = os.path.join(_HERE, '..', 'src')

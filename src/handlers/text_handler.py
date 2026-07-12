@@ -1,8 +1,11 @@
 import tempfile
+import logging
 from chat_update_context import ChatUpdateContext
 from handlers.middleware import handler
 from handlers.run_with_tools import run_with_tools
 from messaging import send_message, run_with_typing
+
+logger = logging.getLogger(__name__)
 
 
 @handler
@@ -19,7 +22,7 @@ async def text_file_handler(ctx: ChatUpdateContext):
 
         s = tmp.read()
     except Exception as e:
-        print('error processing file: ', e)
+        logger.exception('error processing file: %s', e)
         await send_message(ctx,
             f'Error processing file, encountered an error while downloading the file: {e}')
         return
