@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import Any
 from chat_update_context import ChatUpdateContext
 
 
@@ -38,6 +39,14 @@ class RecordingBot:
         )
 
 
+class MockContext(ChatUpdateContext):
+    bot: RecordingBot  # type: ignore[reportIncompatibleVariableOverride]
+
+    @property
+    def sent(self) -> list[dict[str, Any]]:
+        return self.bot.sent
+
+
 def create_mock_bot() -> RecordingBot:
     return RecordingBot()
 
@@ -49,7 +58,7 @@ def create_mock_context(
     command_text: str = "",
     command_name: str = "",
     chat_type: str = "private",
-) -> ChatUpdateContext:
+) -> MockContext:
     bot = create_mock_bot()
     context = SimpleNamespace(
         bot=bot,
@@ -64,7 +73,7 @@ def create_mock_context(
         from_user=SimpleNamespace(
             id=user_id, first_name="Test", last_name="User"),
     )
-    return ChatUpdateContext(
+    return MockContext(
         update=None,  # type: ignore[arg-type]
         context=context,  # type: ignore[arg-type]
         bot=bot,  # type: ignore[arg-type]
