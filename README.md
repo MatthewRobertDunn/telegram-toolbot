@@ -134,10 +134,10 @@ python -m unittest tests.test_store -v
 python -m unittest integration_tests.test_commands -v
 ```
 
-To run every test:
+To run every test (run from the project root):
 ```powershell
-python -m unittest discover -s tests -p "test_*.py" -v
-python -m unittest discover -s integration_tests -p "test_*.py" -v
+python -m unittest discover -s tests -p "test_*.py" -t . -v
+python -m unittest discover -s integration_tests -p "test_*.py" -t . -v
 ```
 
 ## Commands
