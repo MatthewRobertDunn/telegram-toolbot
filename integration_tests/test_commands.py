@@ -1,20 +1,14 @@
 import os
-import sys
 import unittest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-
-from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 from handlers.command_handlers import model_command
 from mocks import create_mock_context
 
 
 class TestCommands(unittest.IsolatedAsyncioTestCase):
-    # Each test uses a distinct user_id so they don't collide on the real
-    # store.db. Tests hit the production database file; isolation is by
-    # user_id, not by patching.
+    # Each test uses a distinct user_id so they don't collide on the test
+    # database. The DB itself (test_store.db) is wiped + recreated on every
+    # test run by integration_tests/__init__.py.
 
     async def test_model_command(self):
         ctx = create_mock_context(

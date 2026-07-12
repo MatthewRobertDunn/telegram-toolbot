@@ -165,4 +165,5 @@ src/files/telegram_api_token
 src/files/allowed_ids
 src/store.db
 store.db
+test_store.db
 /src/system_prompt

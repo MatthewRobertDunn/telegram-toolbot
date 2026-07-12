@@ -1,13 +1,7 @@
 import json
 import os
 import re
-import sys
 import unittest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-
-from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 from handlers.message_handlers import text_message_handler
 from mocks import create_mock_context
