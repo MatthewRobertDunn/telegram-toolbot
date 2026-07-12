@@ -65,12 +65,12 @@ def create_mock_context(
             id=user_id, first_name="Test", last_name="User"),
     )
     return ChatUpdateContext(
-        update=None,
-        context=context,
-        bot=bot,
+        update=None,  # type: ignore[arg-type]
+        context=context,  # type: ignore[arg-type]
+        bot=bot,  # type: ignore[arg-type]
         chat=message.chat,
         user=message.from_user,
-        message=message,
+        message=message,  # type: ignore[arg-type]
         user_data=context.user_data,
         chat_data=context.chat_data,
         command_text=command_text,

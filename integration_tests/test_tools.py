@@ -39,12 +39,13 @@ class TestTools(unittest.IsolatedAsyncioTestCase):
         except Exception as exc:
             self.fail(f"text_message_handler raised: {exc!r}")
 
-        self.assertTrue(ctx.bot.sent, "no messages were sent by the handler")
-        last_text = ctx.bot.sent[-1]["text"]
+        self.assertTrue(ctx.bot.sent, "no messages were sent by the handler")  # type: ignore[attr-defined]
+        last_text = ctx.bot.sent[-1]["text"]  # type: ignore[attr-defined]
 
         blob = _extract_json_object(last_text)
         self.assertIsNotNone(
             blob, f"could not find a JSON object in handler reply:\n{last_text!r}")
+        assert blob is not None
         self.assertIsInstance(blob, dict,
                              f"parsed object is not a dict: {blob!r}")
 

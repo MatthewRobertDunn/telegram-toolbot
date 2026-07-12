@@ -18,8 +18,8 @@ class TestCommands(unittest.IsolatedAsyncioTestCase):
         )
         await model_command(ctx)
 
-        self.assertEqual(len(ctx.bot.sent), 1)
-        self.assertIn("my-org/my-model", ctx.bot.sent[0]["text"])
+        self.assertEqual(len(ctx.bot.sent), 1)  # type: ignore[attr-defined]
+        self.assertIn("my-org/my-model", ctx.bot.sent[0]["text"])  # type: ignore[attr-defined]
         self.assertEqual(ctx.settings.model, "my-org/my-model")
 
     async def test_model_command_query_without_arg(self):
@@ -27,8 +27,8 @@ class TestCommands(unittest.IsolatedAsyncioTestCase):
         ctx = create_mock_context(user_id=1002, command_name="model")
         await model_command(ctx)
 
-        self.assertEqual(len(ctx.bot.sent), 1)
-        self.assertIn("Current model", ctx.bot.sent[0]["text"])
+        self.assertEqual(len(ctx.bot.sent), 1)  # type: ignore[attr-defined]
+        self.assertIn("Current model", ctx.bot.sent[0]["text"])  # type: ignore[attr-defined]
         self.assertEqual(
             ctx.settings.model,
             os.environ.get("LLM_MODEL", "minimaxai/minimax-m2.7"),
