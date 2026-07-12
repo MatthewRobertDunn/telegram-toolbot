@@ -70,6 +70,25 @@ async def model_reset_command(ctx: ChatUpdateContext):
     ctx.settings.model = None
     await send_message(ctx, f'Model reset to default `{ctx.model}`.')
 
+
+@handler
+@settings
+async def strong_model_command(ctx: ChatUpdateContext):
+    model = ctx.command_text
+    if not model:
+        await send_message(ctx, f'Current strong model is `{ctx.settings.strong_model}`\n Usage: `/{ctx.command_name} <model_id>`')
+        return
+
+    ctx.settings.strong_model = model
+    await send_message(ctx, f'Strong model set to `{model}`.')
+
+
+@handler
+@settings
+async def strong_model_reset_command(ctx: ChatUpdateContext):
+    ctx.settings.strong_model = None
+    await send_message(ctx, f'Strong model reset to default `{ctx.settings.strong_model}`.')
+
 @handler
 @settings
 async def top_p_command(ctx: ChatUpdateContext):

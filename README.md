@@ -134,6 +134,8 @@ The bot runs indefinitely. Use Ctrl+C to stop.
 | `/model <model_id>` | Set the model to use |
 | `/model_list [filter]` | List available models (click any to select) |
 | `/model_reset` | Reset model to default |
+| `/strong_model <model_id>` | Set the strong model used by `ask_strong_llm` |
+| `/strong_model_reset` | Reset strong model to default |
 | `/temperature <value>` | Set temperature (0.0–2.0) |
 | `/temperature_reset` | Reset temperature to default |
 | `/top_p <value>` | Set top_p (0.0–1.0) |
