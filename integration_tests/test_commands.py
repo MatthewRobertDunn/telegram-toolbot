@@ -1,14 +1,14 @@
 import os
 import unittest
 
-from handlers.command_handlers import model_command
+import bootstrap  # noqa: F401 — path setup, env, logging, DB reset
 from mocks import create_mock_context
+from handlers.command_handlers import model_command
 
 
 class TestCommands(unittest.IsolatedAsyncioTestCase):
     # Each test uses a distinct user_id so they don't collide on the test
-    # database. The DB itself (test_store.db) is wiped + recreated on every
-    # test run by integration_tests/__init__.py.
+    # database, which is wiped + recreated every test run by `mocks.py`.
 
     async def test_model_command(self):
         ctx = create_mock_context(

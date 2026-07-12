@@ -10,7 +10,6 @@ class RecordingBot:
         self.username = "test_bot"
 
     async def send_message(self, *args, **kwargs):
-        chat_id = args[0] if len(args) >= 1 else kwargs.get("chat_id")
         text = args[1] if len(args) >= 2 else kwargs.get("text")
         self.sent.append({
             "text": text or "",

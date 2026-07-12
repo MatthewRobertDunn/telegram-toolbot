@@ -127,17 +127,11 @@ The bot runs indefinitely. Use Ctrl+C to stop.
 ## Running tests
 
 ```powershell
-# All unit tests (pure, no network required, runs anywhere)
-python -m unittest tests.test_store -v
+# All unit tests (pure, no network required)
+python -m unittest discover -s tests -p "test_*.py" -v
 
-# Integration tests (requires OPENAI_API_KEY in integration_tests/.env)
-python -m unittest integration_tests.test_commands -v
-```
-
-To run every test (run from the project root):
-```powershell
-python -m unittest discover -s tests -p "test_*.py" -t . -v
-python -m unittest discover -s integration_tests -p "test_*.py" -t . -v
+# All integration tests (requires OPENAI_API_KEY in integration_tests/.env)
+python -m unittest discover -s integration_tests -p "test_*.py" -v
 ```
 
 ## Commands

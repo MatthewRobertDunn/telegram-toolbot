@@ -3,8 +3,9 @@ import os
 import re
 import unittest
 
-from handlers.message_handlers import text_message_handler
+import bootstrap  # noqa: F401 — path setup, env, logging, DB reset
 from mocks import create_mock_context
+from handlers.message_handlers import text_message_handler
 from tool_registration import register_tools
 from tool_definitions import TOOL_MAP
 
