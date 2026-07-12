@@ -51,3 +51,13 @@ def _reset_test_db():
 
 
 _reset_test_db()
+
+# ------------------------------------------------------------------ uid
+_next_uid = 3000
+
+
+def next_uid() -> int:
+    """Return a unique user_id for each call, shared across all test files."""
+    global _next_uid
+    _next_uid += 1
+    return _next_uid
