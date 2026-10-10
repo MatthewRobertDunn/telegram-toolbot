@@ -36,6 +36,7 @@ from handlers.store_handlers import (
     store_delete_all_command,
 )
 from tool_registration import register_tools
+from sandbox import manager, start_reaper, stop_reaper
 import user_settings
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,11 @@ async def post_init(application: Application):
         await store.create_schema()
     async with create_settings_store() as store:
         await store.create_schema()
+    try:
+        await manager.cleanup_all_stale()
+    except Exception as e:
+        logger.warning("Could not clean up stale sandbox containers: %s", e)
+    await start_reaper()
     await application.bot.set_my_commands(
         [
             BotCommand("start", "Start a new conversation"),
@@ -90,6 +96,10 @@ def _validate_config():
         raise ValueError("OPENAI_API_KEY environment variable is not set")
 
 
+async def post_stop(application: Application):
+    stop_reaper()
+
+
 def main():
     configure_logging()
     _validate_config()
@@ -100,6 +110,7 @@ def main():
         ApplicationBuilder()
         .token(config.API_TOKEN)
         .post_init(post_init)
+        .post_stop(post_stop)
         .concurrent_updates(True)
         .build()
     )

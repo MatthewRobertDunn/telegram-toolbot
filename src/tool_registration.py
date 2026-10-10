@@ -7,6 +7,7 @@ from tools.store_tool import register as register_store
 from tools.status_tool import register as register_status
 from tools.strong_llm import register as register_strong_llm
 from tools.image_gen import register as register_image_gen
+from tools.sandbox_tool import register as register_sandbox_tool
 from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
 
 logger = logging.getLogger(__name__)
@@ -21,3 +22,4 @@ def register_tools():
     register_status(TOOL_DEFINITIONS, TOOL_MAP)
     register_strong_llm(TOOL_DEFINITIONS, TOOL_MAP)
     register_image_gen(TOOL_DEFINITIONS, TOOL_MAP)
+    register_sandbox_tool(TOOL_DEFINITIONS, TOOL_MAP)
