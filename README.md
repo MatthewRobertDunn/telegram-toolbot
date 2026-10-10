@@ -1,6 +1,6 @@
 # Telegram AI Chatbot
 
-A Telegram chatbot that connects to any OpenAI-compatible API, with tool calling, user preferences, and multi-modal support.
+A Telegram chatbot that connects to any OpenAI-compatible API, with tool calling, per-user sandbox environments, user preferences, and multi-modal support.
 
 This project is based on [openai-telegram-chatbot](https://github.com/ogfirstofhisname/openai-telegram-chatbot).
 
@@ -25,7 +25,8 @@ The default configuration points at `https://integrate.api.nvidia.com/v1`, but y
 - **Tool calling** — the bot can search the web, run code, fetch pages, generate images, and more using OpenAI-compatible function calling
 - **Hierarchical LLM** — the primary model can delegate complex tasks to a stronger reasoning model via the `ask_strong_llm` tool
 - **Persistent key-value store** — both users (via commands) and the AI (via tools) can store and retrieve data across conversations
-- **Multi-modal** — supports text messages, images (vision), and file attachments
+- **Per-user sandboxes** — the AI gets a personal ephemeral Ubuntu container per user with a full coding environment (bash, read, write, edit, grep, glob, apply_patch), where it can run commands, install software, and work with files. Sandboxes expire one hour after the last command and lose all changes
+- **File uploads** — files users send to the bot (any file type) are placed in the sandbox at `/workspace/uploads/`, and the AI is notified so it can inspect them with the `read` tool
 
 ---
 
@@ -90,9 +91,20 @@ ALLOWED_USER_IDS=123456789,987654321
 
 Without this, anyone who discovers your bot's username can use it.
 
-### 5. Docker (optional, for Python code execution tool)
+### 5. Docker (required for the sandbox and Python tools)
 
-The `python` tool executes code in an isolated Docker container. Install [Docker](https://docs.docker.com/get-docker/) to use this feature. If you don't need it, you can disable the tool by commenting out the `register_python_runner` line in `src/tool_registration.py:14`.
+[Docker](https://docs.docker.com/get-docker/) is required for the per-user sandboxes (and the `python` tool).
+
+The sandbox uses the custom image [`elpechos/toolbot-sandbox:latest`](https://hub.docker.com/r/elpechos/toolbot-sandbox) (Ubuntu with Python 3.13, ripgrep, and `apply-patch-py` preinstalled). It is pulled automatically from Docker Hub on first use, so no extra setup is needed.
+
+To build and publish the image yourself (e.g. after modifying `sandbox_image/`):
+
+```bash
+python build_sandbox_image.py           # build only
+python build_sandbox_image.py --push    # build and push to Docker Hub
+```
+
+If you don't need the sandbox, you can disable its tools by commenting out the `register_sandbox_tool` line in `src/tool_registration.py`.
 
 ### Configuration reference
 
@@ -101,10 +113,18 @@ The `python` tool executes code in an isolated Docker container. Install [Docker
 | `TELEGRAM_API_TOKEN` | *(required)* | Your Telegram bot token |
 | `OPENAI_KEY` | *(required)* | API key for chat completions |
 | `OPENAI_BASE_URL` | `https://integrate.api.nvidia.com/v1` | OpenAI-compatible API endpoint |
-| `LLM_MODEL` | `minimaxai/minimax-m2.7` | Default chat model |
-| `STRONG_LLM_MODEL` | `deepseek-ai/deepseek-v4-pro` | Model used by `ask_strong_llm` |
+| `LLM_MODEL` | `z-ai/glm-5.3-flash` | Default chat model |
+| `STRONG_LLM_MODEL` | `z-ai/glm-5.3-flash` | Model used by `ask_strong_llm` |
 | `NVIDIA_API_KEY` | *(falls back to `OPENAI_KEY`)* | Key for NVIDIA Flux image generation |
 | `ALLOWED_USER_IDS` | *(none — open to all)* | Comma-separated Telegram user IDs |
+| `SANDBOX_IMAGE` | `elpechos/toolbot-sandbox:latest` | Docker image used for sandboxes |
+| `SANDBOX_IDLE_TIMEOUT` | `3600` | Seconds a sandbox survives after the last command (expiry loses all changes) |
+| `SANDBOX_EXEC_TIMEOUT` | `300` | Max seconds per sandbox command |
+| `SANDBOX_START_TIMEOUT` | `300` | Max seconds to start a sandbox (includes image pull) |
+| `SANDBOX_REAP_INTERVAL` | `60` | How often idle sandboxes are checked and destroyed |
+| `SANDBOX_MEMORY` | `1g` | Memory limit per sandbox container |
+| `SANDBOX_CPUS` | `1.0` | CPU limit per sandbox container |
+| `SANDBOX_PIDS_LIMIT` | `256` | Process limit per sandbox container |
 
 ---
 
@@ -130,7 +150,7 @@ The bot runs indefinitely. Use Ctrl+C to stop.
 # All unit tests (pure, no network required)
 python -m unittest discover -s tests -p "test_*.py" -v
 
-# All integration tests (requires OPENAI_API_KEY in integration_tests/.env)
+# All integration tests (requires OPENAI_API_KEY in integration_tests/.env, Docker, and the sandbox image)
 python -m unittest discover -s integration_tests -p "test_*.py" -v
 ```
 
@@ -170,7 +190,15 @@ The bot uses OpenAI-compatible function calling. These tools are available to th
 | `web_search` | Search the web via DuckDuckGo (no API key needed) |
 | `web_fetch` | Fetch and extract content from a URL |
 | `get_current_datetime` | Get the current UTC date and time |
-| `python` | Run Python code in an isolated Docker container |
+| `python` | Run Python code in an isolated Docker container (no network) |
+| `bash` | Run shell commands in the user's sandbox (network + root, software installs) |
+| `read` | Read files or directories in the sandbox (line numbers, offset/limit, binary detection) |
+| `write` | Write files in the sandbox (creates parent directories) |
+| `edit` | Exact string replacement in sandbox files (with fallback matching for whitespace drift) |
+| `grep` | Regex content search in the sandbox, powered by ripgrep |
+| `glob` | Find sandbox files by glob pattern, sorted by modification time |
+| `apply_patch` | Apply Codex-style patch blocks (add/update/delete/move files) in the sandbox |
+| `send_file` | Send a file from the sandbox to the user as a Telegram document |
 | `store_list` / `store_get` / `store_set` / `store_delete` | Persistent per-user key-value storage |
 | `display_status` | Send a progress message to the chat |
 | `ask_strong_llm` | Delegate a complex task to a more powerful reasoning model |
@@ -183,3 +211,5 @@ The bot uses OpenAI-compatible function calling. These tools are available to th
 Messages are held as plaintext in the server's memory. There is no end-to-end encryption.
 
 Anyone who knows your bot's username can send messages to it, potentially incurring API costs. Use `ALLOWED_USER_IDS` to restrict access, and ensure your API key has a spending limit. Avoid using this project with sensitive information or in production environments.
+
+The sandbox gives the AI root access inside an ephemeral, resource-limited Docker container (network enabled so it can install software). Sandbox state — including uploaded files — is destroyed when the sandbox expires, but while it runs the AI can execute arbitrary commands on it, so treat the sandbox and anything you upload to it as non-sensitive.
