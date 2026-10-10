@@ -1,10 +1,14 @@
 import base64
 import json
+import logging
 import posixpath
 import shlex
 
 from chat_update_context import ChatUpdateContext, context_tool
-from sandbox import manager
+from sandbox import manager, UPLOADS_DIR
+from tool_result import ImageAttachment, ToolCallResult
+
+logger = logging.getLogger(__name__)
 
 WORKSPACE_ROOT = "/workspace"
 HELPER_DIR = "/opt/toolbot"
@@ -262,6 +266,54 @@ async def apply_patch(ctx: ChatUpdateContext, patchText: str) -> str:
 
 MAX_SEND_FILE_BYTES = 45 * 1024 * 1024
 
+MAX_IMAGE_DISPLAY_BYTES = 5 * 1024 * 1024
+
+IMAGE_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
+
+@context_tool
+async def read_image(ctx: ChatUpdateContext, filePath: str) -> str | ToolCallResult:
+    path = _resolve_path(filePath)
+    mime = IMAGE_MIME_TYPES.get(posixpath.splitext(path)[1].lower())
+    if mime is None:
+        return ("Error: not a supported image type. Supported formats: "
+                "png, jpg, jpeg, gif, webp.")
+    stat = await manager.exec_in_sandbox(
+        ctx.user_id, f"stat -c %s {shlex.quote(path)}")
+    if stat["returncode"] != 0:
+        return f"Error: File not found: {path}"
+    size = int(stat["stdout"].strip() or 0)
+    if size > MAX_IMAGE_DISPLAY_BYTES:
+        return (f"Error: image is too large to display "
+                f"({size:,} bytes; limit is {MAX_IMAGE_DISPLAY_BYTES:,}).")
+
+    encoded = await manager.exec_in_sandbox(
+        ctx.user_id, f"base64 -w0 {shlex.quote(path)}")
+    if encoded["returncode"] != 0:
+        return f"Error: {encoded['stderr'].strip()[:500]}"
+    try:
+        data = base64.b64decode(encoded["stdout"].strip())
+    except ValueError:
+        return "Error: could not read the image contents."
+
+    if not path.startswith(f"{UPLOADS_DIR}/"):
+        try:
+            await ctx.bot.send_photo(ctx.chat_id, photo=data)
+        except Exception as e:
+            logger.warning("Could not send image to chat: %s", e)
+
+    return ToolCallResult(
+        text=(f"Image shown: {path} ({len(data):,} bytes). "
+              "The image is attached to this result."),
+        image=ImageAttachment(data=data, mime=mime),
+    )
+
 
 @context_tool
 async def send_file(ctx: ChatUpdateContext, filePath: str) -> str:
@@ -295,6 +347,7 @@ GREP = "grep"
 GLOB = "glob"
 APPLY_PATCH = "apply_patch"
 SEND_FILE = "send_file"
+READ_IMAGE = "read_image"
 
 SANDBOX_COMMON = (
     "Targets the user's personal sandbox (Ubuntu, persistent between "
@@ -654,6 +707,34 @@ TOOL_DEFINITIONS: list[dict] = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": READ_IMAGE,
+            "strict": False,
+            "description": (
+                "Read an image file (png, jpg, jpeg, gif, webp) from the "
+                "sandbox and attach it to the conversation so you can see "
+                "it. Requires a vision-capable model. The image is also "
+                "sent to the user's chat, unless it is one they uploaded "
+                "(already visible there). Use this instead of the read "
+                "tool for image files; the read tool rejects binary "
+                "files. Images larger than 5 MB cannot be displayed. "
+                + SANDBOX_COMMON
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filePath": {
+                        "type": "string",
+                        "description": "The path to the image file to view."
+                    }
+                },
+                "required": ["filePath"],
+                "additionalProperties": False
+            }
+        }
+    },
 ]
 
 
@@ -667,3 +748,4 @@ def register(tools_list: list[dict], tool_map: dict):
     tool_map[GLOB] = glob
     tool_map[APPLY_PATCH] = apply_patch
     tool_map[SEND_FILE] = send_file
+    tool_map[READ_IMAGE] = read_image

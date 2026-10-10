@@ -8,11 +8,10 @@ from chat_update_context import ChatUpdateContext
 from handlers.middleware import handler
 from handlers.run_with_tools import run_with_tools
 from messaging import run_with_typing, send_message
-from sandbox import manager
+from sandbox import manager, UPLOADS_DIR
+from tools.sandbox_tool import IMAGE_MIME_TYPES
 
 logger = logging.getLogger(__name__)
-
-UPLOADS_DIR = "/workspace/uploads"
 
 
 def _get_media(msg: Any) -> Any | None:
@@ -83,10 +82,14 @@ async def upload_handler(ctx: ChatUpdateContext):
     logger.info("Stored upload %s (%d bytes) for user %d",
                 path, len(data), ctx.user_id)
 
+    if os.path.splitext(name)[1].lower() in IMAGE_MIME_TYPES:
+        hint = "the read_image tool"
+    else:
+        hint = "the read tool"
     notification = (
         "[The user uploaded a file to their sandbox: "
-        f"{path} ({len(data):,} bytes). You can inspect it with the read "
-        "tool if it is relevant.]")
+        f"{path} ({len(data):,} bytes). You can inspect it with "
+        f"{hint} if it is relevant.]")
     caption = msg.caption
     content = f"{caption}\n\n{notification}" if caption else notification
     ctx.conversation.append({

@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 
@@ -6,6 +7,7 @@ import config
 from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
 from chat_update_context import ChatUpdateContext
 from messaging import send_message
+from tool_result import ToolCallResult
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
@@ -14,7 +16,7 @@ client = AsyncOpenAI(api_key=config.OPENAI_KEY,
                      base_url=config.OPENAI_BASE_URL)
 
 
-async def execute_tool_call(ctx: ChatUpdateContext, tool_call) -> str:
+async def execute_tool_call(ctx: ChatUpdateContext, tool_call) -> str | ToolCallResult:
     name = tool_call.function.name
     arguments = json.loads(tool_call.function.arguments)
     func = TOOL_MAP.get(name)
@@ -25,6 +27,8 @@ async def execute_tool_call(ctx: ChatUpdateContext, tool_call) -> str:
             result = await func(ctx, **arguments)
         else:
             result = await func(**arguments)
+        if isinstance(result, ToolCallResult):
+            return result
         return str(result)
     except Exception as e:
         return f"Tool '{name}' execution error: {e}"
@@ -104,6 +108,7 @@ async def run_with_tools(ctx: ChatUpdateContext,
             ]
         })
 
+        images = []
         for tc in message.tool_calls:
             name = tc.function.name
             args = tc.function.arguments
@@ -111,11 +116,32 @@ async def run_with_tools(ctx: ChatUpdateContext,
             if ctx.settings.show_tool_output:
                 await send_message(ctx, f"Tool call: `{name}`\n```json\n{args[:1024]}\n```")
             result = await execute_tool_call(ctx, tc)
+            if isinstance(result, ToolCallResult):
+                logger.info("tool result (%s): image attached", name)
+                conversation.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result.text,
+                })
+                if result.image is not None:
+                    images.append(result.image)
+                continue
             logger.info("tool result (%s): %s...", name, result[:200])
             conversation.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
                 "content": result,
+            })
+
+        for image in images:
+            b64 = base64.b64encode(image.data).decode()
+            conversation.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "(a tool attached this image)"},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:{image.mime};base64,{b64}"}},
+                ],
             })
 
     return 'Maximum tool-call rounds reached without a final response.'

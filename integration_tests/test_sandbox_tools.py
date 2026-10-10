@@ -1,5 +1,8 @@
+import base64
+import struct
 import subprocess
 import unittest
+import zlib
 
 import bootstrap  # noqa: F401 — path setup, env, logging, DB reset
 from bootstrap import next_uid
@@ -7,6 +10,18 @@ from mocks import create_mock_context
 
 import config
 from tools import sandbox_tool
+from tool_result import ToolCallResult
+
+
+def _make_png() -> bytes:
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        block = struct.pack(">I", len(data)) + tag + data
+        return block + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
+
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    raw = b"\x00\xff\x00\x00"
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
 def _docker_available() -> bool:
@@ -180,6 +195,31 @@ class TestSandboxToolsIntegration(unittest.IsolatedAsyncioTestCase):
     async def test_send_file_missing(self):
         result = await sandbox_tool.send_file(await self._ctx(), "nope.txt")
         self.assertIn("File not found", result)
+
+    async def test_read_image_returns_image_payload(self):
+        ctx = await self._ctx()
+        png_b64 = base64.b64encode(_make_png()).decode()
+        await sandbox_tool.bash(
+            ctx, f"echo {png_b64} | base64 -d > /workspace/tiny.png")
+        result = await sandbox_tool.read_image(ctx, "tiny.png")
+        assert isinstance(result, ToolCallResult)
+        assert result.image is not None
+        self.assertEqual(result.image.mime, "image/png")
+        self.assertTrue(result.image.data.startswith(b"\x89PNG"))
+        sent = ctx.bot.sent[-1]
+        self.assertEqual(sent["kind"], "photo")
+
+    async def test_read_image_missing(self):
+        result = await sandbox_tool.read_image(await self._ctx(), "nope.png")
+        assert isinstance(result, str)
+        self.assertIn("File not found", result)
+
+    async def test_read_image_unsupported_type(self):
+        ctx = await self._ctx()
+        await sandbox_tool.bash(ctx, "echo data > /workspace/file.txt")
+        result = await sandbox_tool.read_image(ctx, "file.txt")
+        assert isinstance(result, str)
+        self.assertIn("not a supported image type", result)
 
     async def test_binary_read_rejected(self):
         ctx = await self._ctx()

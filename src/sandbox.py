@@ -7,6 +7,7 @@ import config
 logger = logging.getLogger(__name__)
 
 SANDBOX_LABEL = "toolbot.sandbox"
+UPLOADS_DIR = "/workspace/uploads"
 
 
 class SandboxError(Exception):
