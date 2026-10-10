@@ -1,9 +1,12 @@
 import base64
+import os
 import struct
 import subprocess
+import sys
 import unittest
 import zlib
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import bootstrap  # noqa: F401 — path setup, env, logging, DB reset
 from bootstrap import next_uid
 from mocks import create_mock_context
