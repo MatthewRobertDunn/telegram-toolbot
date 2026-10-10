@@ -159,6 +159,7 @@ python -m unittest discover -s integration_tests -p "test_*.py" -v
 | Command | Description |
 |---|---|
 | `/start` | Start a new conversation |
+| `/stop` | Stop the AI's current response |
 | `/systemprompt <prompt>` | Set a custom system prompt |
 | `/systemprompt_reset` | Reset system prompt to default |
 | `/model <model_id>` | Set the model to use |

@@ -12,8 +12,8 @@ temperature = 1.0
 top_p = 0.95
 api_retry_time = 60
 
-MAX_TOOL_ROUNDS = 40
 ALLOWED_IDS_STR = os.environ.get("ALLOWED_IDS", "")
+
 ALLOWED_IDS = [int(x.strip()) for x in ALLOWED_IDS_STR.split(",") if x.strip()]
 
 store_db_path = os.environ.get("STORE_DB_PATH", os.path.join(os.path.dirname(os.path.realpath(__file__)), '../store.db'))

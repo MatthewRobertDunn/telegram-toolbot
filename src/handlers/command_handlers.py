@@ -1,6 +1,7 @@
 import openai
 from chat_update_context import ChatUpdateContext
 from handlers.middleware import handler, settings
+from handlers.message_handlers import stop_generation
 from messaging import send_preformatted_message, send_message
 from config import OPENAI_KEY, OPENAI_BASE_URL
 
@@ -8,8 +9,17 @@ from config import OPENAI_KEY, OPENAI_BASE_URL
 
 @handler
 async def start_restart_command(ctx: ChatUpdateContext):
+    stop_generation(ctx)
     await send_message(ctx, f"Starting conversation with model `{ctx.model}`")
     ctx.conversation = []
+
+
+@handler
+async def stop_command(ctx: ChatUpdateContext):
+    if stop_generation(ctx):
+        await send_message(ctx, "Stopped the current response.")
+    else:
+        await send_message(ctx, "No response is currently being generated.")
 
 
 @handler

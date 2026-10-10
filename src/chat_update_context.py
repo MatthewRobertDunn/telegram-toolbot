@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -63,6 +64,15 @@ class ChatUpdateContext:
     @settings.setter
     def settings(self, value: "UserSettings") -> None:
         self.user_data['settings'] = value
+
+    @property
+    def generation_task(self) -> asyncio.Task | None:
+        return self.user_data.get('generation_task')
+
+    @generation_task.setter
+    def generation_task(self, value: asyncio.Task | None) -> None:
+        self.user_data['generation_task'] = value
+
 
     @property
     def settings_loaded(self) -> bool:

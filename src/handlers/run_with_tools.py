@@ -50,7 +50,7 @@ async def run_with_tools(ctx: ChatUpdateContext,
         tools = [t for t in TOOL_DEFINITIONS
                  if t.get("function", {}).get("name") not in excluded_tools]
 
-    for _ in range(config.MAX_TOOL_ROUNDS):
+    while True:
         time_to_wait = 1
         t0 = asyncio.get_event_loop().time()
         response = None
@@ -144,4 +144,3 @@ async def run_with_tools(ctx: ChatUpdateContext,
                 ],
             })
 
-    return 'Maximum tool-call rounds reached without a final response.'
