@@ -1,3 +1,4 @@
+import base64
 import contextlib
 import io
 import json
@@ -15,13 +16,24 @@ import toolbot_edit
 import toolbot_glob
 import toolbot_read
 from chat_update_context import ChatUpdateContext
+from handlers import upload_handler
 from tools import sandbox_tool
 from sandbox import SandboxManager
 
 
-def _mock_ctx(user_id: int = 1) -> ChatUpdateContext:
+class _FakeBot:
+    def __init__(self):
+        self.sent = []
+
+    async def send_document(self, *args, **kwargs):
+        document = args[1] if len(args) >= 2 else kwargs.get("document")
+        self.sent.append(
+            {"filename": kwargs.get("filename"), "document": document})
+
+
+def _mock_ctx(user_id: int = 1, bot=None) -> ChatUpdateContext:
     context = SimpleNamespace(
-        bot=None, bot_data={}, user_data={}, chat_data={})
+        bot=bot, bot_data={}, user_data={}, chat_data={})
     message = SimpleNamespace(
         text='', caption=None,
         chat=SimpleNamespace(id=user_id, type='private'),
@@ -29,7 +41,7 @@ def _mock_ctx(user_id: int = 1) -> ChatUpdateContext:
     return ChatUpdateContext(
         update=None,  # type: ignore[arg-type]
         context=context,  # type: ignore[arg-type]
-        bot=None,  # type: ignore[arg-type]
+        bot=bot,  # type: ignore[arg-type]
         chat=message.chat,
         user=message.from_user,
         message=message,  # type: ignore[arg-type]
@@ -310,6 +322,54 @@ class TestGlobHelper(unittest.TestCase):
             self.assertIn('directory', result['error'])
 
 
+class TestUploadNaming(unittest.TestCase):
+
+    def test_no_collision(self):
+        self.assertEqual(upload_handler._unique_name("f.txt", set()), "f.txt")
+
+    def test_collision_gets_suffix(self):
+        self.assertEqual(
+            upload_handler._unique_name("f.txt", {"f.txt"}), "f-1.txt")
+
+    def test_multi_collision_increments(self):
+        self.assertEqual(
+            upload_handler._unique_name(
+                "f.txt", {"f.txt", "f-1.txt", "f-2.txt"}),
+            "f-3.txt")
+
+    def test_suffix_keeps_extension(self):
+        self.assertEqual(
+            upload_handler._unique_name("photo.jpg", {"photo.jpg"}),
+            "photo-1.jpg")
+
+    def test_no_extension(self):
+        self.assertEqual(
+            upload_handler._unique_name("README", {"README"}), "README-1")
+
+    def test_fallback_name_from_kind_and_path(self):
+        class Document:
+            pass
+        file = SimpleNamespace(file_path="voice/file_123.oga")
+        name = upload_handler._fallback_name(Document(), file)
+        self.assertTrue(name.startswith("document_"))
+        self.assertTrue(name.endswith(".oga"))
+
+    def test_fallback_name_photo_kind(self):
+        class PhotoSize:
+            pass
+        file = SimpleNamespace(file_path="photos/file_5.jpg")
+        name = upload_handler._fallback_name(PhotoSize(), file)
+        self.assertTrue(name.startswith("photo_"))
+        self.assertTrue(name.endswith(".jpg"))
+
+    def test_fallback_name_missing_path(self):
+        class Voice:
+            pass
+        file = SimpleNamespace(file_path=None)
+        name = upload_handler._fallback_name(Voice(), file)
+        self.assertRegex(name, r"^voice_\d+$")
+
+
 class TestSandboxToolHelpers(unittest.TestCase):
 
     def test_resolve_path_relative(self):
@@ -518,6 +578,61 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
             ctx = _mock_ctx()
             result = await sandbox_tool.apply_patch(ctx, 'garbage')
         self.assertIn('patch rejected', result)
+
+
+class TestSendFile(unittest.IsolatedAsyncioTestCase):
+
+    def _canned(self, exec_responses):
+        return SandboxManager(docker=CannedDocker(exec_responses))
+
+    async def test_send_file_success(self):
+        encoded = base64.b64encode(b"hello world").decode()
+        manager = self._canned([
+            ('stat', 0, '11\n', ''),
+            ('base64', 0, encoded + '\n', ''),
+        ])
+        bot = _FakeBot()
+        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
+            ctx = _mock_ctx(bot=bot)
+            result = await sandbox_tool.send_file(ctx, 'f.txt')
+        self.assertEqual(result, 'Sent f.txt (11 bytes).')
+        self.assertEqual(bot.sent[0]['filename'], 'f.txt')
+        self.assertEqual(bot.sent[0]['document'], b'hello world')
+
+    async def test_send_file_not_found(self):
+        manager = self._canned([('stat', 1, '', 'No such file')])
+        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
+            ctx = _mock_ctx(bot=_FakeBot())
+            result = await sandbox_tool.send_file(ctx, 'nope.txt')
+        self.assertIn('File not found', result)
+
+    async def test_send_file_too_large(self):
+        manager = self._canned(
+            [('stat', 0, f'{sandbox_tool.MAX_SEND_FILE_BYTES + 1}\n', '')])
+        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
+            ctx = _mock_ctx(bot=_FakeBot())
+            result = await sandbox_tool.send_file(ctx, 'big.bin')
+        self.assertIn('too large', result)
+
+    async def test_send_file_binary_content_preserved(self):
+        payload = bytes(range(256))
+        encoded = base64.b64encode(payload).decode()
+        manager = self._canned([
+            ('stat', 0, f'{len(payload)}\n', ''),
+            ('base64', 0, encoded, ''),
+        ])
+        bot = _FakeBot()
+        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
+            ctx = _mock_ctx(bot=bot)
+            await sandbox_tool.send_file(ctx, 'blob.bin')
+        self.assertEqual(bot.sent[0]['document'], payload)
+
+    async def test_send_file_base64_failure(self):
+        manager = self._canned([('stat', 0, '4\n', ''), ('base64', 1, '', 'Is a directory')])
+        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
+            ctx = _mock_ctx(bot=_FakeBot())
+            result = await sandbox_tool.send_file(ctx, 'dir')
+        self.assertIn('Is a directory', result)
 
 
 if __name__ == '__main__':

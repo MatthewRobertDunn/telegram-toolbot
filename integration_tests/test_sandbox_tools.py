@@ -159,6 +159,28 @@ class TestSandboxToolsIntegration(unittest.IsolatedAsyncioTestCase):
         result = await sandbox_tool.apply_patch(await self._ctx(), "not a patch")
         self.assertTrue(result.startswith("Error:"), result)
 
+    async def test_send_file_delivers_document(self):
+        ctx = await self._ctx()
+        await sandbox_tool.bash(ctx, "printf 'report body' > report.txt")
+        result = await sandbox_tool.send_file(ctx, "report.txt")
+        self.assertIn("Sent report.txt", result)
+        sent = ctx.bot.sent[-1]
+        self.assertEqual(sent["kind"], "document")
+        self.assertEqual(sent["document"], b"report body")
+        self.assertEqual(sent["filename"], "report.txt")
+
+    async def test_send_file_from_subdirectory(self):
+        ctx = await self._ctx()
+        await sandbox_tool.bash(ctx, "mkdir -p out && printf 'data' > out/blob.bin")
+        result = await sandbox_tool.send_file(ctx, "out/blob.bin")
+        self.assertIn("Sent blob.bin", result)
+        sent = ctx.bot.sent[-1]
+        self.assertEqual(sent["document"], b"data")
+
+    async def test_send_file_missing(self):
+        result = await sandbox_tool.send_file(await self._ctx(), "nope.txt")
+        self.assertIn("File not found", result)
+
     async def test_binary_read_rejected(self):
         ctx = await self._ctx()
         await sandbox_tool.bash(

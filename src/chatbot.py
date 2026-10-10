@@ -27,8 +27,7 @@ from handlers.command_handlers import (
     user_profile_command,
     user_profile_reset_command,
 )
-from handlers.text_handler import text_file_handler
-from handlers.image_handler import image_file_handler
+from handlers.upload_handler import upload_handler
 from handlers.store_handlers import (
     store_command,
     store_list_command,
@@ -139,8 +138,7 @@ def main():
     application.add_handler(CommandHandler('user_profile', callback_adapter(user_profile_command)))
     application.add_handler(CommandHandler('user_profile_reset', callback_adapter(user_profile_reset_command)))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), callback_adapter(text_message_handler)))
-    application.add_handler(MessageHandler(filters.ATTACHMENT & (~filters.PHOTO), callback_adapter(text_file_handler)))
-    application.add_handler(MessageHandler(filters.PHOTO, callback_adapter(image_file_handler)))
+    application.add_handler(MessageHandler(filters.ATTACHMENT, callback_adapter(upload_handler)))
 
     application.run_polling()
 

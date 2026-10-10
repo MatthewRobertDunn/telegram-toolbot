@@ -3,6 +3,10 @@ from typing import Any
 from chat_update_context import ChatUpdateContext
 
 
+async def download_as_bytearray(*args, **kwargs):
+    return bytearray(b"mock file contents")
+
+
 class RecordingBot:
     """Mock bot that captures all send_* calls for test assertions."""
 
@@ -28,14 +32,20 @@ class RecordingBot:
         return SimpleNamespace(message_id=len(self.sent))
 
     async def send_document(self, *args, **kwargs):
-        caption = kwargs.get("caption", "")
-        self.sent.append({"text": caption or "", "kind": "document"})
+        document = args[1] if len(args) >= 2 else kwargs.get("document")
+        self.sent.append({
+            "text": kwargs.get("caption") or "",
+            "kind": "document",
+            "filename": kwargs.get("filename"),
+            "document": document,
+        })
         return SimpleNamespace(message_id=len(self.sent))
 
     async def get_file(self, *args, **kwargs):
         return SimpleNamespace(
             file_path="mock://file",
             download_to_drive=lambda *a, **kw: None,
+            download_as_bytearray=download_as_bytearray,
         )
 
 

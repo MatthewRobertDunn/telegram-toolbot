@@ -1,3 +1,4 @@
+import base64
 import json
 import posixpath
 import shlex
@@ -259,6 +260,33 @@ async def apply_patch(ctx: ChatUpdateContext, patchText: str) -> str:
     return summary or "Success. Updated the following files:"
 
 
+MAX_SEND_FILE_BYTES = 45 * 1024 * 1024
+
+
+@context_tool
+async def send_file(ctx: ChatUpdateContext, filePath: str) -> str:
+    path = _resolve_path(filePath)
+    stat = await manager.exec_in_sandbox(
+        ctx.user_id, f"stat -c %s {shlex.quote(path)}")
+    if stat["returncode"] != 0:
+        return f"Error: File not found: {path}"
+    size = int(stat["stdout"].strip() or 0)
+    if size > MAX_SEND_FILE_BYTES:
+        return (f"Error: file is too large to send "
+                f"({size:,} bytes; limit is {MAX_SEND_FILE_BYTES:,}).")
+    encoded = await manager.exec_in_sandbox(
+        ctx.user_id, f"base64 -w0 {shlex.quote(path)}")
+    if encoded["returncode"] != 0:
+        return f"Error: {encoded['stderr'].strip()[:500]}"
+    try:
+        data = base64.b64decode(encoded["stdout"].strip())
+    except ValueError:
+        return "Error: could not decode the file contents."
+    filename = posixpath.basename(path)
+    await ctx.bot.send_document(ctx.chat_id, document=data, filename=filename)
+    return f"Sent {filename} ({len(data):,} bytes)."
+
+
 BASH = "bash"
 READ = "read"
 WRITE = "write"
@@ -266,10 +294,12 @@ EDIT = "edit"
 GREP = "grep"
 GLOB = "glob"
 APPLY_PATCH = "apply_patch"
+SEND_FILE = "send_file"
 
 SANDBOX_COMMON = (
     "Targets the user's personal sandbox (Ubuntu, persistent between "
-    "calls, network access, root privileges). Paths are relative to the "
+    "calls, network access, root privileges). Files the user uploads "
+    "arrive in /workspace/uploads/. Paths are relative to the "
     "sandbox workspace root /workspace, or absolute. All sandbox state is "
     "permanently lost when the sandbox is destroyed, which happens one hour "
     "after the last command executed on it."
@@ -595,6 +625,35 @@ TOOL_DEFINITIONS: list[dict] = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": SEND_FILE,
+            "strict": False,
+            "description": (
+                "Send a file from the sandbox to the user as a Telegram "
+                "document. Usage:\n"
+                "- The file can be anywhere in the sandbox; paths are "
+                "relative to the sandbox workspace root /workspace, or "
+                "absolute.\n"
+                "- Use this to share files generated in the sandbox with "
+                "the user (reports, data files, images, binaries, etc.).\n"
+                "- Files larger than 45 MB cannot be sent. "
+                + SANDBOX_COMMON
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filePath": {
+                        "type": "string",
+                        "description": "The path to the file to send."
+                    }
+                },
+                "required": ["filePath"],
+                "additionalProperties": False
+            }
+        }
+    },
 ]
 
 
@@ -607,3 +666,4 @@ def register(tools_list: list[dict], tool_map: dict):
     tool_map[GREP] = grep
     tool_map[GLOB] = glob
     tool_map[APPLY_PATCH] = apply_patch
+    tool_map[SEND_FILE] = send_file
