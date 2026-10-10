@@ -19,7 +19,8 @@ def register_tools():
     register_datetime(TOOL_DEFINITIONS, TOOL_MAP)
     register_python_runner(TOOL_DEFINITIONS, TOOL_MAP)
     register_store(TOOL_DEFINITIONS, TOOL_MAP)
-    register_status(TOOL_DEFINITIONS, TOOL_MAP)
-    register_strong_llm(TOOL_DEFINITIONS, TOOL_MAP)
+    # These tools don't seem that useful for now, so we don't register them. They can be added back in later if needed.
+    # register_status(TOOL_DEFINITIONS, TOOL_MAP)
+    # register_strong_llm(TOOL_DEFINITIONS, TOOL_MAP)
     register_image_gen(TOOL_DEFINITIONS, TOOL_MAP)
     register_sandbox_tool(TOOL_DEFINITIONS, TOOL_MAP)
