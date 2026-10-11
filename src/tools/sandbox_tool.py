@@ -6,7 +6,7 @@ import shlex
 
 from chat_update_context import ChatUpdateContext, context_tool
 from sandbox import manager, UPLOADS_DIR
-from sandbox_tool_definitions import TOOL_DEFINITIONS, WORKSPACE_ROOT
+from .sandbox_tool_definitions import TOOL_DEFINITIONS, WORKSPACE_ROOT
 from tool_result import ImageAttachment, ToolCallResult
 
 logger = logging.getLogger(__name__)

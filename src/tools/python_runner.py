@@ -2,7 +2,7 @@ import logging
 
 from chat_update_context import ChatUpdateContext, context_tool
 from sandbox import manager
-from tools.sandbox_tool import _cap_output
+from .sandbox_tool import _cap_output
 
 logger = logging.getLogger(__name__)
 
