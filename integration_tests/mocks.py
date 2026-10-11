@@ -26,6 +26,24 @@ class RecordingBot:
     async def send_chat_action(self, *args, **kwargs):
         return None
 
+    async def _post(self, endpoint, data=None, **kwargs):
+        payload = data or {}
+        rich = payload.get("rich_message")
+        if rich:
+            self.sent.append({
+                "text": rich.get("markdown") or "",
+                "parse_mode": None,
+                "kind": "rich_message",
+            })
+        else:
+            self.sent.append({
+                "text": payload.get("text") or "",
+                "parse_mode": None,
+                "kind": "text",
+            })
+        return SimpleNamespace(message_id=len(self.sent))
+
+
     async def send_photo(self, *args, **kwargs):
         caption = kwargs.get("caption", "")
         self.sent.append({"text": caption or "", "kind": "photo"})
