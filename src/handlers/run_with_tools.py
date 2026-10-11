@@ -63,7 +63,7 @@ async def run_with_tools(ctx: ChatUpdateContext,
                     temperature=settings.temperature,
                     top_p=settings.top_p,
                     stream=False,
-                    max_tokens=8192,
+                    max_tokens=32000,
                     tools=tools,  # type: ignore
                     tool_choice="auto",
                 )
