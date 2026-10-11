@@ -4,9 +4,12 @@ Import this first in every test file that relies on src modules:
     import bootstrap  # noqa: F401
 """
 import asyncio
+import functools
 import logging
 import os
+import subprocess
 import sys
+import unittest
 
 _HERE = os.path.dirname(__file__)
 
@@ -61,3 +64,42 @@ def next_uid() -> int:
     global _next_uid
     _next_uid += 1
     return _next_uid
+
+# ------------------------------------------------------------------ docker
+
+
+@functools.lru_cache(maxsize=1)
+def _docker_cli(args: tuple[str, ...]) -> bool:
+    try:
+        result = subprocess.run(
+            ["docker", *args], capture_output=True, timeout=15)
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def docker_available() -> bool:
+    return _docker_cli(("version", "--format", "{{.Server.Version}}"))
+
+
+def image_available() -> bool:
+    import config
+    return _docker_cli(("image", "inspect", config.SANDBOX_IMAGE))
+
+
+def requires_docker(test_cls):
+    """Class decorator: skip tests when the Docker daemon is unavailable."""
+    return unittest.skipUnless(
+        docker_available(), "Docker daemon not available")(test_cls)
+
+
+def requires_sandbox_image(test_cls):
+    """Class decorator: skip tests when Docker or the sandbox image is missing."""
+    import config
+    return unittest.skipUnless(
+        docker_available(), "Docker daemon not available")(
+        unittest.skipUnless(
+            image_available(),
+            f"sandbox image {config.SANDBOX_IMAGE} not built locally")(
+            test_cls))
+

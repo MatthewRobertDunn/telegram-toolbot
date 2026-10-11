@@ -191,7 +191,7 @@ The bot uses OpenAI-compatible function calling. These tools are available to th
 | `web_search` | Search the web via DuckDuckGo (no API key needed) |
 | `web_fetch` | Fetch and extract content from a URL |
 | `get_current_datetime` | Get the current UTC date and time |
-| `python` | Run Python code in an isolated Docker container (no network) |
+| `python` | Run Python code in the sandbox (working dir `/workspace`, network enabled) |
 | `bash` | Run shell commands in the user's sandbox (network + root, software installs) |
 | `read` | Read files or directories in the sandbox (line numbers, offset/limit, binary detection) |
 | `write` | Write files in the sandbox (creates parent directories) |

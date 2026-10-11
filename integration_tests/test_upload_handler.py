@@ -1,29 +1,15 @@
-import subprocess
 import time
 import unittest
 import unittest.mock
 from types import SimpleNamespace
 
 import bootstrap  # noqa: F401 — path setup, env, logging, DB reset
-from bootstrap import next_uid
+from bootstrap import next_uid, requires_docker
 from mocks import RecordingBot
 
 from chat_update_context import ChatUpdateContext
 from handlers.upload_handler import upload_handler
 from sandbox import manager
-
-
-def _docker_available() -> bool:
-    try:
-        result = subprocess.run(
-            ["docker", "version", "--format", "{{.Server.Version}}"],
-            capture_output=True, timeout=15)
-        return result.returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
-DOCKER_AVAILABLE = _docker_available()
 
 
 def _upload_ctx(user_id: int, media, caption=None) -> ChatUpdateContext:
@@ -64,7 +50,7 @@ async def _fake_run_with_tools(ctx, **kwargs):
     return "Upload received."
 
 
-@unittest.skipUnless(DOCKER_AVAILABLE, "Docker daemon not available")
+@requires_docker
 class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):

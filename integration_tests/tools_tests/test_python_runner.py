@@ -4,27 +4,66 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import bootstrap  # noqa: F401
+from bootstrap import next_uid, requires_sandbox_image
+from mocks import create_mock_context
 
+from sandbox import manager
 from tools.python_runner import run_python_code
 
 
+@requires_sandbox_image
 class TestPythonRunner(unittest.IsolatedAsyncioTestCase):
 
+    async def asyncSetUp(self):
+        self.uid = next_uid()
+        await manager.destroy_sandbox(self.uid)
+
+    async def asyncTearDown(self):
+        await manager.destroy_sandbox(self.uid)
+
+    async def _ctx(self):
+        return create_mock_context(user_id=self.uid)
+
     async def test_runs_code_and_returns_stdout(self):
-        result = await run_python_code("print(2 + 2)")
+        result = await run_python_code(await self._ctx(), "print(2 + 2)")
         self.assertIn("Return code: 0", result)
         self.assertIn("stdout:", result)
         self.assertIn("4", result)
 
     async def test_returns_stderr_output(self):
-        result = await run_python_code("import sys; sys.stderr.write('oops')")
+        result = await run_python_code(
+            await self._ctx(), "import sys; sys.stderr.write('oops')")
         self.assertIn("stderr:", result)
         self.assertIn("oops", result)
 
     async def test_nonzero_return_code(self):
-        result = await run_python_code("raise ValueError('boom')")
+        result = await run_python_code(
+            await self._ctx(), "raise ValueError('boom')")
         self.assertIn("Return code: 1", result)
         self.assertIn("boom", result)
+
+    async def test_runs_in_workspace_and_persists_state(self):
+        ctx = await self._ctx()
+        result = await run_python_code(
+            ctx, "open('note.txt', 'w').write('hello')")
+        self.assertIn("Return code: 0", result)
+        result = await run_python_code(
+            ctx, "print(open('/workspace/note.txt').read())")
+        self.assertIn("hello", result)
+        result = await run_python_code(
+            ctx, "import os; print(os.getcwd())")
+        self.assertIn("/workspace", result)
+
+    async def test_extends_idle_timer(self):
+        import asyncio
+        import time
+        ctx = await self._ctx()
+        await run_python_code(ctx, "pass")
+        before = time.time() - 10  # activity is no longer than 10s ago
+        await asyncio.sleep(0.1)
+        await run_python_code(ctx, "pass")
+        last = manager._sandboxes[self.uid].last_activity
+        self.assertGreater(last, before)
 
 
 if __name__ == "__main__":

@@ -1,26 +1,12 @@
-import subprocess
 import unittest
 
 import bootstrap  # noqa: F401 — path setup, env, logging, DB reset
-from bootstrap import next_uid
+from bootstrap import next_uid, requires_docker
 
 from sandbox import SandboxManager
 
 
-def _docker_available() -> bool:
-    try:
-        result = subprocess.run(
-            ["docker", "version", "--format", "{{.Server.Version}}"],
-            capture_output=True, timeout=15)
-        return result.returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
-DOCKER_AVAILABLE = _docker_available()
-
-
-@unittest.skipUnless(DOCKER_AVAILABLE, "Docker daemon not available")
+@requires_docker
 class TestSandboxIntegration(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):

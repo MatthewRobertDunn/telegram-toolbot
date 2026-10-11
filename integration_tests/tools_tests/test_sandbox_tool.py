@@ -1,17 +1,15 @@
 import base64
 import os
 import struct
-import subprocess
 import sys
 import unittest
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import bootstrap  # noqa: F401 — path setup, env, logging, DB reset
-from bootstrap import next_uid
+from bootstrap import next_uid, requires_sandbox_image
 from mocks import create_mock_context
 
-import config
 from tools import sandbox_tool
 from tool_result import ToolCallResult
 
@@ -27,33 +25,7 @@ def _make_png() -> bytes:
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
-def _docker_available() -> bool:
-    try:
-        result = subprocess.run(
-            ["docker", "version", "--format", "{{.Server.Version}}"],
-            capture_output=True, timeout=15)
-        return result.returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
-def _image_available() -> bool:
-    try:
-        result = subprocess.run(
-            ["docker", "image", "inspect", config.SANDBOX_IMAGE],
-            capture_output=True, timeout=15)
-        return result.returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
-DOCKER_AVAILABLE = _docker_available()
-IMAGE_AVAILABLE = _image_available()
-
-
-@unittest.skipUnless(DOCKER_AVAILABLE, "Docker daemon not available")
-@unittest.skipUnless(IMAGE_AVAILABLE,
-                     f"sandbox image {config.SANDBOX_IMAGE} not built locally")
+@requires_sandbox_image
 class TestSandboxToolsIntegration(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
