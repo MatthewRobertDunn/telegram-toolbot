@@ -66,6 +66,9 @@ async def run_with_tools(ctx: ChatUpdateContext,
                     max_tokens=32000,
                     tools=tools,  # type: ignore
                     tool_choice="auto",
+                    extra_headers={
+                        "x-opencode-session": str(ctx.chat_id),
+                    },
                 )
                 if reasoning_effort is not None:
                     create_kwargs["reasoning_effort"] = reasoning_effort
