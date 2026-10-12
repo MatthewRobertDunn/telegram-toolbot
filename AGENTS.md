@@ -6,6 +6,8 @@ All commands are pake tasks defined in `pmakefile.py` ([pake](https://github.com
 pake typecheck         # pyright over src/ tests/ integration_tests/
 pake unittest          # unit tests (pure logic, no network)
 pake integration_test  # integration tests (requires OPENAI_API_KEY in integration_tests/.env)
+pake deploy              # scp src/ to matty@derg.top:/home/matty/tbot, restart tbot user service
+pake update_sandbox_image  # docker pull the latest sandbox image on the deployment server
 ```
 
 # Build tasks (pake)

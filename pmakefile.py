@@ -1,3 +1,5 @@
+import time
+
 import pake
 
 # Tasks are registered the the pake.Pake object
@@ -8,6 +10,8 @@ pk = pake.init()
 # Image name used by the sandbox image build tasks and default platforms.
 SANDBOX_IMAGE = "elpechos/toolbot-sandbox:latest"
 SANDBOX_PLATFORMS = "linux/amd64,linux/arm64"
+
+DEPLOY_HOST = "matty@derg.top"
 
 
 @pk.task
@@ -54,6 +58,29 @@ def integration_test(ctx):
 
     ctx.call("python", "-m", "unittest", "discover", "-s", "integration_tests",
              "-p", "test_*.py", "-v")
+
+
+@pk.task
+def deploy(ctx):
+    """Copy src/ to the server and restart the tbot user service."""
+
+    remote_dir = "/home/matty/tbot"
+
+    ctx.call("scp", "-r", "src", f"{DEPLOY_HOST}:{remote_dir}")
+
+    ctx.call("ssh", DEPLOY_HOST, "systemctl restart tbot --user")
+    time.sleep(2)
+    # LC_ALL=C keeps output ASCII, since UTF-8 glyphs from systemctl
+    # cannot be decoded by pake's Windows locale text streams.
+    ctx.call("ssh", DEPLOY_HOST,
+             "LC_ALL=C systemctl status tbot --user -l --no-pager")
+
+
+@pk.task
+def update_sandbox_image(ctx):
+    """Pull the latest sandbox image on the deployment server."""
+
+    ctx.call("ssh", DEPLOY_HOST, f"docker pull {SANDBOX_IMAGE}")
 
 
 pake.run(pk)
