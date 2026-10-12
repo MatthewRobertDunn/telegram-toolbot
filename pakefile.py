@@ -1,18 +1,14 @@
 import time
-
 import pake
 
 # Tasks are registered the the pake.Pake object
 # returned by pake's initialization call, using the task decorator.
-
 pk = pake.init()
 
 # Image name used by the sandbox image build tasks and default platforms.
 SANDBOX_IMAGE = "elpechos/toolbot-sandbox:latest"
 SANDBOX_PLATFORMS = "linux/amd64,linux/arm64"
-
 DEPLOY_HOST = "matty@derg.top"
-
 
 @pk.task
 def build_sandbox_image(ctx):
