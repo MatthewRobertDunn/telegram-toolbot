@@ -1,4 +1,3 @@
-import config
 from chat_update_context import ChatUpdateContext, context_tool
 from handlers.run_with_tools import run_with_tools
 
@@ -11,7 +10,7 @@ async def ask_strong_llm(ctx: ChatUpdateContext, prompt: str, system_prompt: str
 
     return await run_with_tools(
         ctx,
-        model=config.STRONG_LLM_MODEL,
+        model=ctx.settings.strong_model,
         reasoning_effort="high",
         extra_body={"thinking": {"type": "enabled"}},
         conversation=conversation,

@@ -1,16 +1,22 @@
 import asyncio
+import base64
 import json
+import logging
+
 import config
 from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
 from chat_update_context import ChatUpdateContext
 from messaging import send_message
+from tool_result import ToolCallResult
 from openai import AsyncOpenAI
+
+logger = logging.getLogger(__name__)
 
 client = AsyncOpenAI(api_key=config.OPENAI_KEY,
                      base_url=config.OPENAI_BASE_URL)
 
 
-async def execute_tool_call(ctx: ChatUpdateContext, tool_call) -> str:
+async def execute_tool_call(ctx: ChatUpdateContext, tool_call) -> str | ToolCallResult:
     name = tool_call.function.name
     arguments = json.loads(tool_call.function.arguments)
     func = TOOL_MAP.get(name)
@@ -21,6 +27,8 @@ async def execute_tool_call(ctx: ChatUpdateContext, tool_call) -> str:
             result = await func(ctx, **arguments)
         else:
             result = await func(**arguments)
+        if isinstance(result, ToolCallResult):
+            return result
         return str(result)
     except Exception as e:
         return f"Tool '{name}' execution error: {e}"
@@ -42,7 +50,7 @@ async def run_with_tools(ctx: ChatUpdateContext,
         tools = [t for t in TOOL_DEFINITIONS
                  if t.get("function", {}).get("name") not in excluded_tools]
 
-    for _ in range(config.MAX_TOOL_ROUNDS):
+    while True:
         time_to_wait = 1
         t0 = asyncio.get_event_loop().time()
         response = None
@@ -55,6 +63,7 @@ async def run_with_tools(ctx: ChatUpdateContext,
                     temperature=settings.temperature,
                     top_p=settings.top_p,
                     stream=False,
+                    max_tokens=32000,
                     tools=tools,  # type: ignore
                     tool_choice="auto",
                 )
@@ -66,7 +75,7 @@ async def run_with_tools(ctx: ChatUpdateContext,
                 response = await client.chat.completions.create(**create_kwargs)
                 break
             except Exception as e:
-                print(f'{type(e).__name__}: {e}, trying again...')
+                logger.warning('%s: %s, trying again...', type(e).__name__, e)
                 await asyncio.sleep(time_to_wait)
                 time_to_wait = time_to_wait * 2
 
@@ -99,18 +108,39 @@ async def run_with_tools(ctx: ChatUpdateContext,
             ]
         })
 
+        images = []
         for tc in message.tool_calls:
             name = tc.function.name
             args = tc.function.arguments
-            print(f"tool call: {name}({args})")
+            logger.info("tool call: %s(%s)", name, args)
             if ctx.settings.show_tool_output:
                 await send_message(ctx, f"Tool call: `{name}`\n```json\n{args[:1024]}\n```")
             result = await execute_tool_call(ctx, tc)
-            print(f"tool result ({name}): {result[:200]}...")
+            if isinstance(result, ToolCallResult):
+                logger.info("tool result (%s): image attached", name)
+                conversation.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result.text,
+                })
+                if result.image is not None:
+                    images.append(result.image)
+                continue
+            logger.info("tool result (%s): %s...", name, result[:200])
             conversation.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
                 "content": result,
             })
 
-    return 'Maximum tool-call rounds reached without a final response.'
+        for image in images:
+            b64 = base64.b64encode(image.data).decode()
+            conversation.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "(a tool attached this image)"},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:{image.mime};base64,{b64}"}},
+                ],
+            })
+

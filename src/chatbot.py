@@ -1,3 +1,7 @@
+import asyncio
+import logging
+import sys
+
 import config
 from telegram import BotCommand
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, filters
@@ -7,11 +11,14 @@ from file_ops import read_file
 from handlers.message_handlers import text_message_handler
 from handlers.command_handlers import (
     start_restart_command,
+    stop_command,
     systemprompt_command,
     systemprompt_reset_command,
     model_list_command,
     model_command,
     model_reset_command,
+    strong_model_command,
+    strong_model_reset_command,
     top_p_command,
     top_p_reset_command,
     temperature_command,
@@ -21,8 +28,7 @@ from handlers.command_handlers import (
     user_profile_command,
     user_profile_reset_command,
 )
-from handlers.text_handler import text_file_handler
-from handlers.image_handler import image_file_handler
+from handlers.upload_handler import upload_handler
 from handlers.store_handlers import (
     store_command,
     store_list_command,
@@ -30,7 +36,20 @@ from handlers.store_handlers import (
     store_delete_all_command,
 )
 from tool_registration import register_tools
+from sandbox import manager, start_reaper, stop_reaper
 import user_settings
+
+logger = logging.getLogger(__name__)
+
+
+def configure_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s",
+        stream=sys.stdout,
+    )
+    for name in ("httpx", "httpcore", "openai"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 async def post_init(application: Application):
@@ -39,14 +58,22 @@ async def post_init(application: Application):
         await store.create_schema()
     async with create_settings_store() as store:
         await store.create_schema()
+    try:
+        await manager.cleanup_all_stale()
+    except Exception as e:
+        logger.warning("Could not clean up stale sandbox containers: %s", e)
+    await start_reaper()
     await application.bot.set_my_commands(
         [
             BotCommand("start", "Start a new conversation"),
+            BotCommand("stop", "Stop the current AI response"),
             BotCommand("systemprompt", "Set a custom system prompt"),
             BotCommand("systemprompt_reset", "Reset system prompt to default"),
             BotCommand("model", "Set the model to use"),
             BotCommand("model_list", "List available NVIDIA NIM models"),
             BotCommand("model_reset", "Reset model to default"),
+            BotCommand("strong_model", "Set the strong model used by ask_strong_llm"),
+            BotCommand("strong_model_reset", "Reset strong model to default"),
             BotCommand("top_p", "Set top_p sampling parameter"),
             BotCommand("top_p_reset", "Reset top_p to default"),
             BotCommand("temperature", "Set temperature parameter"),
@@ -70,15 +97,21 @@ def _validate_config():
         raise ValueError("OPENAI_API_KEY environment variable is not set")
 
 
+async def post_stop(application: Application):
+    stop_reaper()
+
+
 def main():
+    configure_logging()
     _validate_config()
-    print("Starting bot...")
+    logger.info("Starting bot...")
     user_settings.DEFAULT_SYSTEM_PROMPT = read_file("./system_prompt") or 'You are a helpful assistant in a Telegram chat bot platform.'
 
     application = (
         ApplicationBuilder()
         .token(config.API_TOKEN)
         .post_init(post_init)
+        .post_stop(post_stop)
         .concurrent_updates(True)
         .build()
     )
@@ -87,11 +120,14 @@ def main():
     })
 
     application.add_handler(CommandHandler('start', callback_adapter(start_restart_command)))
+    application.add_handler(CommandHandler('stop', callback_adapter(stop_command)))
     application.add_handler(CommandHandler('systemprompt', callback_adapter(systemprompt_command)))
     application.add_handler(CommandHandler('systemprompt_reset', callback_adapter(systemprompt_reset_command)))
     application.add_handler(CommandHandler('model_list', callback_adapter(model_list_command)))
     application.add_handler(CommandHandler('model', callback_adapter(model_command)))
     application.add_handler(CommandHandler('model_reset', callback_adapter(model_reset_command)))
+    application.add_handler(CommandHandler('strong_model', callback_adapter(strong_model_command)))
+    application.add_handler(CommandHandler('strong_model_reset', callback_adapter(strong_model_reset_command)))
     application.add_handler(CommandHandler('top_p', callback_adapter(top_p_command)))
     application.add_handler(CommandHandler('top_p_reset', callback_adapter(top_p_reset_command)))
     application.add_handler(CommandHandler('temperature', callback_adapter(temperature_command)))
@@ -105,8 +141,7 @@ def main():
     application.add_handler(CommandHandler('user_profile', callback_adapter(user_profile_command)))
     application.add_handler(CommandHandler('user_profile_reset', callback_adapter(user_profile_reset_command)))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), callback_adapter(text_message_handler)))
-    application.add_handler(MessageHandler(filters.ATTACHMENT & (~filters.PHOTO), callback_adapter(text_file_handler)))
-    application.add_handler(MessageHandler(filters.PHOTO, callback_adapter(image_file_handler)))
+    application.add_handler(MessageHandler(filters.ATTACHMENT, callback_adapter(upload_handler)))
 
     application.run_polling()
 

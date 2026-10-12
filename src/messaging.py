@@ -1,17 +1,28 @@
 import asyncio
+import logging
 from telegram import constants
 from telegram.error import BadRequest
 from telegram.helpers import escape_markdown
 from chat_update_context import ChatUpdateContext
-from telegramify_markdown import ContentType, telegramify
-from telegramify_markdown.config import get_runtime_config
 import html
-cfg = get_runtime_config()
-cfg.markdown_symbol.heading_level_1 = "🔴"
-cfg.markdown_symbol.heading_level_2 = "🟠"
-cfg.markdown_symbol.heading_level_3 = "🟡"
-cfg.markdown_symbol.heading_level_4 = "⚪"
+
+logger = logging.getLogger(__name__)
 MAX_MSG_LEN = 4000
+# Telegram's sendRichMessage limit is 32,768 UTF-8 chars / 500 blocks per
+# message. Chunk well below to stay clear of the block-count cap.
+MAX_RICH_MSG_LEN = 32000
+
+
+async def send_rich_message(ctx: ChatUpdateContext, text: str):
+    # PTB doesn't expose sendRichMessage yet (Bot API 10.1); we use the raw
+    # request layer as recommended by the PTB maintainers until it ships.
+    await ctx.bot._post(
+        "sendRichMessage",
+        data={
+            "chat_id": ctx.chat_id,
+            "rich_message": {"markdown": text},
+        },
+    )
 
 
 async def _send_chunk_maybe_fallback(ctx: ChatUpdateContext, text: str, parse_mode, disable_web_page_preview):
@@ -43,33 +54,8 @@ def _split_at_linebreak(text: str, limit: int) -> list[str]:
 
 async def send_message(ctx: ChatUpdateContext, text: str, parse_mode='Markdown', disable_web_page_preview=True):
     if parse_mode == 'LLM':
-        results = await telegramify(text, max_message_length=MAX_MSG_LEN, min_file_lines=100)
-        for item in results:
-            if item.content_type == ContentType.TEXT:
-                await ctx.bot.send_message(
-                    ctx.chat_id,
-                    item.text,  # type: ignore
-                    entities=[e.to_dict()
-                              for e in item.entities],  # type: ignore
-                )
-            elif item.content_type == ContentType.PHOTO:
-                await ctx.bot.send_photo(
-                    ctx.chat_id,
-                    filename=item.file_name,  # type: ignore
-                    photo=item.file_data,  # type: ignore
-                    caption=item.caption_text or None,  # type: ignore
-                    caption_entities=[
-                        e.to_dict() for e in item.caption_entities] or None,  # type: ignore
-                )
-            elif item.content_type == ContentType.FILE:
-                await ctx.bot.send_document(
-                    ctx.chat_id,
-                    filename=item.file_name,  # type: ignore
-                    document=item.file_data,  # type: ignore
-                    caption=item.caption_text or None,  # type: ignore
-                    caption_entities=[
-                        e.to_dict() for e in item.caption_entities] or None,  # type: ignore
-                )
+        for chunk in _split_at_linebreak(text, MAX_RICH_MSG_LEN):
+            await send_rich_message(ctx, chunk)
     else:
         for chunk in _split_at_linebreak(text, MAX_MSG_LEN):
             await _send_chunk_maybe_fallback(
@@ -104,7 +90,7 @@ async def _send_typing_periodically(ctx: ChatUpdateContext, stop_event: asyncio.
         try:
             await ctx.bot.send_chat_action(chat_id=ctx.chat_id, action=constants.ChatAction.TYPING)
         except Exception as e:
-            print(f"Error occurred while sending typing action: {e}")
+            logger.exception("Error occurred while sending typing action: %s", e)
             pass
         await asyncio.sleep(5)
 

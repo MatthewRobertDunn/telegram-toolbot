@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,7 @@ class ChatUpdateContext:
     user: User
     message: Message
     user_data: dict
+    chat_data: dict | None
     command_text: str
     command_name: str
 
@@ -44,12 +46,33 @@ class ChatUpdateContext:
         self.user_data['conversation'] = value
 
     @property
+    def group_conversation(self) -> list:
+        if self.chat_data is None:
+            raise ValueError("Chat data is not available for this context")
+        return self.chat_data['conversation']
+    
+    @group_conversation.setter
+    def group_conversation(self, value: list) -> None:
+        if self.chat_data is None:
+            raise ValueError("Chat data is not available for this context")
+        self.chat_data['conversation'] = value
+
+    @property
     def settings(self) -> "UserSettings":
         return self.user_data['settings']
 
     @settings.setter
     def settings(self, value: "UserSettings") -> None:
         self.user_data['settings'] = value
+
+    @property
+    def generation_task(self) -> asyncio.Task | None:
+        return self.user_data.get('generation_task')
+
+    @generation_task.setter
+    def generation_task(self, value: asyncio.Task | None) -> None:
+        self.user_data['generation_task'] = value
+
 
     @property
     def settings_loaded(self) -> bool:
@@ -104,6 +127,7 @@ def create_chat_update_context(
     user_data = context.user_data
     assert user_data is not None
     text = message.text or message.caption or ''
+    chat_data = context.chat_data
     return ChatUpdateContext(
         update=update,
         context=context,
@@ -112,6 +136,7 @@ def create_chat_update_context(
         user=user,
         message=message,
         user_data=user_data,
+        chat_data=chat_data,
         command_text=_parse_command_text(text),
         command_name=_parse_command_name(text),
     )
