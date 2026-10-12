@@ -1,6 +1,6 @@
 # Verification commands (pake tasks)
 
-All commands are pake tasks defined in `pmakefile.py` ([pake](https://github.com/Teriks/pake).
+All commands are pake tasks defined in `pakefile.py` ([pake](https://github.com/Teriks/pake).
 
 ```powershell
 pake typecheck         # pyright over src/ tests/ integration_tests/
@@ -12,7 +12,7 @@ pake update_sandbox_image  # docker pull the latest sandbox image on the deploym
 
 # Build tasks (pake)
 
-Build tasks are defined in `pmakefile.py` using [pake](https://github.com/Teriks/pake).
+Build tasks are defined in `pakefile.py` using [pake](https://github.com/Teriks/pake).
 
 ```powershell
 pake build_sandbox_image            # Build the sandbox image for the local platform
