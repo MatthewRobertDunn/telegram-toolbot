@@ -356,7 +356,9 @@ TOOL_DEFINITIONS: list[dict] = [
                 "it. Requires a vision-capable model. The image is also "
                 "sent to the user's chat. Use this instead of the read "
                 "tool for image files; the read tool rejects binary "
-                "files. Images larger than 5 MB cannot be displayed."
+                "files. Files stored in {UPLOADS_DIR}/ are not "
+                "displayed to the user as they are already attached "
+                "to the chat. Images larger than 5 MB cannot be displayed."
             ),
             "parameters": {
                 "type": "object",
