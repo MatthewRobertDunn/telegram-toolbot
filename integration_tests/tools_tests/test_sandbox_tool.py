@@ -119,7 +119,7 @@ class TestSandboxToolsIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/workspace/src/pkg/util.py", result)
         self.assertNotIn("readme.md", result)
 
-    async def test_apply_patch_add_update_delete(self):
+    async def test_patch_add_update_delete(self):
         ctx = await self._ctx()
         await sandbox_tool.write(ctx, "src/app.py", "def greet():\n    print('Hi')\n")
         await sandbox_tool.write(ctx, "obsolete.txt", "delete me\n")
@@ -133,7 +133,7 @@ class TestSandboxToolsIntegration(unittest.IsolatedAsyncioTestCase):
             "+print('Hello, world!')\n"
             "*** Delete File: obsolete.txt\n"
             "*** End Patch\n")
-        result = await sandbox_tool.apply_patch(ctx, patch)
+        result = await sandbox_tool.patch(ctx, patch)
         self.assertIn("Success. Updated the following files:", result)
         self.assertIn("A hello.txt", result)
         self.assertIn("M src/app.py", result)
@@ -145,8 +145,8 @@ class TestSandboxToolsIntegration(unittest.IsolatedAsyncioTestCase):
         gone = await sandbox_tool.read(ctx, "obsolete.txt")
         self.assertIn("File not found", gone)
 
-    async def test_apply_patch_rejects_bad_patch(self):
-        result = await sandbox_tool.apply_patch(await self._ctx(), "not a patch")
+    async def test_patch_rejects_bad_patch(self):
+        result = await sandbox_tool.patch(await self._ctx(), "not a patch")
         self.assertTrue(result.startswith("Error:"), result)
 
     async def test_send_file_delivers_document(self):

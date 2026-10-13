@@ -250,11 +250,11 @@ async def glob(ctx: ChatUpdateContext, pattern: str,
 
 
 @context_tool
-async def apply_patch(ctx: ChatUpdateContext, patchText: str) -> str:
+async def patch(ctx: ChatUpdateContext, patchText: str) -> str:
     result = await manager.exec(
         ctx.user_id, "apply-patch-py", stdin_data=patchText.encode())
     if result["timeout"]:
-        return "Error: apply_patch timed out."
+        return "Error: patch timed out."
     if result["returncode"] != 0:
         return f"Error: {result['stderr'].strip()[:1000]}"
     summary = result["stdout"].strip()
@@ -345,7 +345,7 @@ WRITE = "write"
 EDIT = "edit"
 GREP = "grep"
 GLOB = "glob"
-APPLY_PATCH = "apply_patch"
+PATCH = "patch"
 SEND_FILE = "send_file"
 READ_IMAGE = "read_image"
 
@@ -358,6 +358,6 @@ def register(tools_list: list[dict], tool_map: dict):
     tool_map[EDIT] = edit
     tool_map[GREP] = grep
     tool_map[GLOB] = glob
-    tool_map[APPLY_PATCH] = apply_patch
+    tool_map[PATCH] = patch
     tool_map[SEND_FILE] = send_file
     tool_map[READ_IMAGE] = read_image

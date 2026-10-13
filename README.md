@@ -25,7 +25,7 @@ The default configuration points at `https://integrate.api.nvidia.com/v1`, but y
 - **Tool calling** — the bot can search the web, run code, fetch pages, generate images, and more using OpenAI-compatible function calling
 - **Hierarchical LLM** — the primary model can delegate complex tasks to a stronger reasoning model via the `ask_strong_llm` tool
 - **Persistent key-value store** — both users (via commands) and the AI (via tools) can store and retrieve data across conversations
-- **Per-user sandboxes** — the AI gets a personal ephemeral Ubuntu container per user with a full coding environment (bash, read, write, edit, grep, glob, apply_patch), where it can run commands, install software, and work with files. Sandboxes expire one hour after the last command and lose all changes
+- **Per-user sandboxes** — the AI gets a personal ephemeral Ubuntu container per user with a full coding environment (bash, read, write, edit, grep, glob, patch), where it can run commands, install software, and work with files. Sandboxes expire one hour after the last command and lose all changes
 - **File uploads** — files users send to the bot (any file type) are placed in the sandbox at `/workspace/uploads/`, and the AI is notified so it can inspect them with the `read` tool
 
 ---
@@ -198,7 +198,7 @@ The bot uses OpenAI-compatible function calling. These tools are available to th
 | `edit` | Exact string replacement in sandbox files (with fallback matching for whitespace drift) |
 | `grep` | Regex content search in the sandbox, powered by ripgrep |
 | `glob` | Find sandbox files by glob pattern, sorted by modification time |
-| `apply_patch` | Apply Codex-style patch blocks (add/update/delete/move files) in the sandbox |
+| `patch` | Apply Codex-style patch blocks (add/update/delete/move files) in the sandbox |
 | `send_file` | Send a file from the sandbox to the user as a Telegram document |
 | `store_list` / `store_get` / `store_set` / `store_delete` | Persistent per-user key-value storage |
 | `display_status` | Send a progress message to the chat |

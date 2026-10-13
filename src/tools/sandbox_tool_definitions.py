@@ -157,7 +157,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "- Use `replaceAll` for replacing and renaming strings "
                 "across the file. This parameter is useful if you want to "
                 "rename a variable for instance. For larger or more "
-                "complex multi-file changes, prefer the apply_patch tool."
+                "complex multi-file changes, prefer the patch tool."
             ),
             "parameters": {
                 "type": "object",
@@ -262,7 +262,7 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "apply_patch",
+            "name": "patch",
             "strict": False,
             "description": (
                 "Apply patches to files in the sandbox. Useful for "

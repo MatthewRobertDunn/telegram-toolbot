@@ -568,22 +568,22 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
             result = await sandbox_tool.glob(ctx, '*.nope')
         self.assertEqual(result, 'No files found')
 
-    async def test_apply_patch_success(self):
+    async def test_patch_success(self):
         summary = 'Success. Updated the following files:\nA src/new.py\nM app.py'
         manager = self._canned([('apply-patch-py', 0, summary + '\n', '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
             ctx = _mock_ctx()
-            result = await sandbox_tool.apply_patch(
+            result = await sandbox_tool.patch(
                 ctx, '*** Begin Patch\n*** End Patch')
         self.assertIn('A src/new.py', result)
         self.assertIn('/workspace/src/new.py', ctx.user_data['sandbox_read_files'])
 
-    async def test_apply_patch_error(self):
+    async def test_patch_error(self):
         manager = self._canned(
             [('apply-patch-py', 1, '', 'patch rejected: bad header')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
             ctx = _mock_ctx()
-            result = await sandbox_tool.apply_patch(ctx, 'garbage')
+            result = await sandbox_tool.patch(ctx, 'garbage')
         self.assertIn('patch rejected', result)
 
 
