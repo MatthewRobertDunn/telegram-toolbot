@@ -4,13 +4,24 @@ load_dotenv()
 API_TOKEN = os.environ.get("TELEGRAM_API_TOKEN", "")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
-LLM_MODEL = os.environ.get("LLM_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
+LLM_MODEL = os.environ.get("LLM_MODEL", "big-pickle")
 STRONG_LLM_MODEL = os.environ.get("STRONG_LLM_MODEL", "z-ai/glm-5.3-flash")
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://integrate.api.nvidia.com/v1")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://192.168.0.2:28180/v1")
 IMAGE_GEN_URL = os.environ.get("IMAGE_GEN_URL", f"https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b")
 temperature = 1.0
 top_p = 0.95
 api_retry_time = 60
+
+STREAM_DRAFTS = os.environ.get("STREAM_DRAFTS", "1").strip().lower() not in ("0", "false", "off")
+
+# Models that inline chain-of-thought in the content field ending in a
+# think close tag; the final message's thinking is split out only for
+# these models, so well-behaved models can output the tag freely.
+THINK_SPLIT_MODELS = [
+    m.strip() for m in
+    os.environ.get("THINK_SPLIT_MODELS", "big-pickle").split(",")
+    if m.strip()
+]
 
 ALLOWED_IDS_STR = os.environ.get("ALLOWED_IDS", "")
 

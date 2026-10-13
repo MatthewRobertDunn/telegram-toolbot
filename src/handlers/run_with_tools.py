@@ -2,10 +2,14 @@ import asyncio
 import base64
 import json
 import logging
+from types import SimpleNamespace
+from typing import Any
 
 import config
 from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
 from chat_update_context import ChatUpdateContext
+from .draft_streamer import DraftStreamer
+from .consume_stream import consume_stream
 from messaging import send_message
 from tool_result import ToolCallResult
 from openai import AsyncOpenAI
@@ -50,39 +54,58 @@ async def run_with_tools(ctx: ChatUpdateContext,
         tools = [t for t in TOOL_DEFINITIONS
                  if t.get("function", {}).get("name") not in excluded_tools]
 
+    streamer = DraftStreamer(ctx)
+    await streamer.start()
+
     while True:
         time_to_wait = 1
         t0 = asyncio.get_event_loop().time()
-        response = None
+        message: SimpleNamespace | Any = None
+        create_kwargs: dict = {}
         while asyncio.get_event_loop().time() - t0 < config.api_retry_time:
             try:
+                streamer.new_round()
                 create_kwargs: dict = dict(
                     model=effective_model,
                     messages=conversation,
                     n=1,
                     temperature=settings.temperature,
                     top_p=settings.top_p,
-                    stream=False,
-                    max_tokens=32000,
+                    stream=streamer.enabled,
                     tools=tools,  # type: ignore
                     tool_choice="auto",
+                    extra_headers={
+                        "x-opencode-session": str(ctx.chat_id),
+                    },
                 )
                 if reasoning_effort is not None:
                     create_kwargs["reasoning_effort"] = reasoning_effort
                 if extra_body is not None:
                     create_kwargs["extra_body"] = extra_body
                 # type: ignore
-                response = await client.chat.completions.create(**create_kwargs)
+                response: Any = await client.chat.completions.create(**create_kwargs)
+                if streamer.enabled:
+                    message = await consume_stream(
+                        response, streamer,
+                        strip_thinking=effective_model
+                        in config.THINK_SPLIT_MODELS)
+                else:
+                    message = response.choices[0].message
                 break
             except Exception as e:
+                if create_kwargs.get("stream") and 'stream' in str(e).lower():
+                    logger.info('backend rejected streaming (%s); '
+                                'disabling draft streaming', e)
+                    streamer.enabled = False
+                    time_to_wait = 1
+                    continue
                 logger.warning('%s: %s, trying again...', type(e).__name__, e)
                 await asyncio.sleep(time_to_wait)
                 time_to_wait = time_to_wait * 2
 
-        if response is None:
+        if message is None:
+            streamer.new_round()
             return "Problem getting response from model."
-
-        message = response.choices[0].message
 
         if not message.tool_calls:
             if message.content:
