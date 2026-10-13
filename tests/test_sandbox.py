@@ -74,7 +74,7 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.manager = SandboxManager(docker=self.fake)
 
     async def _ensure(self, user_id: int) -> Sandbox:
-        return await self.manager.ensure_sandbox(user_id)
+        return await self.manager.ensure(user_id)
 
     async def test_container_name_per_user(self):
         self.assertEqual(SandboxManager.container_name_for(42),
@@ -118,7 +118,7 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
     async def test_exec_returns_output_and_updates_timer(self):
         sandbox = await self._ensure(1)
         sandbox.last_activity = time.time() - 1000
-        result = await self.manager.exec_in_sandbox(1, 'echo hi')
+        result = await self.manager.exec(1, 'echo hi')
         self.assertEqual(result['returncode'], 0)
         self.assertEqual(result['stdout'], 'out(echo hi)')
         self.assertEqual(result['stderr'], 'err(echo hi)')
@@ -128,12 +128,12 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertIn('echo hi', self.fake.exec_calls()[0])
 
     async def test_exec_starts_sandbox_if_needed(self):
-        await self.manager.exec_in_sandbox(7, 'uptime')
+        await self.manager.exec(7, 'uptime')
         self.assertEqual(len(self.fake.run_calls()), 1)
         self.assertEqual(self.fake.exec_calls()[0][1], 'toolbot-sandbox-7')
 
     async def test_exec_timeout_reported(self):
-        result = await self.manager.exec_in_sandbox(1, 'sleep TIMEOUT_MARKER')
+        result = await self.manager.exec(1, 'sleep TIMEOUT_MARKER')
         self.assertTrue(result['timeout'])
         self.assertIsNone(result['returncode'])
         self.assertIn('timed out', result['stderr'])
@@ -147,7 +147,7 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
     async def test_destroy_removes_container(self):
         await self._ensure(1)
         rm_before = len(self.fake.rm_calls())
-        destroyed = await self.manager.destroy_sandbox(1)
+        destroyed = await self.manager.destroy(1)
         self.assertTrue(destroyed)
         self.assertNotIn('toolbot-sandbox-1', self.fake.containers)
         rm_calls = self.fake.rm_calls()
@@ -156,7 +156,7 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(1, self.manager._sandboxes)
 
     async def test_destroy_without_sandbox_returns_false(self):
-        destroyed = await self.manager.destroy_sandbox(1)
+        destroyed = await self.manager.destroy(1)
         self.assertFalse(destroyed)
 
     async def test_reap_destroys_only_idle_sandboxes(self):

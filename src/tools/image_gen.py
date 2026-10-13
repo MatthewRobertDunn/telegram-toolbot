@@ -1,10 +1,12 @@
 import base64
 import logging
+import time
 
 import requests
 import config
 from chat_update_context import context_tool, ChatUpdateContext
 from messaging import send_image
+from sandbox import manager
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +36,17 @@ async def generate_and_send_image(ctx: ChatUpdateContext, prompt: str) -> str:
         b64 = await generate_image(prompt)
         image_bytes = base64.b64decode(b64)
         await send_image(ctx, image_bytes)
-        return f"Image sent to chat (prompt: {prompt})"
+        path, error = await manager.store_file(
+            ctx.user_id, image_bytes, f"generated_{int(time.time())}.png")
+        if error is not None:
+            logger.error("Error storing generated image in sandbox: %s",
+                         error)
+            return f"Image sent to chat (prompt: {prompt})"
+        return (f"Image sent to chat and stored in the sandbox at {path} "
+                f"(prompt: {prompt})")
     except Exception as e:
         logger.exception("Error generating image: %s", e)
-        return "Failed to generate image"          
+        return "Failed to generate image"
 
 TOOL_NAME = "generate_image"    
 TOOL_DEFINITIONS: list[dict] = [
@@ -46,7 +55,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "function": {
             "name": TOOL_NAME,
             "strict": False,
-            "description": "Generate an image from a text prompt. The image is sent directly to the user",
+            "description": "Generate an image from a text prompt. The image is sent directly to the user and stored in the sandbox at /workspace/uploads, so it can be processed with sandbox tools",
             "parameters": {
                 "type": "object",
                 "properties": {

@@ -32,10 +32,10 @@ class TestSandboxToolsIntegration(unittest.IsolatedAsyncioTestCase):
         self.uid = next_uid()
         import sandbox
         self.manager = sandbox.manager
-        await self.manager.destroy_sandbox(self.uid)
+        await self.manager.destroy(self.uid)
 
     async def asyncTearDown(self):
-        await self.manager.destroy_sandbox(self.uid)
+        await self.manager.destroy(self.uid)
 
     async def _ctx(self):
         return create_mock_context(user_id=self.uid)

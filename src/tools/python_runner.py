@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 async def run_python_code(ctx: ChatUpdateContext, code: str) -> str:
     if not code.strip():
         return "Error: empty code."
-    result = await manager.exec_in_sandbox(
+    result = await manager.exec(
         ctx.user_id, "cd /workspace && python3 -",
         stdin_data=code.encode())
     if result["timeout"]:

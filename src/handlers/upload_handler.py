@@ -1,6 +1,5 @@
 import logging
 import os
-import shlex
 import time
 from typing import Any
 
@@ -8,7 +7,7 @@ from chat_update_context import ChatUpdateContext
 from handlers.middleware import handler
 from handlers.run_with_tools import run_with_tools
 from messaging import run_with_typing, send_message
-from sandbox import manager, UPLOADS_DIR
+from sandbox import manager
 from tools.sandbox_tool import IMAGE_MIME_TYPES
 
 logger = logging.getLogger(__name__)
@@ -31,16 +30,6 @@ def _fallback_name(media: Any, file: Any) -> str:
     return f"{kind}_{int(time.time())}{ext}"
 
 
-def _unique_name(name: str, existing: set[str]) -> str:
-    if name not in existing:
-        return name
-    stem, ext = os.path.splitext(name)
-    counter = 1
-    while f"{stem}-{counter}{ext}" in existing:
-        counter += 1
-    return f"{stem}-{counter}{ext}"
-
-
 @handler
 async def upload_handler(ctx: ChatUpdateContext):
     msg = ctx.message
@@ -60,24 +49,9 @@ async def upload_handler(ctx: ChatUpdateContext):
         return
 
     name = getattr(media, "file_name", None) or _fallback_name(media, file)
-    listing = await manager.exec_in_sandbox(
-        ctx.user_id, f"mkdir -p {UPLOADS_DIR} && ls -1 {UPLOADS_DIR}")
-    if listing["returncode"] != 0:
-        await send_message(
-            ctx,
-            "Error preparing the sandbox uploads folder: "
-            f"{listing['stderr'].strip()[:500]}")
-        return
-    existing = set(listing["stdout"].splitlines())
-    path = f"{UPLOADS_DIR}/{_unique_name(name, existing)}"
-
-    write = await manager.exec_in_sandbox(
-        ctx.user_id, f"cat > {shlex.quote(path)}", stdin_data=data)
-    if write["returncode"] != 0:
-        await send_message(
-            ctx,
-            "Error storing the file in the sandbox: "
-            f"{write['stderr'].strip()[:500]}")
+    path, error = await manager.store_file(ctx.user_id, data, name)
+    if error is not None:
+        await send_message(ctx, error)
         return
     logger.info("Stored upload %s (%d bytes) for user %d",
                 path, len(data), ctx.user_id)

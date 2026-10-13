@@ -16,10 +16,10 @@ class TestPythonRunner(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.uid = next_uid()
-        await manager.destroy_sandbox(self.uid)
+        await manager.destroy(self.uid)
 
     async def asyncTearDown(self):
-        await manager.destroy_sandbox(self.uid)
+        await manager.destroy(self.uid)
 
     async def _ctx(self):
         return create_mock_context(user_id=self.uid)

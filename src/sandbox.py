@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import shlex
 import time
 
 import config
@@ -8,6 +10,16 @@ logger = logging.getLogger(__name__)
 
 SANDBOX_LABEL = "toolbot.sandbox"
 UPLOADS_DIR = "/workspace/uploads"
+
+
+def _unique_name(name: str, existing: set[str]) -> str:
+    if name not in existing:
+        return name
+    stem, ext = os.path.splitext(name)
+    counter = 1
+    while f"{stem}-{counter}{ext}" in existing:
+        counter += 1
+    return f"{stem}-{counter}{ext}"
 
 
 class SandboxError(Exception):
@@ -83,10 +95,10 @@ class SandboxManager:
             ["inspect", "-f", "{{.State.Running}}", sandbox.container_name])
         return rc == 0 and stdout.strip() == "true"
 
-    async def ensure_sandbox(self, user_id: int) -> Sandbox:
+    async def ensure(self, user_id: int) -> Sandbox:
         """Return the user's running sandbox, starting/recreating it if needed.
 
-        Does not refresh the activity timer; only exec_in_sandbox() does.
+        Does not refresh the activity timer; only exec() does.
         """
         async with self._lock_for(user_id):
             sandbox = self._sandboxes.get(user_id)
@@ -118,15 +130,15 @@ class SandboxManager:
             self._sandboxes[user_id] = sandbox
             return sandbox
 
-    async def exec_in_sandbox(self, user_id: int, command: str,
-                              timeout: float | None = None,
-                              stdin_data: bytes | None = None) -> dict:
+    async def exec(self, user_id: int, command: str,
+                   timeout: float | None = None,
+                   stdin_data: bytes | None = None) -> dict:
         """Run a shell command in the user's sandbox.
 
         Refreshes the activity timer. Returns
         {stdout, stderr, returncode, timeout}.
         """
-        sandbox = await self.ensure_sandbox(user_id)
+        sandbox = await self.ensure(user_id)
         if timeout is None:
             timeout = config.SANDBOX_EXEC_TIMEOUT
         args = ["exec"]
@@ -150,7 +162,28 @@ class SandboxManager:
             "timeout": timed_out,
         }
 
-    async def destroy_sandbox(self, user_id: int) -> bool:
+    async def store_file(self, user_id: int, data: bytes,
+                         name: str) -> tuple[str | None, str | None]:
+        """Store bytes in the sandbox uploads dir under a unique name.
+
+        Returns (path, error); exactly one of the two is not None.
+        """
+        listing = await self.exec(
+            user_id, f"mkdir -p {UPLOADS_DIR} && ls -1 {UPLOADS_DIR}")
+        if listing["returncode"] != 0:
+            error = ("Error preparing the sandbox uploads folder: "
+                     f"{listing['stderr'].strip()[:500]}")
+            return None, error
+        path = f"{UPLOADS_DIR}/{_unique_name(name, set(listing['stdout'].splitlines()))}"
+        write = await self.exec(
+            user_id, f"cat > {shlex.quote(path)}", stdin_data=data)
+        if write["returncode"] != 0:
+            error = ("Error storing the file in the sandbox: "
+                     f"{write['stderr'].strip()[:500]}")
+            return None, error
+        return path, None
+
+    async def destroy(self, user_id: int) -> bool:
         """Force-remove the user's sandbox, losing all changes.
 
         Returns True if a container was removed.
@@ -172,7 +205,7 @@ class SandboxManager:
         destroyed = []
         for user_id, sandbox in list(self._sandboxes.items()):
             if now - sandbox.last_activity >= config.SANDBOX_IDLE_TIMEOUT:
-                await self.destroy_sandbox(user_id)
+                await self.destroy(user_id)
                 destroyed.append(user_id)
         return destroyed
 
@@ -228,8 +261,8 @@ def stop_reaper():
 
 if __name__ == "__main__":
     async def _self_test():
-        result = await manager.exec_in_sandbox(0, "echo Hello from sandbox!")
+        result = await manager.exec(0, "echo Hello from sandbox!")
         print(result)
-        print("destroyed:", await manager.destroy_sandbox(0))
+        print("destroyed:", await manager.destroy(0))
 
     asyncio.run(_self_test())

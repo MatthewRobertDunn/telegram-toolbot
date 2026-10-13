@@ -55,10 +55,10 @@ class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.uid = next_uid()
-        await manager.destroy_sandbox(self.uid)
+        await manager.destroy(self.uid)
 
     async def asyncTearDown(self):
-        await manager.destroy_sandbox(self.uid)
+        await manager.destroy(self.uid)
 
     async def test_document_upload_stored_and_llm_notified(self):
         ctx = _upload_ctx(self.uid, _document("hello.txt"))
@@ -66,7 +66,7 @@ class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
                                  _fake_run_with_tools):
             await upload_handler(ctx)
 
-        result = await manager.exec_in_sandbox(
+        result = await manager.exec(
             self.uid, "cat /workspace/uploads/hello.txt")
         self.assertEqual(result["returncode"], 0)
         self.assertEqual(result["stdout"], "mock file contents")
@@ -83,7 +83,7 @@ class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
         with unittest.mock.patch("handlers.upload_handler.run_with_tools",
                                  _fake_run_with_tools):
             await upload_handler(ctx)
-        listing = await manager.exec_in_sandbox(
+        listing = await manager.exec(
             self.uid, "ls -1 /workspace/uploads")
         files = listing["stdout"].split()
         self.assertEqual(len(files), 1)
@@ -95,7 +95,7 @@ class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
             with unittest.mock.patch("handlers.upload_handler.run_with_tools",
                                      _fake_run_with_tools):
                 await upload_handler(ctx)
-        listing = await manager.exec_in_sandbox(
+        listing = await manager.exec(
             self.uid, "ls -1 /workspace/uploads")
         self.assertEqual(
             sorted(listing["stdout"].split()), ["hello-1.txt", "hello.txt"])

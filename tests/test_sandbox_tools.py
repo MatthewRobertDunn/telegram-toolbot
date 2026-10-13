@@ -19,7 +19,7 @@ from chat_update_context import ChatUpdateContext
 from handlers import run_with_tools as run_with_tools_mod
 from handlers import upload_handler
 from tools import sandbox_tool
-from sandbox import SandboxManager
+from sandbox import SandboxManager, _unique_name
 from tool_result import ImageAttachment, ToolCallResult
 
 
@@ -332,26 +332,26 @@ class TestGlobHelper(unittest.TestCase):
 class TestUploadNaming(unittest.TestCase):
 
     def test_no_collision(self):
-        self.assertEqual(upload_handler._unique_name("f.txt", set()), "f.txt")
+        self.assertEqual(_unique_name("f.txt", set()), "f.txt")
 
     def test_collision_gets_suffix(self):
         self.assertEqual(
-            upload_handler._unique_name("f.txt", {"f.txt"}), "f-1.txt")
+            _unique_name("f.txt", {"f.txt"}), "f-1.txt")
 
     def test_multi_collision_increments(self):
         self.assertEqual(
-            upload_handler._unique_name(
+            _unique_name(
                 "f.txt", {"f.txt", "f-1.txt", "f-2.txt"}),
             "f-3.txt")
 
     def test_suffix_keeps_extension(self):
         self.assertEqual(
-            upload_handler._unique_name("photo.jpg", {"photo.jpg"}),
+            _unique_name("photo.jpg", {"photo.jpg"}),
             "photo-1.jpg")
 
     def test_no_extension(self):
         self.assertEqual(
-            upload_handler._unique_name("README", {"README"}), "README-1")
+            _unique_name("README", {"README"}), "README-1")
 
     def test_fallback_name_from_kind_and_path(self):
         class Document:
