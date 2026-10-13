@@ -180,6 +180,7 @@ python -m unittest discover -s integration_tests -p "test_*.py" -v
 | `/store_delete <key>` | Delete a stored key |
 | `/store_delete_all` | Delete all stored keys |
 | `/settings_reset` | Reset all settings to defaults |
+| `/sandbox_reset` | Destroy your sandbox and all its files |
 
 ---
 
@@ -214,4 +215,4 @@ Messages are held as plaintext in the server's memory. There is no end-to-end en
 
 Anyone who knows your bot's username can send messages to it, potentially incurring API costs. Use `ALLOWED_USER_IDS` to restrict access, and ensure your API key has a spending limit. Avoid using this project with sensitive information or in production environments.
 
-The sandbox gives the AI root access inside an ephemeral, resource-limited Docker container (network enabled so it can install software). Sandbox state — including uploaded files — is destroyed when the sandbox expires, but while it runs the AI can execute arbitrary commands on it, so treat the sandbox and anything you upload to it as non-sensitive.
+The sandbox gives the AI root access inside an ephemeral, resource-limited Docker container (network enabled so it can install software). Sandbox state — including uploaded files — is destroyed when the sandbox expires or when you use `/sandbox_reset`, but while it runs the AI can execute arbitrary commands on it, so treat the sandbox and anything you upload to it as non-sensitive.

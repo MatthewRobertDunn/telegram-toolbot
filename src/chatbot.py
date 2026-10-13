@@ -30,6 +30,7 @@ from handlers.command_handlers import (
     user_profile_reset_command,
 )
 from handlers.upload_handler import upload_handler
+from handlers.sandbox_handlers import sandbox_reset_command
 from handlers.store_handlers import (
     store_command,
     store_list_command,
@@ -86,6 +87,7 @@ async def post_init(application: Application):
             BotCommand("store_delete_all", "Delete all stored keys"),
             BotCommand("tool_output", "Toggle tool call output on/off"),
             BotCommand("settings_reset", "Reset all user settings to default"),
+            BotCommand("sandbox_reset", "Destroy your sandbox and all its files"),
             BotCommand("user_profile", "Set your profile/biography"),
             BotCommand("user_profile_reset", "Reset your profile to empty"),
         ]
@@ -141,6 +143,7 @@ def main():
     application.add_handler(CommandHandler('store_delete_all', callback_adapter(store_delete_all_command)))
     application.add_handler(CommandHandler('tool_output', callback_adapter(tool_output_command)))
     application.add_handler(CommandHandler('settings_reset', callback_adapter(settings_reset_command)))
+    application.add_handler(CommandHandler('sandbox_reset', callback_adapter(sandbox_reset_command)))
     application.add_handler(CommandHandler('user_profile', callback_adapter(user_profile_command)))
     application.add_handler(CommandHandler('user_profile_reset', callback_adapter(user_profile_reset_command)))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), callback_adapter(text_message_handler)))
