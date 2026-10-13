@@ -5,7 +5,7 @@ from typing import Any
 
 from chat_update_context import ChatUpdateContext
 from handlers.middleware import handler
-from handlers.run_with_tools import run_with_tools
+from handlers.run_llm import run_llm
 from messaging import run_with_typing, send_message
 from sandbox import manager
 from tools.sandbox_tool import IMAGE_MIME_TYPES
@@ -71,7 +71,7 @@ async def upload_handler(ctx: ChatUpdateContext):
         'content': content
     })
 
-    gpt_response = await run_with_typing(ctx, run_with_tools(ctx))
+    gpt_response = await run_with_typing(ctx, run_llm(ctx))
 
     await send_message(ctx, gpt_response, parse_mode='LLM')
     ctx.conversation.append({

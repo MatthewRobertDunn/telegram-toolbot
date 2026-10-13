@@ -12,6 +12,7 @@ from handlers.message_handlers import text_message_handler
 from handlers.command_handlers import (
     start_restart_command,
     stop_command,
+    compact_command,
     systemprompt_command,
     systemprompt_reset_command,
     model_list_command,
@@ -67,6 +68,7 @@ async def post_init(application: Application):
         [
             BotCommand("start", "Start a new conversation"),
             BotCommand("stop", "Stop the current AI response"),
+            BotCommand("compact", "Compact the conversation context"),
             BotCommand("systemprompt", "Set a custom system prompt"),
             BotCommand("systemprompt_reset", "Reset system prompt to default"),
             BotCommand("model", "Set the model to use"),
@@ -121,6 +123,7 @@ def main():
 
     application.add_handler(CommandHandler('start', callback_adapter(start_restart_command)))
     application.add_handler(CommandHandler('stop', callback_adapter(stop_command)))
+    application.add_handler(CommandHandler('compact', callback_adapter(compact_command)))
     application.add_handler(CommandHandler('systemprompt', callback_adapter(systemprompt_command)))
     application.add_handler(CommandHandler('systemprompt_reset', callback_adapter(systemprompt_reset_command)))
     application.add_handler(CommandHandler('model_list', callback_adapter(model_list_command)))

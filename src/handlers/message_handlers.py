@@ -3,7 +3,7 @@ from telegram.constants import ChatType
 
 from chat_update_context import ChatUpdateContext
 from handlers.middleware import handler
-from handlers.run_with_tools import run_with_tools
+from handlers.run_llm import run_llm
 from messaging import run_with_typing, send_message
 
 
@@ -18,7 +18,7 @@ def stop_generation(ctx: ChatUpdateContext) -> bool:
 
 
 async def _run_generation(ctx: ChatUpdateContext):
-    task = asyncio.create_task(run_with_typing(ctx, run_with_tools(ctx)))
+    task = asyncio.create_task(run_with_typing(ctx, run_llm(ctx)))
     ctx.generation_task = task
     try:
         gpt_response = await task

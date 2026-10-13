@@ -1,5 +1,5 @@
 from chat_update_context import ChatUpdateContext, context_tool
-from handlers.run_with_tools import run_with_tools
+from handlers.run_llm import run_llm
 
 @context_tool
 async def ask_strong_llm(ctx: ChatUpdateContext, prompt: str, system_prompt: str = "") -> str:
@@ -8,7 +8,7 @@ async def ask_strong_llm(ctx: ChatUpdateContext, prompt: str, system_prompt: str
         conversation.append({"role": "system", "content": system_prompt})
     conversation.append({"role": "user", "content": prompt})
 
-    return await run_with_tools(
+    return await run_llm(
         ctx,
         model=ctx.settings.strong_model,
         reasoning_effort="high",

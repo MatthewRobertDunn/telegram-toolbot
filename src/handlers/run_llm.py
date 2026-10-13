@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 client = AsyncOpenAI(api_key=config.OPENAI_KEY,
                      base_url=config.OPENAI_BASE_URL)
 
+# Returned in place of a reply when the model could not be reached or said
+# nothing usable. Callers that need to detect failure (e.g. compaction)
+# compare against these instead of the literal strings.
+NO_RESPONSE_MESSAGE = "Problem getting response from model."
+NO_CONTENT_MESSAGE = "Model response had no content."
+
 
 async def execute_tool_call(ctx: ChatUpdateContext, tool_call) -> str | ToolCallResult:
     name = tool_call.function.name
@@ -38,12 +44,18 @@ async def execute_tool_call(ctx: ChatUpdateContext, tool_call) -> str | ToolCall
         return f"Tool '{name}' execution error: {e}"
 
 
-async def run_with_tools(ctx: ChatUpdateContext,
-                         model: str | None = None,
-                         reasoning_effort: str | None = None,
-                         extra_body: dict | None = None,
-                         conversation: list | None = None,
-                         excluded_tools: list[str] | None = None) -> str:
+async def run_llm(ctx: ChatUpdateContext,
+                  model: str | None = None,
+                  reasoning_effort: str | None = None,
+                  extra_body: dict | None = None,
+                  conversation: list | None = None,
+                  excluded_tools: list[str] | None = None,
+                  allow_tools: bool = True) -> str:
+    """Run a model conversation to completion, executing tool calls as needed.
+
+    With allow_tools=False no tools are offered to the model, so the reply is
+    always plain text (used for nested calls such as context compaction).
+    """
     if conversation is None:
         conversation = ctx.conversation
     settings = ctx.settings
@@ -72,12 +84,13 @@ async def run_with_tools(ctx: ChatUpdateContext,
                     temperature=settings.temperature,
                     top_p=settings.top_p,
                     stream=streamer.enabled,
-                    tools=tools,  # type: ignore
-                    tool_choice="auto",
                     extra_headers={
                         "x-opencode-session": str(ctx.chat_id),
                     },
                 )
+                if allow_tools:
+                    create_kwargs["tools"] = tools  # type: ignore
+                    create_kwargs["tool_choice"] = "auto"
                 if reasoning_effort is not None:
                     create_kwargs["reasoning_effort"] = reasoning_effort
                 if extra_body is not None:
@@ -105,15 +118,18 @@ async def run_with_tools(ctx: ChatUpdateContext,
 
         if message is None:
             streamer.new_round()
-            return "Problem getting response from model."
+            return NO_RESPONSE_MESSAGE
 
-        if not message.tool_calls:
+        if not message.tool_calls or not allow_tools:
+            if message.tool_calls:
+                logger.warning('model returned tool calls while tools are '
+                               'disabled; ignoring them')
             if message.content:
                 return message.content
             elif message.reasoning_content:
                 return message.reasoning_content
             else:
-                return "Model response had no content."
+                return NO_CONTENT_MESSAGE
             
         conversation.append({
             "role": "assistant",

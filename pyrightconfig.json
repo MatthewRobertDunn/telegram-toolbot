@@ -1,1 +1,1 @@
-{"exclude": [".git", "**/__pycache__"], "extraPaths": ["src", "sandbox_image/helpers"]}
+{"exclude": [".git", "**/__pycache__"], "extraPaths": ["src", "tests", "sandbox_image/helpers"]}
