@@ -30,12 +30,17 @@ ALLOWED_IDS = [int(x.strip()) for x in ALLOWED_IDS_STR.split(",") if x.strip()]
 store_db_path = os.environ.get("STORE_DB_PATH", os.path.join(os.path.dirname(os.path.realpath(__file__)), '../store.db'))
 
 SANDBOX_IMAGE = os.environ.get("SANDBOX_IMAGE", "elpechos/toolbot-sandbox:latest")
-SANDBOX_IDLE_TIMEOUT = float(os.environ.get("SANDBOX_IDLE_TIMEOUT", "3600"))
+# Seconds of inactivity after which a sandbox is stopped. Stopping keeps the
+# container and its files; it is restarted on the next access.
+SANDBOX_IDLE_STOP_TIMEOUT = float(os.environ.get("SANDBOX_IDLE_STOP_TIMEOUT", "3600"))
+# Seconds since the last access after which a sandbox is removed, losing all
+# changes. Measured from the last access, so it also covers the stopped period.
+SANDBOX_IDLE_DESTROY_TIMEOUT = float(os.environ.get("SANDBOX_IDLE_DESTROY_TIMEOUT", "86400"))
 SANDBOX_EXEC_TIMEOUT = float(os.environ.get("SANDBOX_EXEC_TIMEOUT", "300"))
 SANDBOX_START_TIMEOUT = float(os.environ.get("SANDBOX_START_TIMEOUT", "300"))
 SANDBOX_REAP_INTERVAL = float(os.environ.get("SANDBOX_REAP_INTERVAL", "60"))
 SANDBOX_MEMORY = os.environ.get("SANDBOX_MEMORY", "1g")
-SANDBOX_CPUS = os.environ.get("SANDBOX_CPUS", "1.0")
+SANDBOX_CPUS = os.environ.get("SANDBOX_CPUS", "8.0")
 SANDBOX_PIDS_LIMIT = int(os.environ.get("SANDBOX_PIDS_LIMIT", "256"))
 
 

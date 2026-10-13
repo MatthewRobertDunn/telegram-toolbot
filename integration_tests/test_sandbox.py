@@ -30,6 +30,15 @@ class TestSandboxIntegration(unittest.IsolatedAsyncioTestCase):
             self.uid, "cat /tmp/persist.txt")
         self.assertIn("persistence-check", result["stdout"])
 
+    async def test_state_survives_idle_stop_and_restart(self):
+        await self.manager.exec(
+            self.uid, "echo keep-me > /tmp/keep.txt")
+        sandbox = self.manager._sandboxes[self.uid]
+        self.assertTrue(await self.manager._stop_sandbox(sandbox))
+        result = await self.manager.exec(self.uid, "cat /tmp/keep.txt")
+        self.assertEqual(result["returncode"], 0)
+        self.assertIn("keep-me", result["stdout"])
+
     async def test_software_can_be_installed(self):
         install = await self.manager.exec(
             self.uid,

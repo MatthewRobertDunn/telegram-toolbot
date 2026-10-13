@@ -25,7 +25,7 @@ The default configuration points at `https://integrate.api.nvidia.com/v1`, but y
 - **Tool calling** — the bot can search the web, run code, fetch pages, generate images, and more using OpenAI-compatible function calling
 - **Hierarchical LLM** — the primary model can delegate complex tasks to a stronger reasoning model via the `ask_strong_llm` tool
 - **Persistent key-value store** — both users (via commands) and the AI (via tools) can store and retrieve data across conversations
-- **Per-user sandboxes** — the AI gets a personal ephemeral Ubuntu container per user with a full coding environment (bash, read, write, edit, grep, glob, patch), where it can run commands, install software, and work with files. Sandboxes expire one hour after the last command and lose all changes
+- **Per-user sandboxes** — the AI gets a personal ephemeral Ubuntu container per user with a full coding environment (bash, read, write, edit, grep, glob, patch), where it can run commands, install software, and work with files. Sandboxes are stopped one hour after the last command but their files are kept for 24 hours, after which the sandbox is removed and all changes are lost
 - **File uploads** — files users send to the bot (any file type) are placed in the sandbox at `/workspace/uploads/`, and the AI is notified so it can inspect them with the `read` tool
 
 ---
@@ -118,10 +118,11 @@ If you don't need the sandbox, you can disable its tools by commenting out the `
 | `NVIDIA_API_KEY` | *(falls back to `OPENAI_KEY`)* | Key for NVIDIA Flux image generation |
 | `ALLOWED_USER_IDS` | *(none — open to all)* | Comma-separated Telegram user IDs |
 | `SANDBOX_IMAGE` | `elpechos/toolbot-sandbox:latest` | Docker image used for sandboxes |
-| `SANDBOX_IDLE_TIMEOUT` | `3600` | Seconds a sandbox survives after the last command (expiry loses all changes) |
+| `SANDBOX_IDLE_STOP_TIMEOUT` | `3600` | Seconds of inactivity before a sandbox is stopped (its files are kept and it is restarted on the next access) |
+| `SANDBOX_IDLE_DESTROY_TIMEOUT` | `86400` | Seconds since the last access before a sandbox is removed (loses all changes) |
 | `SANDBOX_EXEC_TIMEOUT` | `300` | Max seconds per sandbox command |
 | `SANDBOX_START_TIMEOUT` | `300` | Max seconds to start a sandbox (includes image pull) |
-| `SANDBOX_REAP_INTERVAL` | `60` | How often idle sandboxes are checked and destroyed |
+| `SANDBOX_REAP_INTERVAL` | `60` | How often idle sandboxes are checked, stopped and destroyed |
 | `SANDBOX_MEMORY` | `1g` | Memory limit per sandbox container |
 | `SANDBOX_CPUS` | `1.0` | CPU limit per sandbox container |
 | `SANDBOX_PIDS_LIMIT` | `256` | Process limit per sandbox container |

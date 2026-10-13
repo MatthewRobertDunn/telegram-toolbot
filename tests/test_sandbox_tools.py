@@ -44,7 +44,7 @@ class CannedDocker:
 
     exec responses are matched in order against the command string; the
     first matching (substring, returncode, stdout, stderr) tuple is used.
-    inspect/run/rm/ps behave like the FakeDocker in test_sandbox.
+    inspect/run/rm/ps/start/stop behave like the FakeDocker in test_sandbox.
     """
 
     def __init__(self, exec_responses: list[tuple[str, int, str, str]]):
@@ -64,6 +64,18 @@ class CannedDocker:
             name = args[args.index('--name') + 1]
             self.containers[name] = 'true'
             return 0, f'{name}-id\n', ''
+        if verb == 'start':
+            name = args[1]
+            if name not in self.containers:
+                return 1, '', 'No such container'
+            self.containers[name] = 'true'
+            return 0, name + '\n', ''
+        if verb == 'stop':
+            name = args[1]
+            if name not in self.containers:
+                return 1, '', 'No such container'
+            self.containers[name] = 'false'
+            return 0, name + '\n', ''
         if verb == 'rm':
             name = args[2]
             self.containers.pop(name, None)

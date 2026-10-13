@@ -60,9 +60,9 @@ async def post_init(application: Application):
     async with create_settings_store() as store:
         await store.create_schema()
     try:
-        await manager.cleanup_all_stale()
+        await manager.recover_leftover_sandboxes()
     except Exception as e:
-        logger.warning("Could not clean up stale sandbox containers: %s", e)
+        logger.warning("Could not recover leftover sandbox containers: %s", e)
     await start_reaper()
     await application.bot.set_my_commands(
         [
