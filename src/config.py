@@ -14,6 +14,15 @@ api_retry_time = 60
 
 STREAM_DRAFTS = os.environ.get("STREAM_DRAFTS", "1").strip().lower() not in ("0", "false", "off")
 
+# Models that inline chain-of-thought in the content field ending in a
+# think close tag; the final message's thinking is split out only for
+# these models, so well-behaved models can output the tag freely.
+THINK_SPLIT_MODELS = [
+    m.strip() for m in
+    os.environ.get("THINK_SPLIT_MODELS", "big-pickle").split(",")
+    if m.strip()
+]
+
 ALLOWED_IDS_STR = os.environ.get("ALLOWED_IDS", "")
 
 ALLOWED_IDS = [int(x.strip()) for x in ALLOWED_IDS_STR.split(",") if x.strip()]

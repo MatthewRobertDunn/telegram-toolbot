@@ -2,7 +2,6 @@ import asyncio
 import base64
 import json
 import logging
-import re
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,6 +9,7 @@ import config
 from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
 from chat_update_context import ChatUpdateContext
 from .draft_streamer import DraftStreamer
+from .consume_stream import consume_stream
 from messaging import send_message
 from tool_result import ToolCallResult
 from openai import AsyncOpenAI
@@ -18,81 +18,6 @@ logger = logging.getLogger(__name__)
 
 client = AsyncOpenAI(api_key=config.OPENAI_KEY,
                      base_url=config.OPENAI_BASE_URL)
-
-# Some backends stream reasoning inline in the content field (instead of
-# the reasoning_content field), ending in a bare close tag; split there so
-# chain-of-thought never reaches Telegram in the final message.
-_THINK_CLOSE = '</th' + 'ink>'
-_THINK_RE = re.compile(r'^(.*?)(?:' + _THINK_CLOSE + r')(.*)$', flags=re.DOTALL)
-
-
-def _split_thinking(text: str) -> tuple[str, str]:
-    """Split LLM content at the first think close tag.
-
-    Returns (visible, reasoning). Drafts are streamed raw while generating;
-    the thinking is removed here when the final message is assembled.
-    """
-    match = _THINK_RE.match(text)
-    if match:
-        return match.group(2).strip(), match.group(1).strip()
-    return text.strip(), ''
-
-
-async def _consume_stream(stream, streamer: DraftStreamer) -> SimpleNamespace:
-    """Read a chat completion stream, forwarding content to live drafts.
-
-    Returns an attribute-compatible stand-in for the non-streaming
-    ChatCompletionMessage (.content/.tool_calls/.reasoning_content).
-    """
-    content_parts: list[str] = []
-    reasoning_parts: list[str] = []
-    tool_acc: dict[int, dict] = {}
-
-    async for chunk in stream:
-        choices = getattr(chunk, 'choices', None)
-        if not choices:
-            continue
-        delta = choices[0].delta
-        if delta is None:
-            continue
-        text = getattr(delta, 'content', None)
-        if text:
-            content_parts.append(text)
-            await streamer.update(text)
-        reasoning = getattr(delta, 'reasoning_content', None)
-        if reasoning:
-            reasoning_parts.append(reasoning)
-        for part in getattr(delta, 'tool_calls', None) or []:
-            idx = getattr(part, 'index', None)
-            if not isinstance(idx, int):
-                idx = max(tool_acc, default=-1) + 1
-            entry = tool_acc.setdefault(
-                idx, {'id': '', 'name': '', 'arguments': ''})
-            if getattr(part, 'id', None):
-                entry['id'] = part.id
-            fn = getattr(part, 'function', None)
-            if fn is not None:
-                if getattr(fn, 'name', None):
-                    entry['name'] += fn.name
-                entry['arguments'] += getattr(fn, 'arguments', None) or ''
-
-    await streamer.flush(force=True)
-
-    tool_calls = []
-    for idx in sorted(tool_acc):
-        entry = tool_acc[idx]
-        if entry['id'] or entry['name']:
-            tool_calls.append(SimpleNamespace(
-                id=entry['id'], type='function',
-                function=SimpleNamespace(name=entry['name'],
-                                         arguments=entry['arguments'])))
-    visible, streamed_reasoning = _split_thinking(''.join(content_parts))
-    return SimpleNamespace(
-        content=visible or None,
-        tool_calls=tool_calls or None,
-        reasoning_content=(''.join(reasoning_parts) or streamed_reasoning
-                           or None),
-    )
 
 
 async def execute_tool_call(ctx: ChatUpdateContext, tool_call) -> str | ToolCallResult:
@@ -160,7 +85,10 @@ async def run_with_tools(ctx: ChatUpdateContext,
                 # type: ignore
                 response: Any = await client.chat.completions.create(**create_kwargs)
                 if streamer.enabled:
-                    message = await _consume_stream(response, streamer)
+                    message = await consume_stream(
+                        response, streamer,
+                        strip_thinking=effective_model
+                        in config.THINK_SPLIT_MODELS)
                 else:
                     message = response.choices[0].message
                 break

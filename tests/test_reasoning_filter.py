@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from handlers.run_with_tools import _split_thinking
+from handlers.consume_stream import _split_thinking
 
 # Build the tag literals here so nothing in this file can strip them.
 TAG_OPEN = '<' + 'think' + '>'
