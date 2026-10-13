@@ -87,5 +87,17 @@ class TestStripThinkingFlag(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(''.join(streamer.updates), TAG_CLOSE + 'tail')
 
 
+class TestDraftIdRotation(unittest.TestCase):
+
+    def test_new_round_regenerates_draft_id(self):
+        for _ in range(3):
+            streamer = DraftStreamer(_mock_ctx())  # type: ignore[arg-type]
+            streamer.enabled = True
+            first_id = streamer._draft_id
+            streamer.new_round()
+            self.assertNotEqual(streamer._draft_id, first_id)
+            self.assertNotEqual(streamer._draft_id, 0)
+
+
 if __name__ == '__main__':
     unittest.main()

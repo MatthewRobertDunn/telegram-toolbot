@@ -52,7 +52,14 @@ class DraftStreamer:
             await self._send_draft(THINKING_DRAFT)
 
     def new_round(self) -> None:
-        """Reset per-model-round state before (re)creating a completion."""
+        """Reset per-model-round state before (re)creating a completion.
+
+        Picks a fresh draft_id so each round renders as a new draft pinned
+        to the bottom of the chat. Reusing one id makes clients restore the
+        bubble at its old position when real messages (e.g. tool call
+        previews) are sent mid-run, which reads out of order.
+        """
+        self._draft_id = random.getrandbits(31) + 1
         self._round_text = ''
         self._sent_text = ''
 
