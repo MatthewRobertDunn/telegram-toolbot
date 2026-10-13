@@ -424,7 +424,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
             ctx = mock_ctx()
             result = await sandbox_tool.write(ctx, 'src/new.txt', 'data')
         self.assertEqual(result, 'Wrote file successfully.')
-        self.assertIn('/workspace/src/new.txt', ctx.user_data['sandbox_read_files'])
+        self.assertIn('/workspace/src/new.txt', ctx.user_data['_sandbox_read_files'])
 
     async def test_write_requires_read_first(self):
         manager = self._canned([('test -e', 0, '', '')])
@@ -446,7 +446,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
         manager = self._canned([('toolbot_edit.py', 0, helper_result, '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
             ctx = mock_ctx()
-            ctx.user_data['sandbox_read_files'] = {'/workspace/f.txt'}
+            ctx.user_data['_sandbox_read_files'] = {'/workspace/f.txt'}
             result = await sandbox_tool.edit(ctx, 'f.txt', 'old', 'new')
         self.assertEqual(result, 'Edit applied successfully.')
 
@@ -454,7 +454,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
         manager = self._canned([])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
             ctx = mock_ctx()
-            ctx.user_data['sandbox_read_files'] = {'/workspace/f.txt'}
+            ctx.user_data['_sandbox_read_files'] = {'/workspace/f.txt'}
             result = await sandbox_tool.edit(ctx, 'f.txt', 'same', 'same')
         self.assertIn('identical', result)
 
@@ -471,7 +471,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn('1: alpha', result)
         self.assertIn('2: beta', result)
         self.assertIn('End of file - total 2 lines', result)
-        self.assertIn('/workspace/f.txt', ctx.user_data['sandbox_read_files'])
+        self.assertIn('/workspace/f.txt', ctx.user_data['_sandbox_read_files'])
 
     async def test_read_error(self):
         helper_result = json.dumps(
@@ -494,7 +494,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn('<type>directory</type>', result)
         self.assertIn('src/', result)
         self.assertNotIn('/workspace',
-                         ctx.user_data.get('sandbox_read_files', set()))
+                         ctx.user_data.get('_sandbox_read_files', set()))
 
     async def test_grep_formats_matches(self):
         events = '\n'.join([
@@ -569,7 +569,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
             result = await sandbox_tool.patch(
                 ctx, '*** Begin Patch\n*** End Patch')
         self.assertIn('A src/new.py', result)
-        self.assertIn('/workspace/src/new.py', ctx.user_data['sandbox_read_files'])
+        self.assertIn('/workspace/src/new.py', ctx.user_data['_sandbox_read_files'])
 
     async def test_patch_error(self):
         manager = self._canned(

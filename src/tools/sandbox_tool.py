@@ -23,12 +23,14 @@ def _resolve_path(path: str) -> str:
     return posixpath.normpath(path)
 
 
+# The "_sandbox_read_files" user_data key tracks the files read so far.
+# Private to this module; its tests may reach in, nothing else should use it.
 def _mark_read(ctx: ChatUpdateContext, path: str) -> None:
-    ctx.user_data.setdefault("sandbox_read_files", set()).add(path)
+    ctx.user_data.setdefault("_sandbox_read_files", set()).add(path)
 
 
 def _ensure_read(ctx: ChatUpdateContext, path: str, tool: str) -> str | None:
-    if path not in ctx.user_data.get("sandbox_read_files", set()):
+    if path not in ctx.user_data.get("_sandbox_read_files", set()):
         return (f"Error: file has not been read. Use the read tool on "
                 f"{path} before using the {tool} tool on it.")
     return None
