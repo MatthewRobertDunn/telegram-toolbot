@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 from types import SimpleNamespace
 from typing import Any
 
@@ -17,6 +18,24 @@ logger = logging.getLogger(__name__)
 
 client = AsyncOpenAI(api_key=config.OPENAI_KEY,
                      base_url=config.OPENAI_BASE_URL)
+
+# Some backends stream reasoning inline in the content field (instead of
+# the reasoning_content field), ending in a bare close tag; split there so
+# chain-of-thought never reaches Telegram in the final message.
+_THINK_CLOSE = '</th' + 'ink>'
+_THINK_RE = re.compile(r'^(.*?)(?:' + _THINK_CLOSE + r')(.*)$', flags=re.DOTALL)
+
+
+def _split_thinking(text: str) -> tuple[str, str]:
+    """Split LLM content at the first think close tag.
+
+    Returns (visible, reasoning). Drafts are streamed raw while generating;
+    the thinking is removed here when the final message is assembled.
+    """
+    match = _THINK_RE.match(text)
+    if match:
+        return match.group(2).strip(), match.group(1).strip()
+    return text.strip(), ''
 
 
 async def _consume_stream(stream, streamer: DraftStreamer) -> SimpleNamespace:
@@ -67,10 +86,12 @@ async def _consume_stream(stream, streamer: DraftStreamer) -> SimpleNamespace:
                 id=entry['id'], type='function',
                 function=SimpleNamespace(name=entry['name'],
                                          arguments=entry['arguments'])))
+    visible, streamed_reasoning = _split_thinking(''.join(content_parts))
     return SimpleNamespace(
-        content=''.join(content_parts) or None,
+        content=visible or None,
         tool_calls=tool_calls or None,
-        reasoning_content=''.join(reasoning_parts) or None,
+        reasoning_content=(''.join(reasoning_parts) or streamed_reasoning
+                           or None),
     )
 
 
