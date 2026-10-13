@@ -21,3 +21,7 @@ pake -D PLATFORMS=linux/amd64 push_sandbox_image   # Override target platforms
 pake -t                             # List tasks
 ```
 
+# Conventions
+
+- Prefer relative imports within a package (e.g. `from .draft_streamer import DraftStreamer`, not `from handlers.draft_streamer import ...`).
+

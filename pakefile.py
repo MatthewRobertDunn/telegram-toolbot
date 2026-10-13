@@ -1,3 +1,5 @@
+import os
+import tempfile
 import time
 import pake
 
@@ -61,8 +63,17 @@ def deploy(ctx):
     """Copy src/ to the server and restart the tbot user service."""
 
     remote_dir = "/home/matty/tbot"
+    tar_path = os.path.join(tempfile.gettempdir(), "tbot_src.tar")
 
-    ctx.call("scp", "-r", "src", f"{DEPLOY_HOST}:{remote_dir}")
+    # Ship a tarball without __pycache__: pyc files on the server may be
+    # root-owned (from the service) and scp cannot overwrite them anyway,
+    # plus they are never worth deploying.
+    ctx.call("tar", "-C", os.path.dirname(os.path.abspath(__file__)),
+             "--exclude", "__pycache__", "-cf", tar_path, "src")
+    ctx.call("scp", tar_path, f"{DEPLOY_HOST}:/tmp/")
+    ctx.call("ssh", DEPLOY_HOST, f"tar -C {remote_dir} -xf /tmp/tbot_src.tar")
+    ctx.call("ssh", DEPLOY_HOST, "rm -f /tmp/tbot_src.tar")
+
 
     ctx.call("ssh", DEPLOY_HOST, "systemctl restart tbot --user")
     time.sleep(2)
