@@ -755,24 +755,28 @@ class TestToolResultImageContract(unittest.IsolatedAsyncioTestCase):
             ('stat', 0, f'{len(payload)}\n', ''),
             ('base64', 0, encoded, ''),
         ]))
-        tool_call_msg = SimpleNamespace(content=None, tool_calls=[
-            SimpleNamespace(
-                id='call_1', type='function',
-                function=SimpleNamespace(
-                    name=sandbox_tool.READ_IMAGE,
-                    arguments='{"filePath": "pic.png"}')),
-        ])
-        final_msg = SimpleNamespace(
-            content='It is a space scene.', tool_calls=None)
-        responses = [
-            SimpleNamespace(choices=[SimpleNamespace(
-                message=tool_call_msg, finish_reason='tool_calls')]),
-            SimpleNamespace(choices=[SimpleNamespace(
-                message=final_msg, finish_reason='stop')]),
-        ]
+        tool_chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(
+                content=None, reasoning_content=None,
+                tool_calls=[SimpleNamespace(
+                    index=0, id='call_1',
+                    function=SimpleNamespace(
+                        name=sandbox_tool.READ_IMAGE,
+                        arguments='{"filePath": "pic.png"}'))]),
+            finish_reason='tool_calls')])
+        final_chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(
+                content='It is a space scene.', reasoning_content=None,
+                tool_calls=None),
+            finish_reason='stop')])
+        responses = [tool_chunk, final_chunk]
 
         async def fake_create(**kwargs):
-            return responses.pop(0)
+            chunk = responses.pop(0)
+
+            async def stream():
+                yield chunk
+            return stream()
 
         fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
             create=fake_create)))

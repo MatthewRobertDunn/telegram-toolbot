@@ -2,14 +2,13 @@ import asyncio
 import base64
 import json
 import logging
-from types import SimpleNamespace
 from typing import Any
 
 import config
 from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
 from chat_update_context import ChatUpdateContext
 from .draft_streamer import DraftStreamer
-from .consume_stream import consume_stream
+from .consume_stream import ConsumeStreamResult, consume_stream
 from messaging import send_message
 from tool_result import ToolCallResult
 from openai import AsyncOpenAI
@@ -72,7 +71,7 @@ async def run_llm(ctx: ChatUpdateContext,
     while True:
         time_to_wait = 1
         t0 = asyncio.get_event_loop().time()
-        message: SimpleNamespace | Any = None
+        message: ConsumeStreamResult | None = None
         while asyncio.get_event_loop().time() - t0 < config.api_retry_time:
             try:
                 streamer.new_round()
@@ -82,7 +81,7 @@ async def run_llm(ctx: ChatUpdateContext,
                     n=1,
                     temperature=settings.temperature,
                     top_p=settings.top_p,
-                    stream=streamer.enabled,
+                    stream=True,
                     extra_headers={
                         "x-opencode-session": str(ctx.chat_id),
                     },
@@ -96,13 +95,10 @@ async def run_llm(ctx: ChatUpdateContext,
                     create_kwargs["extra_body"] = extra_body
                 # type: ignore
                 response: Any = await client.chat.completions.create(**create_kwargs)
-                if streamer.enabled:
-                    message = await consume_stream(
-                        response, streamer,
-                        strip_thinking=effective_model
-                        in config.THINK_SPLIT_MODELS)
-                else:
-                    message = response.choices[0].message
+                message = await consume_stream(
+                    response, streamer,
+                    strip_thinking=effective_model
+                    in config.THINK_SPLIT_MODELS)
                 break
             except Exception as e:
                 logger.warning('%s: %s, trying again...', type(e).__name__, e)
