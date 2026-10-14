@@ -73,7 +73,6 @@ async def run_llm(ctx: ChatUpdateContext,
         time_to_wait = 1
         t0 = asyncio.get_event_loop().time()
         message: SimpleNamespace | Any = None
-        create_kwargs: dict = {}
         while asyncio.get_event_loop().time() - t0 < config.api_retry_time:
             try:
                 streamer.new_round()
@@ -106,12 +105,6 @@ async def run_llm(ctx: ChatUpdateContext,
                     message = response.choices[0].message
                 break
             except Exception as e:
-                if create_kwargs.get("stream") and 'stream' in str(e).lower():
-                    logger.info('backend rejected streaming (%s); '
-                                'disabling draft streaming', e)
-                    streamer.enabled = False
-                    time_to_wait = 1
-                    continue
                 logger.warning('%s: %s, trying again...', type(e).__name__, e)
                 await asyncio.sleep(time_to_wait)
                 time_to_wait = time_to_wait * 2
