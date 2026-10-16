@@ -204,7 +204,7 @@ The bot uses OpenAI-compatible function calling. These tools are available to th
 | `send_file` | Send a file from the sandbox to the user as a Telegram document |
 | `store_list` / `store_get` / `store_set` / `store_delete` | Persistent per-user key-value storage |
 | `display_status` | Send a progress message to the chat |
-| `subagent` | Spawn a subagent in a fresh conversation to work on a task and report back |
+| `subagent` | Spawn a subagent in a fresh conversation to work on a task (with the same tools and sandbox) and report back |
 | `generate_image` | Generate an image using NVIDIA Flux |
 
 ---
