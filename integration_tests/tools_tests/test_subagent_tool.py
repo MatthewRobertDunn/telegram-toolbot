@@ -43,8 +43,8 @@ class TestSubagentTool(unittest.IsolatedAsyncioTestCase):
                          {"role": "user", "content": "Do the thing"})
         self.assertIn("Research task", conversation[0]["content"])
 
-    async def test_default_model_follows_config(self):
-        ctx = self._context_with_settings()
+    async def test_default_model_follows_current_model(self):
+        ctx = self._context_with_settings(model="chat-model")
         captured = {}
 
         async def fake_run_llm(ctx_arg, **kwargs):
@@ -52,13 +52,13 @@ class TestSubagentTool(unittest.IsolatedAsyncioTestCase):
             return "ok"
 
         with unittest.mock.patch.object(config, "SUBAGENT_MODEL", None), \
-                unittest.mock.patch.object(config, "LLM_MODEL", "cfg-model"), \
                 unittest.mock.patch("tools.subagent.run_llm", fake_run_llm):
             await subagent(ctx, "Label", "Task")
-        self.assertEqual(captured["kwargs"]["model"], "cfg-model")
+        self.assertEqual(captured["kwargs"]["model"], "chat-model")
 
     async def test_subagent_model_setting_overrides_config(self):
-        ctx = self._context_with_settings(subagent_model="custom-model")
+        ctx = self._context_with_settings(
+            model="chat-model", subagent_model="custom-model")
         captured = {}
 
         async def fake_run_llm(ctx_arg, **kwargs):

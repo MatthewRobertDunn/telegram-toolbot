@@ -78,16 +78,23 @@ class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.settings.subagent_model, "sub-v1")
 
     async def test_subagent_model_query_without_arg(self):
-        ctx = create_mock_context(user_id=_uid(), command_name="subagent_model")
+        uid = _uid()
+        ctx_model = create_mock_context(
+            user_id=uid, command_text="my-org/my-model", command_name="model")
+        await model_command(ctx_model)
+        ctx = create_mock_context(user_id=uid, command_name="subagent_model")
         await subagent_model_command(ctx)
         self.assertEqual(len(ctx.sent), 1)
         self.assertIn("Current subagent model", ctx.sent[0]["text"])
-        self.assertIn(os.environ.get("SUBAGENT_MODEL")
-                      or os.environ.get("LLM_MODEL", "minimaxai/minimax-m2.7"),
+        # Falls back to the model chosen with /model when no override is set.
+        self.assertIn(os.environ.get("SUBAGENT_MODEL") or "my-org/my-model",
                       ctx.sent[0]["text"])
 
     async def test_subagent_model_reset(self):
         uid = _uid()
+        ctx_model = create_mock_context(
+            user_id=uid, command_text="my-org/my-model", command_name="model")
+        await model_command(ctx_model)
         ctx_set = create_mock_context(
             user_id=uid, command_text="custom-model", command_name="subagent_model")
         await subagent_model_command(ctx_set)
@@ -95,10 +102,10 @@ class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
         await subagent_model_reset_command(ctx_reset)
         self.assertEqual(len(ctx_reset.sent), 1)
         self.assertIn("reset", ctx_reset.sent[0]["text"])
+        # After reset the subagent follows the /model choice again.
         self.assertEqual(
             ctx_reset.settings.subagent_model,
-            os.environ.get("SUBAGENT_MODEL")
-            or os.environ.get("LLM_MODEL", "minimaxai/minimax-m2.7"))
+            os.environ.get("SUBAGENT_MODEL") or "my-org/my-model")
 
     # -- temperature_command ---------------------------------------------
 

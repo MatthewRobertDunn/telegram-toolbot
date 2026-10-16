@@ -43,9 +43,11 @@ class UserSettings:
 
     @property
     def subagent_model(self) -> str:
+        # Falls back to the user's current model (/model) when no subagent
+        # model override is set.
         return (self._settings.subagent_model
                 or config.SUBAGENT_MODEL
-                or config.LLM_MODEL)
+                or self.model)
 
     @subagent_model.setter
     def subagent_model(self, value: str | None):
