@@ -18,8 +18,8 @@ from handlers.command_handlers import (
     model_list_command,
     model_command,
     model_reset_command,
-    strong_model_command,
-    strong_model_reset_command,
+    subagent_model_command,
+    subagent_model_reset_command,
     top_p_command,
     top_p_reset_command,
     temperature_command,
@@ -75,8 +75,8 @@ async def post_init(application: Application):
             BotCommand("model", "Set the model to use"),
             BotCommand("model_list", "List available NVIDIA NIM models"),
             BotCommand("model_reset", "Reset model to default"),
-            BotCommand("strong_model", "Set the strong model used by ask_strong_llm"),
-            BotCommand("strong_model_reset", "Reset strong model to default"),
+            BotCommand("subagent_model", "Set the model used by the subagent tool"),
+            BotCommand("subagent_model_reset", "Reset subagent model to default"),
             BotCommand("top_p", "Set top_p sampling parameter"),
             BotCommand("top_p_reset", "Reset top_p to default"),
             BotCommand("temperature", "Set temperature parameter"),
@@ -131,8 +131,8 @@ def main():
     application.add_handler(CommandHandler('model_list', callback_adapter(model_list_command)))
     application.add_handler(CommandHandler('model', callback_adapter(model_command)))
     application.add_handler(CommandHandler('model_reset', callback_adapter(model_reset_command)))
-    application.add_handler(CommandHandler('strong_model', callback_adapter(strong_model_command)))
-    application.add_handler(CommandHandler('strong_model_reset', callback_adapter(strong_model_reset_command)))
+    application.add_handler(CommandHandler('subagent_model', callback_adapter(subagent_model_command)))
+    application.add_handler(CommandHandler('subagent_model_reset', callback_adapter(subagent_model_reset_command)))
     application.add_handler(CommandHandler('top_p', callback_adapter(top_p_command)))
     application.add_handler(CommandHandler('top_p_reset', callback_adapter(top_p_reset_command)))
     application.add_handler(CommandHandler('temperature', callback_adapter(temperature_command)))

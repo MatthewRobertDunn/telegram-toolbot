@@ -121,21 +121,21 @@ async def model_reset_command(ctx: ChatUpdateContext):
 
 @handler
 @settings
-async def strong_model_command(ctx: ChatUpdateContext):
+async def subagent_model_command(ctx: ChatUpdateContext):
     model = ctx.command_text
     if not model:
-        await send_message(ctx, f'Current strong model is `{ctx.settings.strong_model}`\n Usage: `/{ctx.command_name} <model_id>`')
+        await send_message(ctx, f'Current subagent model is `{ctx.settings.subagent_model}`\n Usage: `/{ctx.command_name} <model_id>`')
         return
 
-    ctx.settings.strong_model = model
-    await send_message(ctx, f'Strong model set to `{model}`.')
+    ctx.settings.subagent_model = model
+    await send_message(ctx, f'Subagent model set to `{model}`.')
 
 
 @handler
 @settings
-async def strong_model_reset_command(ctx: ChatUpdateContext):
-    ctx.settings.strong_model = None
-    await send_message(ctx, f'Strong model reset to default `{ctx.settings.strong_model}`.')
+async def subagent_model_reset_command(ctx: ChatUpdateContext):
+    ctx.settings.subagent_model = None
+    await send_message(ctx, f'Subagent model reset to default `{ctx.settings.subagent_model}`.')
 
 @handler
 @settings

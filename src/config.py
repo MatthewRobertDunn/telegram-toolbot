@@ -5,7 +5,8 @@ API_TOKEN = os.environ.get("TELEGRAM_API_TOKEN", "")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
 LLM_MODEL = os.environ.get("LLM_MODEL", "big-pickle")
-STRONG_LLM_MODEL = os.environ.get("STRONG_LLM_MODEL", "z-ai/glm-5.3-flash")
+# Model used by the `subagent` tool. Unset means use LLM_MODEL.
+SUBAGENT_MODEL = os.environ.get("SUBAGENT_MODEL") or None
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://192.168.0.2:28180/v1")
 IMAGE_GEN_URL = os.environ.get("IMAGE_GEN_URL", f"https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b")
 temperature = 1.0

@@ -12,7 +12,7 @@ class UserSettingsSerialized:
     system_prompt: str | None = None
     user_profile: str | None = None
     show_tool_output: bool | None = None
-    strong_model: str | None = None
+    subagent_model: str | None = None
 
     @classmethod
     def from_json(cls, json_str: str) -> UserSettingsSerialized:
@@ -42,12 +42,14 @@ class UserSettings:
         self._settings.model = value
 
     @property
-    def strong_model(self) -> str:
-        return self._settings.strong_model or config.STRONG_LLM_MODEL
+    def subagent_model(self) -> str:
+        return (self._settings.subagent_model
+                or config.SUBAGENT_MODEL
+                or config.LLM_MODEL)
 
-    @strong_model.setter
-    def strong_model(self, value: str | None):
-        self._settings.strong_model = value
+    @subagent_model.setter
+    def subagent_model(self, value: str | None):
+        self._settings.subagent_model = value
 
     @property
     def temperature(self) -> float:
