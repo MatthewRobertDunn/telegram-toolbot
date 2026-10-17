@@ -67,6 +67,10 @@ class Conversation:
 
     messages: list = field(default_factory=list)
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    # Cap on retained inline images. Unannotated, so it stays a plain
+    # class attribute rather than a dataclass field: instances may
+    # shrink it (tests do) without touching the constructor.
+    max_images = MAX_IMAGES
 
     def add(self, role: str, content, **fields) -> dict:
         """Append a message and return it; extra kwargs become message keys."""
@@ -87,12 +91,12 @@ class Conversation:
     def add_image(self, data: bytes, mime: str, caption: str = '') -> dict:
         """Append a user message carrying an inline base64 image.
 
-        Keeps only the MAX_IMAGES most recent images: each addition
+        Keeps only the `max_images` most recent images: each addition
         first replaces the oldest ones with an '[image omitted]'
         placeholder merged into the message's text, so any text around
         the image - its caption, or a user's own words - survives.
         """
-        self._prune_images(MAX_IMAGES - 1)
+        self._prune_images(self.max_images - 1)
         b64 = base64.b64encode(data).decode()
         content = []
         if caption:

@@ -6,7 +6,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from conversation import (Conversation, MAX_IMAGES, IMAGE_PLACEHOLDER,
+from conversation import (Conversation, IMAGE_PLACEHOLDER,
                           estimate_conversation_tokens,
                           estimate_message_tokens, token_count)
 
@@ -112,32 +112,47 @@ class TestConversationAddImage(unittest.TestCase):
                                   f'{base64.b64encode(b"abc").decode()}'}},
         ])
 
-    def test_only_the_eight_most_recent_images_are_kept(self):
+    def test_only_the_most_recent_max_images_are_kept(self):
         conversation = Conversation()
-        for n in range(MAX_IMAGES + 4):
+        for n in range(conversation.max_images + 4):
             conversation.add_image(bytes([n]), 'image/png', f'img {n}')
         image_urls = [part['image_url']['url']
                       for message in conversation
                       for part in message['content']
                       if part['type'] == 'image_url']
-        self.assertEqual(len(image_urls), MAX_IMAGES)
+        self.assertEqual(len(image_urls), conversation.max_images)
         # The four oldest images merged their placeholder into the caption.
         self.assertEqual(
             [message['content'] for message in conversation[:4]],
             [[{'type': 'text', 'text': f'img {n}\n{IMAGE_PLACEHOLDER}'}]
              for n in range(4)])
 
+    def test_max_images_can_be_shrunk_per_conversation(self):
+        conversation = Conversation()
+        conversation.max_images = 2
+        for n in range(5):
+            conversation.add_image(bytes([n]), 'image/png', f'img {n}')
+        image_urls = [part['image_url']['url']
+                      for message in conversation
+                      for part in message['content']
+                      if part['type'] == 'image_url']
+        self.assertEqual(len(image_urls), 2)
+        # The three oldest images merged their placeholder into the caption.
+        self.assertEqual(
+            [message['content'][0]['text'] for message in conversation[:3]],
+            [f'img {n}\n{IMAGE_PLACEHOLDER}' for n in range(3)])
+
     def test_pruning_leaves_messages_without_images_untouched(self):
         conversation = Conversation()
         conversation.add_user('plain text turn')
         conversation.add_assistant('reply')
-        for n in range(12):
+        for n in range(conversation.max_images + 4):
             conversation.add_image(bytes([n]), 'image/png', f'img {n}')
         self.assertEqual(conversation[0], {'role': 'user',
                                            'content': 'plain text turn'})
         self.assertEqual(conversation[1], {'role': 'assistant',
                                            'content': 'reply'})
-        self.assertEqual(len(conversation), 14)
+        self.assertEqual(len(conversation), conversation.max_images + 6)
 
     def test_text_sharing_a_message_with_a_pruned_image_is_kept(self):
         conversation = Conversation()
@@ -146,7 +161,7 @@ class TestConversationAddImage(unittest.TestCase):
             {'type': 'image_url',
              'image_url': {'url': 'data:image/png;base64,AAA'}},
         ])
-        for n in range(10):
+        for n in range(conversation.max_images + 2):
             conversation.add_image(bytes([n]), 'image/png', f'img {n}')
         self.assertEqual(conversation[0]['content'], [
             {'type': 'text', 'text': f'what is this?\n{IMAGE_PLACEHOLDER}'},
@@ -155,7 +170,7 @@ class TestConversationAddImage(unittest.TestCase):
     def test_pruned_image_without_caption_becomes_the_placeholder(self):
         conversation = Conversation()
         conversation.add_image(b'x', 'image/png')
-        for n in range(10):
+        for n in range(conversation.max_images + 2):
             conversation.add_image(bytes([n]), 'image/png')
         self.assertEqual(conversation[0]['content'],
                          [{'type': 'text', 'text': IMAGE_PLACEHOLDER}])
