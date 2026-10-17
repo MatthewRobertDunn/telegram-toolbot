@@ -23,19 +23,13 @@ async def _run_generation(ctx: ChatUpdateContext):
     try:
         gpt_response = await task
     except asyncio.CancelledError:
-        ctx.conversation.append({
-            'role': 'assistant',
-            'content': '(response was stopped by the user)',
-        })
+        ctx.conversation.add_assistant('(response was stopped by the user)')
         return
     finally:
         ctx.generation_task = None
 
     await send_message(ctx, gpt_response, parse_mode='LLM')
-    ctx.conversation.append({
-        'role': 'assistant',
-        'content': gpt_response
-    })
+    ctx.conversation.add_assistant(gpt_response)
 
 
 async def group_text_message_handler(ctx: ChatUpdateContext):
@@ -43,10 +37,9 @@ async def group_text_message_handler(ctx: ChatUpdateContext):
     should_respond = f"@{ctx.bot.username}" in text # type: ignore
     text = text.replace(f"@{ctx.bot.username}", "").strip() # type: ignore
 
-    ctx.conversation.append({
-        'role': 'user',
-        'content': f"{ctx.message.from_user.first_name or ''} {ctx.message.from_user.last_name or ''}: {text}" # type: ignore
-    })
+    sender = ctx.message.from_user  # type: ignore[union-attr]
+    name = f"{sender.first_name or ''} {sender.last_name or ''}".strip()  # type: ignore[union-attr]
+    ctx.conversation.add_user(f"{name}: {text}")
 
     if not should_respond:
         return
@@ -66,9 +59,6 @@ async def text_message_handler(ctx: ChatUpdateContext):
         await group_text_message_handler(ctx)
         return
 
-    ctx.conversation.append({
-        'role': 'user',
-        'content': text
-    })
+    ctx.conversation.add_user(text)
 
     await _run_generation(ctx)

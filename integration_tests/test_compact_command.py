@@ -5,6 +5,7 @@ import unittest.mock
 
 import bootstrap  # noqa: F401 — path setup, env, logging, DB reset, next_uid
 from bootstrap import next_uid as _uid
+from conversation import Conversation, TOKENS_PER_CHAR
 from mocks import create_mock_context
 
 import compaction
@@ -12,17 +13,17 @@ from handlers.command_handlers import compact_command
 
 
 def _text(tokens: int) -> str:
-    return 'x' * int(tokens / compaction.TOKENS_PER_CHAR)
+    return 'x' * int(tokens / TOKENS_PER_CHAR)
 
 
 def _fill_big_conversation(ctx):
-    ctx.conversation = [
+    ctx.conversation = Conversation([
         {'role': 'system', 'content': 'system prompt'},
         {'role': 'user', 'content': _text(8_000) + ' first question'},
         {'role': 'assistant', 'content': _text(8_000) + ' first answer'},
         {'role': 'user', 'content': _text(8_000) + ' second question'},
         {'role': 'assistant', 'content': _text(8_000) + ' second answer'},
-    ]
+    ])
 
 
 async def _fake_run_llm(ctx, **kwargs):

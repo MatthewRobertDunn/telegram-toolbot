@@ -10,10 +10,11 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from chat_update_context import ChatUpdateContext
+from conversation import Conversation
 
 
 def mock_ctx(*, user_id: int = 1, bot=None,
-             conversation: list | None = None,
+             conversation: list | Conversation | None = None,
              settings=None) -> ChatUpdateContext:
     """Build a ChatUpdateContext over stubs.
 
@@ -40,7 +41,10 @@ def mock_ctx(*, user_id: int = 1, bot=None,
         command_text='',
         command_name='')
     if conversation is not None:
-        ctx.conversation = conversation
+        if isinstance(conversation, Conversation):
+            ctx.conversation = conversation
+        else:
+            ctx.conversation = Conversation(list(conversation))
     if settings is not None:
         ctx.user_data['settings'] = settings
     return ctx

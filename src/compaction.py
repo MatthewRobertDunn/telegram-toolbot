@@ -16,6 +16,9 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from conversation import (Conversation, TOKENS_PER_CHAR, IMAGE_TOKEN_ESTIMATE,
+                          token_count, estimate_message_tokens,
+                          estimate_conversation_tokens)
 from chat_update_context import ChatUpdateContext
 from handlers.run_llm import (NO_CONTENT_MESSAGE, NO_RESPONSE_MESSAGE,
                               run_llm)
@@ -24,10 +27,6 @@ from handlers.run_llm import (NO_CONTENT_MESSAGE, NO_RESPONSE_MESSAGE,
 DEFAULT_KEEP_TOKENS = 15_000
 # Contexts smaller than this are left alone; compaction would save little.
 MIN_COMPACT_TOKENS = 15_000
-# Rough token estimate: about a quarter token per character.
-TOKENS_PER_CHAR = 0.25
-# What an inline image is assumed to cost before it is dropped.
-IMAGE_TOKEN_ESTIMATE = 1_500
 # Long tool outputs are cut to this many characters in the summary source.
 TOOL_OUTPUT_MAX_CHARS = 1_250
 
@@ -111,36 +110,6 @@ SUMMARY_PROMPT = "\n\n".join([
 ])
 
 
-def token_count(text: str) -> int:
-    """Rough token estimate for text: about a quarter token per character."""
-    return int(len(text) * TOKENS_PER_CHAR)
-
-
-def estimate_conversation_tokens(conversation: list) -> int:
-    """Estimated tokens of a whole conversation, images included."""
-    return sum(estimate_message_tokens(message) for message in conversation)
-
-
-def estimate_message_tokens(message: dict) -> int:
-    total = 0
-    content = message.get('content')
-    if isinstance(content, str):
-        total += token_count(content)
-    elif isinstance(content, list):
-        for part in content:
-            if not isinstance(part, dict):
-                continue
-            if part.get('type') == 'text':
-                total += token_count(part.get('text') or '')
-            elif part.get('type') == 'image_url':
-                total += IMAGE_TOKEN_ESTIMATE
-    for tool_call in message.get('tool_calls') or []:
-        function = (tool_call or {}).get('function') or {}
-        total += token_count(function.get('name') or '')
-        total += token_count(function.get('arguments') or '')
-    return total
-
-
 def message_to_text(message: dict) -> str:
     """One conversation message as a transcript line.
 
@@ -186,7 +155,7 @@ def _truncate_tool_output(value: str) -> str:
 
 
 def split_for_compaction(
-        conversation: list,
+        conversation: Conversation | list,
         keep_tokens: int = DEFAULT_KEEP_TOKENS) -> CompactionSplit | None:
     """Split a conversation into the part to summarize and the part to keep.
 
@@ -281,12 +250,15 @@ async def _run_compaction(
     if on_start is not None:
         await on_start()
 
-    summary = await run_llm(ctx, conversation=[
-        {'role': 'system', 'content': COMPACTION_SYSTEM_PROMPT},
-        {'role': 'user',
-         'content': f'Conversation transcript:\n\n{split.older_text}'
-                    f'\n\n{SUMMARY_PROMPT}'},
-    ], allow_tools=False)
+    summary = await run_llm(
+        ctx,
+        conversation=Conversation([
+            {'role': 'system', 'content': COMPACTION_SYSTEM_PROMPT},
+            {'role': 'user',
+             'content': f'Conversation transcript:\n\n{split.older_text}'
+                        f'\n\n{SUMMARY_PROMPT}'},
+        ]),
+        allow_tools=False)
     summary = (summary or '').strip()
     if not summary or summary in (NO_RESPONSE_MESSAGE, NO_CONTENT_MESSAGE):
         raise CompactionError('Compaction failed: no summary was produced.')
@@ -304,11 +276,12 @@ async def _run_compaction(
             f'{split.recent_text}\n'
             '</recent-context>\n')
     checkpoint += '</conversation-checkpoint>'
-    head = ({'role': 'system', 'content': ''}
-            if not ctx.conversation
-            or ctx.conversation[0].get('role') != 'system'
-            else ctx.conversation[0])
-    ctx.conversation = [head, {'role': 'user', 'content': checkpoint}]
+    head = (ctx.conversation[0]
+            if ctx.conversation.head_is_system
+            else {'role': 'system', 'content': ''})
+    # Mutate in place: the compacted conversation is the same conversation,
+    # so its session id survives compaction.
+    ctx.conversation.messages = [head, {'role': 'user', 'content': checkpoint}]
 
     return CompactionResult(
         summary=summary,
