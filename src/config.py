@@ -9,7 +9,7 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "big-pickle")
 # Unset means use the user's current model (their /model setting).
 SUBAGENT_MODEL = os.environ.get("SUBAGENT_MODEL") or None
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://192.168.0.2:28180/v1")
-IMAGE_GEN_URL = os.environ.get("IMAGE_GEN_URL", f"https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b")
+IMAGE_GEN_URL = os.environ.get("IMAGE_GEN_URL", f"https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux-3-image-klein")
 temperature = 1.0
 top_p = 0.95
 api_retry_time = 60

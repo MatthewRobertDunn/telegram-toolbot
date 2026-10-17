@@ -1,5 +1,6 @@
 import base64
 import logging
+import re
 import time
 
 import requests
@@ -10,8 +11,36 @@ from sandbox import manager
 
 logger = logging.getLogger(__name__)
 
+MIN_DIM = 512
+MAX_DIM = 1568
+DIM_STEP = 16
+DEFAULT_RESOLUTION = "1024x1024"
 
-async def generate_image(prompt: str, width: int = 1024, height: int = 1024, seed: int = 0, steps: int = 4) -> str:
+
+def parse_resolution(resolution: str) -> tuple[int, int]:
+    """Parse a 'WIDTHxHEIGHT' string into validated dimensions."""
+    parts = re.split(r"[x×*]", resolution.strip().lower().replace(" ", ""))
+    if len(parts) != 2:
+        raise ValueError(
+            f"Invalid resolution '{resolution}'. "
+            "Use WIDTHxHEIGHT, e.g. '1024x1024', '1568x672', '768x1344'")
+    try:
+        width, height = int(parts[0]), int(parts[1])
+    except ValueError:
+        raise ValueError(
+            f"Invalid resolution '{resolution}'. "
+            "Use WIDTHxHEIGHT, e.g. '1024x1024', '1568x672', '768x1344'") from None
+    for name, dim in (("width", width), ("height", height)):
+        if not (MIN_DIM <= dim <= MAX_DIM) or dim % DIM_STEP:
+            raise ValueError(
+                f"Invalid resolution {width}x{height}: the image endpoint only "
+                f"accepts width and height values that are multiples of "
+                f"{DIM_STEP} between {MIN_DIM} and {MAX_DIM} "
+                f"(got {name}={dim})")
+    return width, height
+
+
+async def generate_image(prompt: str, width: int = 1024, height: int = 1024, seed: int = 0, steps: int = 50) -> str:
     invoke_url = config.IMAGE_GEN_URL
     headers = {
         "Authorization": f"Bearer {config.NVIDIA_API_KEY}",
@@ -26,14 +55,22 @@ async def generate_image(prompt: str, width: int = 1024, height: int = 1024, see
     }
     response = requests.post(invoke_url, headers=headers, json=payload)
     response.raise_for_status()
-    data = response.json()
-    return data["artifacts"][0]["base64"]
+    artifact = response.json()["artifacts"][0]
+    if artifact.get("finishReason") == "CONTENT_FILTERED":
+        raise RuntimeError("Generation blocked by content filter")
+    return artifact["base64"]
 
 
 @context_tool
-async def generate_and_send_image(ctx: ChatUpdateContext, prompt: str) -> str:
+async def generate_and_send_image(ctx: ChatUpdateContext, prompt: str,
+                                  resolution: str = DEFAULT_RESOLUTION) -> str:
     try:
-        b64 = await generate_image(prompt)
+        width, height = parse_resolution(resolution)
+    except ValueError as e:
+        logger.warning("Invalid image resolution requested: %s", e)
+        return str(e)
+    try:
+        b64 = await generate_image(prompt, width=width, height=height)
         image_bytes = base64.b64decode(b64)
         await send_image(ctx, image_bytes)
         path, error = await manager.store_file(
@@ -62,6 +99,13 @@ TOOL_DEFINITIONS: list[dict] = [
                     "prompt": {
                         "type": "string",
                         "description": "A text description of the image to generate"
+                    },
+                    "resolution": {
+                        "type": "string",
+                        "description": ("Image dimensions as WIDTHxHEIGHT, e.g. '1024x1024'. "
+                                        f"Width and height must each be a multiple of {DIM_STEP} "
+                                        f"between {MIN_DIM} and {MAX_DIM}, e.g. '1024x1024', "
+                                        "'1568x672', '768x1344', '1344x768'")
                     }
                 },
                 "required": ["prompt"],
