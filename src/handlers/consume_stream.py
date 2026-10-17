@@ -54,11 +54,18 @@ async def consume_stream(stream, streamer: DraftStreamer,
     """
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
-    tool_acc: dict[int, dict] = {}
-    # Which accumulated entry each streamed index currently points at.
-    # Normally identical to tool_acc, but a backend may split off a new
-    # call onto a higher key while still sending index on the wire.
+    # Accumulated tool calls keyed by their id. The id is the identity
+    # of a call (opens a new call whenever a new id appears); `index` is
+    # only a stream-slot hint telling id-less argument fragments which
+    # call they extend.
+    calls: dict[str, dict] = {}
+    order: list[str] = []
+    # Which open call each streamed index currently points at.
     active: dict[int, dict] = {}
+    # The most recently opened call, for fragments with neither id nor
+    # index (linear streams).
+    current: dict | None = None
+    anon = 0
 
     async for chunk in stream:
         choices = getattr(chunk, 'choices', None)
@@ -80,29 +87,32 @@ async def consume_stream(stream, streamer: DraftStreamer,
             await streamer.update(reasoning)
         for part in getattr(delta, 'tool_calls', None) or []:
             idx = getattr(part, 'index', None)
-            if not isinstance(idx, int):
-                idx = max(tool_acc, default=-1) + 1
             pid = getattr(part, 'id', None)
-            entry = active.get(idx)
-            if entry is not None and pid and entry['id'] \
-                    and pid != entry['id']:
-                # Some backends (observed: step-5-preview on NVIDIA NIM)
-                # emit follow-up tool calls reusing the same index
-                # instead of incrementing it. A different id arriving
-                # while this stream slot is occupied means the index
-                # should have been incremented: start a fresh call for
-                # it rather than concatenating into the current entry.
-                entry = tool_acc[max(tool_acc, default=-1) + 1] = {
-                    'id': pid, 'name': '', 'arguments': ''}
-            elif entry is None:
-                entry = tool_acc.setdefault(
-                    idx, {'id': '', 'name': '', 'arguments': ''})
             if pid:
-                entry['id'] = pid
-            # This stream slot now streams this entry, so later id-less
-            # fragments keep appending to the right call even though the
-            # slot may have been split off to a higher tool_acc key.
-            active[idx] = entry
+                # A (new) id opens or continues that call. This also
+                # absorbs backends that stream a follow-up call reusing
+                # the same index (observed: step-5-preview on NVIDIA
+                # NIM): identity follows the id, never the index.
+                entry = calls.get(pid)
+                if entry is None:
+                    entry = calls[pid] = {
+                        'id': pid, 'name': '', 'arguments': ''}
+                    order.append(pid)
+            else:
+                # Id-less fragment: extend the call this slot is
+                # currently streaming (keyed by index), or the last
+                # opened call if the stream has no indexes.
+                entry = active.get(idx) if isinstance(idx, int) else None
+                if entry is None:
+                    entry = current
+                if entry is None:
+                    anon += 1
+                    entry = {'id': '', 'name': '', 'arguments': ''}
+                    calls[f'anon#{anon}'] = entry
+                    order.append(f'anon#{anon}')
+            if isinstance(idx, int):
+                active[idx] = entry
+            current = entry
             fn = getattr(part, 'function', None)
             if fn is not None:
                 if getattr(fn, 'name', None):
@@ -112,8 +122,8 @@ async def consume_stream(stream, streamer: DraftStreamer,
     await streamer.flush(force=True)
 
     tool_calls = []
-    for idx in sorted(tool_acc):
-        entry = tool_acc[idx]
+    for key in order:
+        entry = calls[key]
         if entry['id'] or entry['name']:
             tool_calls.append(ToolCall(
                 id=entry['id'],
