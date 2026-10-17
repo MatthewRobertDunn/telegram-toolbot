@@ -1,4 +1,5 @@
 from chat_update_context import ChatUpdateContext, context_tool
+from conversation import Conversation
 from handlers.run_llm import run_llm
 
 TOOL_NAME = "subagent"
@@ -25,14 +26,16 @@ async def subagent(ctx: ChatUpdateContext, description: str, prompt: str) -> str
     run_llm's draft streaming); the report itself is returned to the calling
     model only and is never sent to the user.
     """
+    # A fresh Conversation per spawn: its whole tool loop shares one
+    # x-opencode-session id, independent of the parent chat's session.
     return await run_llm(
         ctx,
         model=ctx.settings.subagent_model,
-        conversation=[
+        conversation=Conversation([
             {"role": "system",
              "content": f"{SUBAGENT_SYSTEM_PROMPT}\n\nTask: {description}"},
             {"role": "user", "content": prompt},
-        ],
+        ]),
         excluded_tools=[TOOL_NAME],
     )
 

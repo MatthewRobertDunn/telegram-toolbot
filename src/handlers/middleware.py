@@ -3,6 +3,7 @@ import logging
 
 from chat_update_context import ChatUpdateContext
 from settings_store import load_settings, save_settings
+from conversation import Conversation
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +37,5 @@ async def init_conversation(ctx: ChatUpdateContext):
         ctx.settings = await load_settings(ctx.user_id)
     if 'conversation' not in ctx.user_data:
         logger.info('Initializing conversation for user %d', ctx.user_id)
-        ctx.conversation = []
-    if len(ctx.conversation) == 0:
-        ctx.conversation.append({
-            'role': 'system',
-            'content': '',
-        })
-    ctx.conversation[0] = {'role': 'system', 'content': ctx.system_prompt}
+        ctx.conversation = Conversation()
+    ctx.conversation.set_system_head(ctx.system_prompt)

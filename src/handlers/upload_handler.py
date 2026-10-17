@@ -66,15 +66,9 @@ async def upload_handler(ctx: ChatUpdateContext):
         f"{hint} if it is relevant.]")
     caption = msg.caption
     content = f"{caption}\n\n{notification}" if caption else notification
-    ctx.conversation.append({
-        'role': 'user',
-        'content': content
-    })
+    ctx.conversation.add_user(content)
 
     gpt_response = await run_with_typing(ctx, run_llm(ctx))
 
     await send_message(ctx, gpt_response, parse_mode='LLM')
-    ctx.conversation.append({
-        'role': 'assistant',
-        'content': gpt_response
-    })
+    ctx.conversation.add_assistant(gpt_response)

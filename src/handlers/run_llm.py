@@ -7,6 +7,7 @@ from typing import Any
 import config
 from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
 from chat_update_context import ChatUpdateContext
+from conversation import Conversation
 from .draft_streamer import DraftStreamer
 from .consume_stream import ConsumeStreamResult, consume_stream
 from messaging import send_message
@@ -47,13 +48,17 @@ async def run_llm(ctx: ChatUpdateContext,
                   model: str | None = None,
                   reasoning_effort: str | None = None,
                   extra_body: dict | None = None,
-                  conversation: list | None = None,
+                  conversation: Conversation | None = None,
                   excluded_tools: list[str] | None = None,
                   allow_tools: bool = True) -> str:
     """Run a model conversation to completion, executing tool calls as needed.
 
     With allow_tools=False no tools are offered to the model, so the reply is
     always plain text (used for nested calls such as context compaction).
+
+    conversation defaults to ctx.conversation. Nested calls with their own
+    history (subagent, compaction) construct their own Conversation, whose
+    fresh id becomes that request's x-opencode-session.
     """
     if conversation is None:
         conversation = ctx.conversation
@@ -77,13 +82,13 @@ async def run_llm(ctx: ChatUpdateContext,
                 streamer.new_round()
                 create_kwargs: dict = dict(
                     model=effective_model,
-                    messages=conversation,
+                    messages=conversation.messages,
                     n=1,
                     temperature=settings.temperature,
                     top_p=settings.top_p,
                     stream=True,
                     extra_headers={
-                        "x-opencode-session": str(ctx.chat_id),
+                        "x-opencode-session": conversation.id,
                     },
                 )
                 if allow_tools:
@@ -120,21 +125,18 @@ async def run_llm(ctx: ChatUpdateContext,
             else:
                 return NO_CONTENT_MESSAGE
             
-        conversation.append({
-            "role": "assistant",
-            "content": message.content or '',
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    }
+        assistant_message = conversation.add_assistant(message.content or '')
+        assistant_message['tool_calls'] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
                 }
-                for tc in message.tool_calls
-            ]
-        })
+            }
+            for tc in message.tool_calls
+        ]
 
         images = []
         for tc in message.tool_calls:
@@ -146,29 +148,18 @@ async def run_llm(ctx: ChatUpdateContext,
             result = await execute_tool_call(ctx, tc)
             if isinstance(result, ToolCallResult):
                 logger.info("tool result (%s): image attached", name)
-                conversation.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": result.text,
-                })
+                conversation.add_tool(result.text, tc.id)
                 if result.image is not None:
                     images.append(result.image)
                 continue
             logger.info("tool result (%s): %s...", name, result[:200])
-            conversation.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": result,
-            })
+            conversation.add_tool(result, tc.id)
 
         for image in images:
             b64 = base64.b64encode(image.data).decode()
-            conversation.append({
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "(a tool attached this image)"},
-                    {"type": "image_url",
-                     "image_url": {"url": f"data:{image.mime};base64,{b64}"}},
-                ],
-            })
+            conversation.add_user([
+                {"type": "text", "text": "(a tool attached this image)"},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:{image.mime};base64,{b64}"}},
+            ])
 

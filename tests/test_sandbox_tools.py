@@ -18,6 +18,7 @@ import toolbot_glob
 import toolbot_read
 from handlers import run_llm as run_llm_mod
 from handlers import upload_handler
+from conversation import Conversation
 from mock_context import mock_ctx
 from tools import sandbox_tool
 from sandbox import SandboxManager, _unique_name
@@ -789,9 +790,8 @@ class TestToolResultImageContract(unittest.IsolatedAsyncioTestCase):
             ctx = mock_ctx(bot=bot)
             ctx.user_data['settings'] = SimpleNamespace(
                 show_tool_output=False, model='m', temperature=1.0, top_p=0.95)
-            conversation = []
-            result = await run_llm_mod.run_llm(
-                ctx, conversation=conversation)
+            conversation = Conversation()
+            result = await run_llm_mod.run_llm(ctx, conversation=conversation)
 
         self.assertEqual(result, 'It is a space scene.')
         tool_messages = [m for m in conversation if m['role'] == 'tool']
