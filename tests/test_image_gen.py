@@ -1,3 +1,4 @@
+import base64
 import os
 import sys
 import unittest
@@ -35,6 +36,55 @@ class TestImageGenErrors(unittest.IsolatedAsyncioTestCase):
         result = await self._run(RuntimeError('Generation blocked by content filter'))
         self.assertEqual(
             result, 'Failed to generate image: Generation blocked by content filter')
+
+
+class TestSendToChat(unittest.IsolatedAsyncioTestCase):
+    # send_to_chat (default true) controls whether the user sees the image;
+    # either way the image is stored in the sandbox for further processing.
+
+    STORED_PATH = '/workspace/uploads/generated_1.png'
+
+    async def _run(self, store_error=None, **kwargs):
+        sent: list = []
+
+        async def fake_generate(*args, **_):
+            return base64.b64encode(b'\x89PNG').decode()
+
+        async def fake_send_image(ctx, data):
+            sent.append(data)
+
+        async def fake_store(user_id, data, name):
+            if store_error is not None:
+                return None, store_error
+            return self.STORED_PATH, None
+
+        with unittest.mock.patch.object(image_gen, 'generate_image', fake_generate):
+            with unittest.mock.patch.object(image_gen, 'send_image', fake_send_image):
+                with unittest.mock.patch.object(
+                        image_gen.manager, 'store_file', fake_store):
+                    result = await image_gen.generate_and_send_image(
+                        mock_ctx(), 'a cat', **kwargs)
+        return result, sent
+
+    async def test_defaults_to_sending(self):
+        result, sent = await self._run()
+        self.assertEqual(len(sent), 1)
+        self.assertIn('sent to chat and stored', result)
+        self.assertIn(self.STORED_PATH, result)
+
+    async def test_send_to_chat_false_stores_without_sending(self):
+        result, sent = await self._run(send_to_chat=False)
+        self.assertEqual(sent, [])
+        self.assertIn(f'stored in the sandbox at {self.STORED_PATH}', result)
+        self.assertNotIn('sent to chat', result)
+
+    async def test_store_error_reports_delivery(self):
+        result, sent = await self._run(store_error='disk full')
+        self.assertEqual(result, 'Image sent to chat (prompt: a cat)')
+
+    async def test_store_error_without_sending(self):
+        result, sent = await self._run(store_error='disk full', send_to_chat=False)
+        self.assertEqual(result, 'Image generated (prompt: a cat)')
 
 
 if __name__ == '__main__':
