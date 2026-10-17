@@ -3,6 +3,7 @@ import asyncio
 import openai
 from chat_update_context import ChatUpdateContext
 from compaction import (DEFAULT_KEEP_TOKENS, CompactionError, compact_context)
+from conversation import Conversation
 from handlers.middleware import handler, settings
 from handlers.message_handlers import stop_generation
 from messaging import send_preformatted_message, send_message, run_with_typing
@@ -14,7 +15,7 @@ from config import OPENAI_KEY, OPENAI_BASE_URL
 async def start_restart_command(ctx: ChatUpdateContext):
     stop_generation(ctx)
     await send_message(ctx, f"Starting conversation with model `{ctx.model}`")
-    ctx.conversation = []
+    ctx.conversation = Conversation()
 
 
 @handler

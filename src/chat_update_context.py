@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 from telegram import Update, Bot, Chat, User, Message
 from telegram.ext import ContextTypes
 
+from conversation import Conversation
+
 if TYPE_CHECKING:
     from user_settings import UserSettings
 
@@ -38,21 +40,21 @@ class ChatUpdateContext:
         return self.user.id
 
     @property
-    def conversation(self) -> list:
+    def conversation(self) -> "Conversation":
         return self.user_data['conversation']
 
     @conversation.setter
-    def conversation(self, value: list) -> None:
+    def conversation(self, value: "Conversation") -> None:
         self.user_data['conversation'] = value
 
     @property
-    def group_conversation(self) -> list:
+    def group_conversation(self) -> "Conversation":
         if self.chat_data is None:
             raise ValueError("Chat data is not available for this context")
         return self.chat_data['conversation']
-    
+
     @group_conversation.setter
-    def group_conversation(self, value: list) -> None:
+    def group_conversation(self, value: "Conversation") -> None:
         if self.chat_data is None:
             raise ValueError("Chat data is not available for this context")
         self.chat_data['conversation'] = value
