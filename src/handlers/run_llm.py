@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import json
 import logging
 from typing import Any
@@ -161,10 +160,6 @@ async def run_llm(ctx: ChatUpdateContext,
             conversation.add_tool(result, tc.id)
 
         for image in images:
-            b64 = base64.b64encode(image.data).decode()
-            conversation.add_user([
-                {"type": "text", "text": "(a tool attached this image)"},
-                {"type": "image_url",
-                 "image_url": {"url": f"data:{image.mime};base64,{b64}"}},
-            ])
+            conversation.add_image(image.data, image.mime,
+                                   "(a tool attached this image)")
 

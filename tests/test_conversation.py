@@ -1,3 +1,4 @@
+import base64
 import os
 import sys
 import unittest
@@ -5,7 +6,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from conversation import (Conversation, estimate_conversation_tokens,
+from conversation import (Conversation, IMAGE_PLACEHOLDER,
+                          estimate_conversation_tokens,
                           estimate_message_tokens, token_count)
 
 # A tool-result message spends tokens on its id-less text only.
@@ -84,6 +86,79 @@ class TestConversationHelpers(unittest.TestCase):
         self.assertFalse(conversation.head_is_system)
         conversation.set_system_head('prompt')
         self.assertTrue(conversation.head_is_system)
+
+
+class TestConversationAddImage(unittest.TestCase):
+
+    def test_add_image_appends_a_caption_and_base64_image(self):
+        conversation = Conversation()
+        message = conversation.add_image(b'abc', 'image/png', 'look at this')
+        b64 = base64.b64encode(b'abc').decode()
+        self.assertEqual(message, {
+            'role': 'user',
+            'content': [
+                {'type': 'text', 'text': 'look at this'},
+                {'type': 'image_url',
+                 'image_url': {'url': f'data:image/png;base64,{b64}'}},
+            ],
+        })
+
+    def test_add_image_without_caption_has_just_the_image(self):
+        conversation = Conversation()
+        message = conversation.add_image(b'abc', 'image/jpeg')
+        self.assertEqual(message['content'], [
+            {'type': 'image_url',
+             'image_url': {'url': f'data:image/jpeg;base64,'
+                                  f'{base64.b64encode(b"abc").decode()}'}},
+        ])
+
+    def test_only_the_ten_most_recent_images_are_kept(self):
+        conversation = Conversation()
+        for n in range(12):
+            conversation.add_image(bytes([n]), 'image/png', f'img {n}')
+        image_urls = [part['image_url']['url']
+                      for message in conversation
+                      for part in message['content']
+                      if part['type'] == 'image_url']
+        self.assertEqual(len(image_urls), 10)
+        # The two oldest images merged their placeholder into the caption.
+        self.assertEqual(
+            [message['content'] for message in conversation[:2]],
+            [[{'type': 'text', 'text': f'img {n}\n{IMAGE_PLACEHOLDER}'}]
+             for n in range(2)])
+
+    def test_pruning_leaves_messages_without_images_untouched(self):
+        conversation = Conversation()
+        conversation.add_user('plain text turn')
+        conversation.add_assistant('reply')
+        for n in range(12):
+            conversation.add_image(bytes([n]), 'image/png', f'img {n}')
+        self.assertEqual(conversation[0], {'role': 'user',
+                                           'content': 'plain text turn'})
+        self.assertEqual(conversation[1], {'role': 'assistant',
+                                           'content': 'reply'})
+        self.assertEqual(len(conversation), 14)
+
+    def test_text_sharing_a_message_with_a_pruned_image_is_kept(self):
+        conversation = Conversation()
+        conversation.add_user([
+            {'type': 'text', 'text': 'what is this?'},
+            {'type': 'image_url',
+             'image_url': {'url': 'data:image/png;base64,AAA'}},
+        ])
+        for n in range(10):
+            conversation.add_image(bytes([n]), 'image/png', f'img {n}')
+        self.assertEqual(conversation[0]['content'], [
+            {'type': 'text', 'text': f'what is this?\n{IMAGE_PLACEHOLDER}'},
+        ])
+
+    def test_pruned_image_without_caption_becomes_the_placeholder(self):
+        conversation = Conversation()
+        conversation.add_image(b'x', 'image/png')
+        for n in range(10):
+            conversation.add_image(bytes([n]), 'image/png')
+        self.assertEqual(conversation[0]['content'],
+                         [{'type': 'text', 'text': IMAGE_PLACEHOLDER}])
 
 
 class TestConversationTokenEstimate(unittest.TestCase):

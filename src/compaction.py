@@ -17,8 +17,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from conversation import (Conversation, TOKENS_PER_CHAR, IMAGE_TOKEN_ESTIMATE,
-                          token_count, estimate_message_tokens,
-                          estimate_conversation_tokens)
+                          IMAGE_PLACEHOLDER, token_count,
+                          estimate_message_tokens, estimate_conversation_tokens)
 from chat_update_context import ChatUpdateContext
 from handlers.run_llm import (NO_CONTENT_MESSAGE, NO_RESPONSE_MESSAGE,
                               run_llm)
@@ -130,7 +130,7 @@ def message_to_text(message: dict) -> str:
             if part.get('type') == 'text':
                 lines.append(f"[User]: {part.get('text') or ''}")
             elif part.get('type') == 'image_url':
-                lines.append('[image omitted]')
+                lines.append(IMAGE_PLACEHOLDER)
         return '\n'.join(lines)
     if role == 'assistant':
         lines = []

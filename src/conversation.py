@@ -9,6 +9,7 @@ The class also owns the small behaviors the message list needs everywhere
 (append helpers, system-prompt head management, token estimation).
 """
 
+import base64
 import uuid
 from dataclasses import dataclass, field
 
@@ -16,6 +17,10 @@ from dataclasses import dataclass, field
 TOKENS_PER_CHAR = 0.25
 # What an inline image is assumed to cost before it is dropped.
 IMAGE_TOKEN_ESTIMATE = 1_500
+# Text left behind where an image was pruned.
+IMAGE_PLACEHOLDER = '[image omitted]'
+# How many of the most recent images a conversation holds onto.
+MAX_IMAGES = 10
 
 
 def estimate_conversation_tokens(conversation) -> int:
@@ -78,6 +83,48 @@ class Conversation:
     def add_tool(self, content, tool_call_id: str) -> dict:
         """A tool result message answering the tool call with that id."""
         return self.add('tool', content, tool_call_id=tool_call_id)
+
+    def add_image(self, data: bytes, mime: str, caption: str = '') -> dict:
+        """Append a user message carrying an inline base64 image.
+
+        Keeps only the MAX_IMAGES most recent images: each addition
+        first replaces the oldest ones with an '[image omitted]'
+        placeholder merged into the message's text, so any text around
+        the image - its caption, or a user's own words - survives.
+        """
+        self._prune_images(MAX_IMAGES - 1)
+        b64 = base64.b64encode(data).decode()
+        content = []
+        if caption:
+            content.append({'type': 'text', 'text': caption})
+        content.append({'type': 'image_url',
+                        'image_url': {'url': f'data:{mime};base64,{b64}'}})
+        return self.add_user(content)
+
+    def _prune_images(self, keep: int) -> None:
+        """Replace the oldest image parts with placeholder text until
+        only `keep` images remain.
+
+        The placeholder merges into the message's preceding text part,
+        so a pruned message stays a single text utterance.
+        """
+        image_parts = [
+            (message, index)
+            for message in self.messages
+            if isinstance(message.get('content'), list)
+            for index, part in enumerate(message['content'])
+            if isinstance(part, dict) and part.get('type') == 'image_url'
+        ]
+        for message, index in reversed(
+                image_parts[:max(len(image_parts) - keep, 0)]):
+            previous = message['content'][index - 1] if index else None
+            if isinstance(previous, dict) and previous.get('type') == 'text':
+                text = previous.get('text') or ''
+                previous['text'] = f'{text}\n{IMAGE_PLACEHOLDER}'
+                del message['content'][index]
+            else:
+                message['content'][index] = {'type': 'text',
+                                             'text': IMAGE_PLACEHOLDER}
 
     def set_system_head(self, prompt: str) -> dict:
         """Put this system prompt at position 0, creating the head if needed.
