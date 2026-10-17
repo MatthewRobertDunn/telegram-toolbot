@@ -280,7 +280,8 @@ IMAGE_MIME_TYPES = {
 
 
 @context_tool
-async def read_image(ctx: ChatUpdateContext, filePath: str) -> str | ToolCallResult:
+async def read_image(ctx: ChatUpdateContext, filePath: str,
+                     send_to_chat: bool = True) -> str | ToolCallResult:
     path = _resolve_path(filePath)
     mime = IMAGE_MIME_TYPES.get(posixpath.splitext(path)[1].lower())
     if mime is None:
@@ -304,14 +305,19 @@ async def read_image(ctx: ChatUpdateContext, filePath: str) -> str | ToolCallRes
     except ValueError:
         return "Error: could not read the image contents."
 
-    if not path.startswith(f"{UPLOADS_DIR}/"):
+    # Uploaded images were already shown when the user sent them, so they are
+    # never echoed back; send_to_chat lets the model suppress the send for any
+    # other image too.
+    shown = send_to_chat and not path.startswith(f"{UPLOADS_DIR}/")
+    if shown:
         try:
             await ctx.bot.send_photo(ctx.chat_id, photo=data)
         except Exception as e:
             logger.warning("Could not send image to chat: %s", e)
 
+    label = "Image shown in the chat" if shown else "Image read"
     return ToolCallResult(
-        text=(f"Image shown: {path} ({len(data):,} bytes). "
+        text=(f"{label}: {path} ({len(data):,} bytes). "
               "The image is attached to this result."),
         image=ImageAttachment(data=data, mime=mime),
     )

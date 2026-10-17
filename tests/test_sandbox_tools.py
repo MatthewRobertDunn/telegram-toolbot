@@ -698,6 +698,24 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
         assert isinstance(result, ToolCallResult)
         self.assertEqual(bot.sent_photos, [])
 
+    async def test_send_to_chat_false_does_not_send(self):
+        payload = b'img-bytes'
+        encoded = base64.b64encode(payload).decode()
+        manager = self._canned([
+            ('stat', 0, f'{len(payload)}\n', ''),
+            ('base64', 0, encoded, ''),
+        ])
+        bot = _FakeBot()
+        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
+            ctx = mock_ctx(bot=bot)
+            result = await sandbox_tool.read_image(
+                ctx, 'rendered.png', send_to_chat=False)
+        assert isinstance(result, ToolCallResult)
+        assert result.image is not None
+        self.assertEqual(bot.sent_photos, [])
+        self.assertNotIn('shown in the chat', result.text)
+        self.assertIn('Image read', result.text)
+
     async def test_send_photo_failure_still_attaches(self):
         payload = b'img-bytes'
         encoded = base64.b64encode(payload).decode()
@@ -796,7 +814,7 @@ class TestToolResultImageContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, 'It is a space scene.')
         tool_messages = [m for m in conversation if m['role'] == 'tool']
         self.assertEqual(tool_messages[0]['content'], (
-            f'Image shown: /workspace/pic.png ({len(payload)} bytes). '
+            f'Image shown in the chat: /workspace/pic.png ({len(payload)} bytes). '
             'The image is attached to this result.'))
         user_messages = [m for m in conversation if m['role'] == 'user']
         image_msg = user_messages[-1]['content']
