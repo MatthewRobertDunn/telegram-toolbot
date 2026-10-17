@@ -55,6 +55,10 @@ async def consume_stream(stream, streamer: DraftStreamer,
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     tool_acc: dict[int, dict] = {}
+    # Which accumulated entry each streamed index currently points at.
+    # Normally identical to tool_acc, but a backend may split off a new
+    # call onto a higher key while still sending index on the wire.
+    active: dict[int, dict] = {}
 
     async for chunk in stream:
         choices = getattr(chunk, 'choices', None)
@@ -78,10 +82,27 @@ async def consume_stream(stream, streamer: DraftStreamer,
             idx = getattr(part, 'index', None)
             if not isinstance(idx, int):
                 idx = max(tool_acc, default=-1) + 1
-            entry = tool_acc.setdefault(
-                idx, {'id': '', 'name': '', 'arguments': ''})
-            if getattr(part, 'id', None):
-                entry['id'] = part.id
+            pid = getattr(part, 'id', None)
+            entry = active.get(idx)
+            if entry is not None and pid and entry['id'] \
+                    and pid != entry['id']:
+                # Some backends (observed: step-5-preview on NVIDIA NIM)
+                # emit follow-up tool calls reusing the same index
+                # instead of incrementing it. A different id arriving
+                # while this stream slot is occupied means the index
+                # should have been incremented: start a fresh call for
+                # it rather than concatenating into the current entry.
+                entry = tool_acc[max(tool_acc, default=-1) + 1] = {
+                    'id': pid, 'name': '', 'arguments': ''}
+            elif entry is None:
+                entry = tool_acc.setdefault(
+                    idx, {'id': '', 'name': '', 'arguments': ''})
+            if pid:
+                entry['id'] = pid
+            # This stream slot now streams this entry, so later id-less
+            # fragments keep appending to the right call even though the
+            # slot may have been split off to a higher tool_acc key.
+            active[idx] = entry
             fn = getattr(part, 'function', None)
             if fn is not None:
                 if getattr(fn, 'name', None):
