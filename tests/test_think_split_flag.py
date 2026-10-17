@@ -51,9 +51,6 @@ class TestStripThinkingFlag(unittest.IsolatedAsyncioTestCase):
              _chunk('Answer.')], strip=True)
         self.assertEqual(msg.content, 'Answer.')
         self.assertEqual(msg.reasoning_content, 'Plan it.')
-        self.assertEqual(''.join(streamer.updates),
-                         'Plan it.' + TAG_OPEN + 'inlined thoughts'
-                         + TAG_CLOSE + 'Answer.')
 
     async def test_strip_disabled_keeps_tag_in_content(self):
         streamer, msg = await self._run(

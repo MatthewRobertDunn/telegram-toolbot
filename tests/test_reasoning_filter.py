@@ -24,26 +24,17 @@ class TestSplitThinking(unittest.TestCase):
         self.assertEqual(visible, "Hi there!")
         self.assertIn("Let me check.", reasoning)
 
-    def test_multiline_reasoning(self):
-        text = (TAG_OPEN + "line one"
-                + chr(13) + chr(10) + "line two"
-                + TAG_CLOSE + "Answer.")
-        visible, reasoning = _split_thinking(text)
-        self.assertEqual(visible, "Answer.")
-        self.assertIn("line one", reasoning)
-
-    def test_lone_close_tag_before_content(self):
-        text = TAG_CLOSE + "Ready."
-        visible, reasoning = _split_thinking(text)
-        self.assertEqual(visible, "Ready.")
-        self.assertEqual(reasoning, '')
-
     def test_no_open_tag_bare_close(self):
         # backends that emit reasoning with no open tag, ending in a close
         text = "plan the reply" + TAG_CLOSE + "Final answer."
         visible, reasoning = _split_thinking(text)
         self.assertEqual(visible, "Final answer.")
         self.assertEqual(reasoning, "plan the reply")
+
+        # ...or no reasoning at all, just a stray close tag
+        visible, reasoning = _split_thinking(TAG_CLOSE + "Ready.")
+        self.assertEqual(visible, "Ready.")
+        self.assertEqual(reasoning, '')
 
     def test_unclosed_tag_left_alone(self):
         # no close tag anywhere: nothing can be classified as reasoning

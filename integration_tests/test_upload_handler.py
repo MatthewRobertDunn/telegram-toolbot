@@ -78,6 +78,12 @@ class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             ctx.bot.sent[-1]["text"], "Upload received.")  # type: ignore[attr-defined]
 
+        # The upload starts the sandbox and counts as activity.
+        running = await manager._container_running(manager._sandboxes[self.uid])
+        self.assertTrue(running)
+        self.assertGreater(
+            manager._sandboxes[self.uid].last_activity, time.time() - 60)
+
     async def test_upload_without_name_gets_fallback(self):
         ctx = _upload_ctx(self.uid, _document(None))
         with unittest.mock.patch("handlers.upload_handler.run_llm",
@@ -109,16 +115,6 @@ class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
         last_user = user_messages[-1]["content"]
         self.assertTrue(last_user.startswith("please review"))
         self.assertIn("/workspace/uploads/notes.txt", last_user)
-
-    async def test_upload_refreshes_timer_and_starts_sandbox(self):
-        ctx = _upload_ctx(self.uid, _document("timer.txt"))
-        with unittest.mock.patch("handlers.upload_handler.run_llm",
-                                 _fake_run_llm):
-            await upload_handler(ctx)
-        running = await manager._container_running(manager._sandboxes[self.uid])
-        self.assertTrue(running)
-        self.assertGreater(
-            manager._sandboxes[self.uid].last_activity, time.time() - 60)
 
 
 if __name__ == "__main__":

@@ -38,6 +38,28 @@ class TestImageGenErrors(unittest.IsolatedAsyncioTestCase):
             result, 'Failed to generate image: Generation blocked by content filter')
 
 
+class TestParseResolution(unittest.IsolatedAsyncioTestCase):
+    # Pure logic: WIDTHxHEIGHT validation, valid both directions.
+
+    def test_valid_dimensions(self):
+        self.assertEqual(image_gen.parse_resolution('1024x1024'),
+                         (1024, 1024))
+        self.assertEqual(image_gen.parse_resolution(' 1568 X 672 '),
+                         (1568, 672))
+        self.assertEqual(image_gen.parse_resolution('768*1344'), (768, 1344))
+
+    def test_invalid_dimensions(self):
+        for bad in ('nonsense', '1024', '512x100', '1025x1024', '0x512'):
+            with self.assertRaises(ValueError):
+                image_gen.parse_resolution(bad)
+
+    async def test_invalid_resolution_reported_to_the_model(self):
+        result = await image_gen.generate_and_send_image(
+            mock_ctx(), 'a cat', resolution='big')
+        self.assertIn("Invalid resolution 'big'", result)
+        self.assertNotIn('a cat', result)  # generation never starts
+
+
 class TestSendToChat(unittest.IsolatedAsyncioTestCase):
     # send_to_chat (default true) controls whether the user sees the image;
     # either way the image is stored in the sandbox for further processing.
@@ -66,13 +88,15 @@ class TestSendToChat(unittest.IsolatedAsyncioTestCase):
                         mock_ctx(), 'a cat', **kwargs)
         return result, sent
 
-    async def test_defaults_to_sending(self):
+    async def test_send_to_chat_branches(self):
+        # By default the image is sent to the chat...
         result, sent = await self._run()
         self.assertEqual(len(sent), 1)
         self.assertIn('sent to chat and stored', result)
         self.assertIn(self.STORED_PATH, result)
 
-    async def test_send_to_chat_false_stores_without_sending(self):
+        # ...and send_to_chat=False keeps it private instead. Either way
+        # the image is stored in the sandbox for further processing.
         result, sent = await self._run(send_to_chat=False)
         self.assertEqual(sent, [])
         self.assertIn(f'stored in the sandbox at {self.STORED_PATH}', result)

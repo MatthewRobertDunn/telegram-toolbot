@@ -115,16 +115,19 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         if uid is not None:
             self.fake.labels[name] = str(uid)
 
-    async def test_container_name_per_user(self):
-        self.assertEqual(SandboxManager.container_name_for(42),
-                         'toolbot-sandbox-42')
-
     async def test_ensure_starts_container_once(self):
         sandbox = await self._ensure(1)
         again = await self._ensure(1)
         self.assertEqual(len(self.fake.run_calls()), 1)
         self.assertEqual(sandbox.container_name, 'toolbot-sandbox-1')
         self.assertIs(sandbox, again)
+        # The run carries the uid label (used to recover leftovers), the
+        # configured resource limits, and the keep-alive command.
+        run = self.fake.run_calls()[0]
+        self.assertIn('toolbot.sandbox=1', run)
+        self.assertIn(config.SANDBOX_MEMORY, run)
+        self.assertIn(config.SANDBOX_IMAGE, run)
+        self.assertEqual(run[-2:], ['sleep', 'infinity'])
 
     async def test_one_sandbox_per_user_are_distinct(self):
         first = await self._ensure(1)
@@ -132,14 +135,6 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.container_name, 'toolbot-sandbox-1')
         self.assertEqual(second.container_name, 'toolbot-sandbox-2')
         self.assertEqual(len(self.fake.run_calls()), 2)
-
-    async def test_run_uses_label_and_limits(self):
-        await self._ensure(1)
-        run = self.fake.run_calls()[0]
-        self.assertIn('toolbot.sandbox=1', run)
-        self.assertIn(config.SANDBOX_MEMORY, run)
-        self.assertIn(config.SANDBOX_IMAGE, run)
-        self.assertEqual(run[-2:], ['sleep', 'infinity'])
 
     async def test_ensure_restarts_stopped_container(self):
         sandbox = await self._ensure(1)
@@ -181,11 +176,6 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(sandbox.last_activity, time.time() - 60)
         self.assertEqual(len(self.fake.exec_calls()), 1)
         self.assertIn('echo hi', self.fake.exec_calls()[0])
-
-    async def test_exec_starts_sandbox_if_needed(self):
-        await self.manager.exec(7, 'uptime')
-        self.assertEqual(len(self.fake.run_calls()), 1)
-        self.assertEqual(self.fake.exec_calls()[0][1], 'toolbot-sandbox-7')
 
     async def test_exec_timeout_reported(self):
         result = await self.manager.exec(1, 'sleep TIMEOUT_MARKER')

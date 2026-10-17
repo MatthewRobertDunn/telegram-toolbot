@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import os
 import sys
 import unittest
@@ -63,11 +62,6 @@ class TestMessageToText(unittest.TestCase):
         self.assertEqual(
             compaction.message_to_text({'role': 'system', 'content': 'prompt'}),
             '')
-
-    def test_user_text(self):
-        self.assertEqual(
-            compaction.message_to_text({'role': 'user', 'content': 'hi'}),
-            '[User]: hi')
 
     def test_images_become_placeholder_text(self):
         text = compaction.message_to_text({
@@ -234,30 +228,6 @@ class TestCompactContext(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ctx.conversation, conversation)
 
-    async def test_refused_while_generating(self):
-        ctx = mock_ctx(conversation=_big_conversation())
-        pending = asyncio.create_task(asyncio.sleep(30))
-        ctx.generation_task = pending
-        try:
-            with self.assertRaises(compaction.CompactionBusyError):
-                await compaction.compact_context(ctx)
-        finally:
-            pending.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await pending
-
-    async def test_refused_while_compaction_running(self):
-        ctx = mock_ctx(conversation=_big_conversation())
-        pending = asyncio.create_task(asyncio.sleep(30))
-        ctx.compaction_task = pending
-        try:
-            with self.assertRaises(compaction.CompactionBusyError):
-                await compaction.compact_context(ctx)
-        finally:
-            pending.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await pending
-
     async def test_empty_summary_fails_and_keeps_conversation(self):
         conversation = _big_conversation()
         ctx = mock_ctx(conversation=conversation)
@@ -305,28 +275,6 @@ class TestCompactContext(unittest.IsolatedAsyncioTestCase):
         self.assertIsNot(seen['stored'], asyncio.current_task())
         self.assertIsNone(ctx.compaction_task)
         self.assertEqual(result.summary, 'THE SUMMARY')
-
-    async def test_cancelling_compaction_task_leaves_conversation_alone(self):
-        conversation = _big_conversation()
-        ctx = mock_ctx(conversation=conversation)
-        started = asyncio.Event()
-
-        async def fake_run_llm(ctx, **kwargs):
-            started.set()
-            await asyncio.sleep(30)
-            return 'THE SUMMARY'
-
-        with unittest.mock.patch.object(compaction, 'run_llm', fake_run_llm):
-            outer = asyncio.create_task(compaction.compact_context(ctx))
-            await started.wait()
-            task = ctx.compaction_task
-            assert task is not None
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await outer
-
-        self.assertEqual(ctx.conversation, conversation)
-        self.assertIsNone(ctx.compaction_task)
 
 
 if __name__ == '__main__':

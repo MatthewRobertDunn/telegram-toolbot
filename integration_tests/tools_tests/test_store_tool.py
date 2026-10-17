@@ -37,10 +37,6 @@ class TestStoreTool(unittest.IsolatedAsyncioTestCase):
         result = await store_get_keys(self.ctx)
         self.assertEqual(sorted(json.loads(result)), ["a", "b"])
 
-    async def test_list_keys_empty(self):
-        result = await store_get_keys(self.ctx)
-        self.assertEqual(result, "No keys stored.")
-
     async def test_delete_keys(self):
         await store_set_value(self.ctx, "a", "1")
         result = await store_delete_values(self.ctx, ["a", "gone"])

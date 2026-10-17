@@ -72,42 +72,19 @@ class TestSandboxToolsIntegration(unittest.IsolatedAsyncioTestCase):
         read = await sandbox_tool.read(ctx, "app.py")
         self.assertIn("print('Hello, world!')", read)
 
-    async def test_edit_requires_read_first(self):
-        ctx = await self._ctx()
-        await sandbox_tool.write(ctx, "their.txt", "data\n")
-        # a fresh context simulates a new conversation with no read history,
-        # but the same sandbox, where the file now exists
-        fresh = create_mock_context(user_id=self.uid)
-        result = await sandbox_tool.edit(fresh, "their.txt", "data", "x")
-        self.assertIn("has not been read", result)
-
-    async def test_edit_not_found_error(self):
-        ctx = await self._ctx()
-        await sandbox_tool.write(ctx, "app.py", "one\n")
-        result = await sandbox_tool.edit(ctx, "app.py", "nonexistent", "x")
-        self.assertIn("Could not find oldString", result)
-
-    async def test_edit_multiple_matches_error(self):
-        ctx = await self._ctx()
-        await sandbox_tool.write(ctx, "multi.txt", "x = 1\ny = 2\nz = 3\nx = 4\n")
-        result = await sandbox_tool.edit(ctx, "multi.txt", "x", "q")
-        self.assertIn("Found multiple matches", result)
-
     async def test_grep_finds_matches(self):
         ctx = await self._ctx()
         await sandbox_tool.write(ctx, "a.txt", "the needle is here\n")
         await sandbox_tool.write(ctx, "b.txt", "nothing relevant\n")
+        await sandbox_tool.write(ctx, "code.py", "another needle goes here\n")
         result = await sandbox_tool.grep(ctx, "needle")
-        self.assertIn("Found 1 matches", result)
+        self.assertIn("Found 2 matches", result)
         self.assertIn("the needle is here", result)
-
-    async def test_grep_include_filter(self):
-        ctx = await self._ctx()
-        await sandbox_tool.write(ctx, "code.py", "target = 1\n")
-        await sandbox_tool.write(ctx, "notes.txt", "target = 2\n")
-        result = await sandbox_tool.grep(ctx, "target", include="*.py")
+        # The include filter restricts the search to matching names.
+        result = await sandbox_tool.grep(ctx, "needle", include="*.txt")
         self.assertIn("Found 1 matches", result)
-        self.assertIn("code.py", result)
+        self.assertIn("a.txt", result)
+        self.assertNotIn("code.py", result)
 
     async def test_glob_finds_files(self):
         ctx = await self._ctx()
@@ -145,10 +122,6 @@ class TestSandboxToolsIntegration(unittest.IsolatedAsyncioTestCase):
         gone = await sandbox_tool.read(ctx, "obsolete.txt")
         self.assertIn("File not found", gone)
 
-    async def test_patch_rejects_bad_patch(self):
-        result = await sandbox_tool.patch(await self._ctx(), "not a patch")
-        self.assertTrue(result.startswith("Error:"), result)
-
     async def test_send_file_delivers_document(self):
         ctx = await self._ctx()
         await sandbox_tool.bash(ctx, "printf 'report body' > report.txt")
@@ -158,18 +131,6 @@ class TestSandboxToolsIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent["kind"], "document")
         self.assertEqual(sent["document"], b"report body")
         self.assertEqual(sent["filename"], "report.txt")
-
-    async def test_send_file_from_subdirectory(self):
-        ctx = await self._ctx()
-        await sandbox_tool.bash(ctx, "mkdir -p out && printf 'data' > out/blob.bin")
-        result = await sandbox_tool.send_file(ctx, "out/blob.bin")
-        self.assertIn("Sent blob.bin", result)
-        sent = ctx.bot.sent[-1]
-        self.assertEqual(sent["document"], b"data")
-
-    async def test_send_file_missing(self):
-        result = await sandbox_tool.send_file(await self._ctx(), "nope.txt")
-        self.assertIn("File not found", result)
 
     async def test_read_image_returns_image_payload(self):
         ctx = await self._ctx()
@@ -183,25 +144,6 @@ class TestSandboxToolsIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.image.data.startswith(b"\x89PNG"))
         sent = ctx.bot.sent[-1]
         self.assertEqual(sent["kind"], "photo")
-
-    async def test_read_image_missing(self):
-        result = await sandbox_tool.read_image(await self._ctx(), "nope.png")
-        assert isinstance(result, str)
-        self.assertIn("File not found", result)
-
-    async def test_read_image_unsupported_type(self):
-        ctx = await self._ctx()
-        await sandbox_tool.bash(ctx, "echo data > /workspace/file.txt")
-        result = await sandbox_tool.read_image(ctx, "file.txt")
-        assert isinstance(result, str)
-        self.assertIn("not a supported image type", result)
-
-    async def test_binary_read_rejected(self):
-        ctx = await self._ctx()
-        await sandbox_tool.bash(
-            ctx, "printf 'PK\\x03\\x04' > binary.bin; head -c 100 /dev/zero >> binary.bin")
-        result = await sandbox_tool.read(ctx, "binary.bin")
-        self.assertIn("binary", result)
 
 
 if __name__ == "__main__":

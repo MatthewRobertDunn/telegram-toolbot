@@ -40,7 +40,8 @@ class TestCompactCommand(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.sent[0]["text"], "Context too small to compact")
 
     async def test_compacts_and_reports_token_counts(self):
-        ctx = create_mock_context(user_id=_uid(), command_name="compact")
+        ctx = create_mock_context(user_id=_uid(), command_name="compact",
+                                  command_text="500")
         _fill_big_conversation(ctx)
         with unittest.mock.patch("compaction.run_llm", _fake_run_llm):
             await compact_command(ctx)
@@ -53,15 +54,6 @@ class TestCompactCommand(unittest.IsolatedAsyncioTestCase):
                          r"^Compaction complete: [\d,]+ tokens -> [\d,]+ tokens$")
         self.assertIn("THE SUMMARY", ctx.conversation[1]["content"])
 
-    async def test_keep_tokens_argument(self):
-        ctx = create_mock_context(user_id=_uid(), command_name="compact",
-                                  command_text="500")
-        _fill_big_conversation(ctx)
-        with unittest.mock.patch("compaction.run_llm", _fake_run_llm):
-            await compact_command(ctx)
-        self.assertRegex(ctx.sent[-1]["text"],
-                         r"^Compaction complete: ")
-
     async def test_invalid_argument_is_rejected(self):
         ctx = create_mock_context(user_id=_uid(), command_name="compact",
                                   command_text="not-a-number")
@@ -71,36 +63,23 @@ class TestCompactCommand(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(ctx.sent), 1)
         self.assertIn("Usage:", ctx.sent[0]["text"])
 
-    async def test_refused_while_generating(self):
-        ctx = create_mock_context(user_id=_uid(), command_name="compact")
-        _fill_big_conversation(ctx)
-        pending = asyncio.create_task(asyncio.sleep(30))
-        ctx.generation_task = pending
-        try:
-            with unittest.mock.patch("compaction.run_llm", _fake_run_llm):
-                await compact_command(ctx)
-        finally:
-            pending.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await pending
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertIn("being generated", ctx.sent[0]["text"])
-        self.assertIn("first question", ctx.conversation[1]["content"])
-
-    async def test_refused_while_compaction_running(self):
-        ctx = create_mock_context(user_id=_uid(), command_name="compact")
-        _fill_big_conversation(ctx)
-        pending = asyncio.create_task(asyncio.sleep(30))
-        ctx.compaction_task = pending
-        try:
-            with unittest.mock.patch("compaction.run_llm", _fake_run_llm):
-                await compact_command(ctx)
-        finally:
-            pending.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await pending
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertIn("already running", ctx.sent[0]["text"])
+    async def test_refused_while_busy(self):
+        for field, reason in (("generation_task", "being generated"),
+                              ("compaction_task", "already running")):
+            ctx = create_mock_context(user_id=_uid(), command_name="compact")
+            _fill_big_conversation(ctx)
+            pending = asyncio.create_task(asyncio.sleep(30))
+            setattr(ctx, field, pending)
+            try:
+                with unittest.mock.patch("compaction.run_llm", _fake_run_llm):
+                    await compact_command(ctx)
+            finally:
+                pending.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await pending
+            self.assertEqual(len(ctx.sent), 1)
+            self.assertIn(reason, ctx.sent[0]["text"])
+            self.assertIn("first question", ctx.conversation[1]["content"])
 
     async def test_stopping_compaction_mid_run(self):
         ctx = create_mock_context(user_id=_uid(), command_name="compact")

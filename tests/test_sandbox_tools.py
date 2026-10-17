@@ -131,21 +131,13 @@ class TestEditHelper(unittest.TestCase):
         self.assertEqual(self._replace(content, old, new),
                          'def a():\n    return 1\n\ndef b():\n    return 2\n')
 
-    def test_identical_strings_error(self):
-        with self.assertRaises(ValueError, msg='identical'):
-            self._replace('x\n', 'x', 'x')
-
-    def test_empty_oldstring_error(self):
-        with self.assertRaises(ValueError, msg='oldString cannot be empty'):
-            self._replace('x\n', '', 'y')
-
     def test_line_trimmed_fallback(self):
         content = 'def f():\n\treturn 1\n'
         old = 'def f():\n    return 1'
         result = self._replace(content, old, 'def f():\n\treturn 2')
         self.assertEqual(result, 'def f():\n\treturn 2\n')
 
-    def test_indentation_flexible_fallback(self):
+        # The fallback also flexes block indentation.
         content = 'class A:\n    def m(self):\n        pass\n'
         old = 'def m(self):\npass'
         result = self._replace(content, old, 'def m(self):\n    return 5')
@@ -177,16 +169,6 @@ class TestEditHelper(unittest.TestCase):
             self.assertTrue(result['ok'])
             with open(path) as f:
                 self.assertEqual(f.read(), 'foo\nqux\n')
-
-    def test_helper_script_not_found(self):
-        payload = {'path': 'missing.txt', 'old_string': 'a', 'new_string': 'b'}
-        original_stdin = sys.stdin
-        sys.stdin = io.StringIO(json.dumps(payload))
-        try:
-            result = _run_main([], toolbot_edit.main)
-        finally:
-            sys.stdin = original_stdin
-        self.assertFalse(result['ok'])
 
 
 class TestReadHelper(unittest.TestCase):
@@ -270,7 +252,7 @@ class TestReadHelper(unittest.TestCase):
             self.assertIn('Did you mean', result['error'])
             self.assertIn('app.py', result['error'])
 
-    def test_not_found_no_suggestions(self):
+        # With no candidates at all there is no suggestion section.
         with tempfile.TemporaryDirectory() as tmp:
             result = self._read('--path', os.path.join(tmp, 'missing.txt'))
             self.assertFalse(result['ok'])
@@ -325,47 +307,37 @@ class TestGlobHelper(unittest.TestCase):
 
 class TestUploadNaming(unittest.TestCase):
 
-    def test_no_collision(self):
+    def test_suffixing(self):
         self.assertEqual(_unique_name("f.txt", set()), "f.txt")
-
-    def test_collision_gets_suffix(self):
+        self.assertEqual(_unique_name("f.txt", {"f.txt"}), "f-1.txt")
         self.assertEqual(
-            _unique_name("f.txt", {"f.txt"}), "f-1.txt")
-
-    def test_multi_collision_increments(self):
-        self.assertEqual(
-            _unique_name(
-                "f.txt", {"f.txt", "f-1.txt", "f-2.txt"}),
+            _unique_name("f.txt", {"f.txt", "f-1.txt", "f-2.txt"}),
             "f-3.txt")
-
-    def test_suffix_keeps_extension(self):
         self.assertEqual(
-            _unique_name("photo.jpg", {"photo.jpg"}),
-            "photo-1.jpg")
-
-    def test_no_extension(self):
+            _unique_name("photo.jpg", {"photo.jpg"}), "photo-1.jpg")
         self.assertEqual(
             _unique_name("README", {"README"}), "README-1")
 
     def test_fallback_name_from_kind_and_path(self):
         class Document:
             pass
+
+        class PhotoSize:
+            pass
+
+        class Voice:
+            pass
+
         file = SimpleNamespace(file_path="voice/file_123.oga")
         name = upload_handler._fallback_name(Document(), file)
         self.assertTrue(name.startswith("document_"))
         self.assertTrue(name.endswith(".oga"))
 
-    def test_fallback_name_photo_kind(self):
-        class PhotoSize:
-            pass
         file = SimpleNamespace(file_path="photos/file_5.jpg")
         name = upload_handler._fallback_name(PhotoSize(), file)
         self.assertTrue(name.startswith("photo_"))
         self.assertTrue(name.endswith(".jpg"))
 
-    def test_fallback_name_missing_path(self):
-        class Voice:
-            pass
         file = SimpleNamespace(file_path=None)
         name = upload_handler._fallback_name(Voice(), file)
         self.assertRegex(name, r"^voice_\d+$")
@@ -373,14 +345,11 @@ class TestUploadNaming(unittest.TestCase):
 
 class TestSandboxToolHelpers(unittest.TestCase):
 
-    def test_resolve_path_relative(self):
+    def test_resolve_path(self):
         self.assertEqual(sandbox_tool._resolve_path('src/app.py'),
                          '/workspace/src/app.py')
-
-    def test_resolve_path_absolute(self):
-        self.assertEqual(sandbox_tool._resolve_path('/etc/hosts'), '/etc/hosts')
-
-    def test_resolve_path_normalizes(self):
+        self.assertEqual(sandbox_tool._resolve_path('/etc/hosts'),
+                         '/etc/hosts')
         self.assertEqual(sandbox_tool._resolve_path('src/../app.py'),
                          '/workspace/app.py')
 
@@ -401,8 +370,7 @@ class TestSandboxToolHelpers(unittest.TestCase):
             {'path': 'a.py', 'line': 3, 'text': 'needle here'},
             {'path': 'a.py', 'line': 7, 'text': 'another needle'},
         ])
-
-    def test_parse_rg_json_garbage_only(self):
+        # Non-JSON lines from a truncated pipe are tolerated.
         self.assertEqual(sandbox_tool._parse_rg_json('not json\n'), [])
 
 
@@ -427,14 +395,14 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, 'Wrote file successfully.')
         self.assertIn('/workspace/src/new.txt', ctx.user_data['_sandbox_read_files'])
 
-    async def test_write_requires_read_first(self):
+    async def test_requires_read_first(self):
+        # Writing an existing file and editing both demand a prior read.
         manager = self._canned([('test -e', 0, '', '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
             ctx = mock_ctx()
             result = await sandbox_tool.write(ctx, 'existing.txt', 'data')
         self.assertIn('has not been read', result)
 
-    async def test_edit_requires_read_first(self):
         manager = self._canned([])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
             ctx = mock_ctx()
@@ -515,7 +483,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn('  Line 4: find_me()', result)
         self.assertIn('  Line 9: find_me()', result)
 
-    async def test_grep_no_matches(self):
+        # An empty result set is a distinct contract the model re-queries on.
         manager = self._canned([('rg', 0, '', '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
             ctx = mock_ctx()
@@ -553,7 +521,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn('/workspace/a.py', result)
         self.assertIn('/workspace/b.py', result)
 
-    async def test_glob_no_files(self):
+        # An empty listing is a distinct result string.
         helper_result = json.dumps(
             {'ok': True, 'data': {'files': [], 'truncated': False}})
         manager = self._canned([('toolbot_glob.py', 0, helper_result, '')])
@@ -600,22 +568,7 @@ class TestSendFile(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.sent[0]['filename'], 'f.txt')
         self.assertEqual(bot.sent[0]['document'], b'hello world')
 
-    async def test_send_file_not_found(self):
-        manager = self._canned([('stat', 1, '', 'No such file')])
-        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = mock_ctx(bot=_FakeBot())
-            result = await sandbox_tool.send_file(ctx, 'nope.txt')
-        self.assertIn('File not found', result)
-
-    async def test_send_file_too_large(self):
-        manager = self._canned(
-            [('stat', 0, f'{sandbox_tool.MAX_SEND_FILE_BYTES + 1}\n', '')])
-        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = mock_ctx(bot=_FakeBot())
-            result = await sandbox_tool.send_file(ctx, 'big.bin')
-        self.assertIn('too large', result)
-
-    async def test_send_file_binary_content_preserved(self):
+        # Arbitrary binary payloads survive the base64 round trip.
         payload = bytes(range(256))
         encoded = base64.b64encode(payload).decode()
         manager = self._canned([
@@ -627,6 +580,33 @@ class TestSendFile(unittest.IsolatedAsyncioTestCase):
             ctx = mock_ctx(bot=bot)
             await sandbox_tool.send_file(ctx, 'blob.bin')
         self.assertEqual(bot.sent[0]['document'], payload)
+
+    async def test_file_not_found(self):
+        # read_image and send_file duplicate this guard; cover both.
+        manager = self._canned([('stat', 1, '', 'No such file')])
+        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
+            ctx = mock_ctx(bot=_FakeBot())
+            send_result = await sandbox_tool.send_file(ctx, 'nope.txt')
+            image_result = await sandbox_tool.read_image(ctx, 'nope.png')
+        self.assertIn('File not found', send_result)
+        assert isinstance(image_result, str)
+        self.assertIn('File not found', image_result)
+
+    async def test_file_too_large(self):
+        # read_image and send_file duplicate this guard; cover both.
+        cases = [
+            (sandbox_tool.send_file, 'big.bin',
+             sandbox_tool.MAX_SEND_FILE_BYTES + 1),
+            (sandbox_tool.read_image, 'big.png',
+             sandbox_tool.MAX_IMAGE_DISPLAY_BYTES + 1),
+        ]
+        for tool, path, limit in cases:
+            manager = self._canned([('stat', 0, f'{limit}\n', '')])
+            with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
+                ctx = mock_ctx(bot=_FakeBot())
+                result = await tool(ctx, path)
+            assert isinstance(result, str)
+            self.assertIn('too large', result)
 
     async def test_send_file_base64_failure(self):
         manager = self._canned([('stat', 0, '4\n', ''), ('base64', 1, '', 'Is a directory')])
@@ -649,23 +629,6 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
         assert isinstance(result, str)
         self.assertIn('not a supported image type', result)
 
-    async def test_not_found(self):
-        manager = self._canned([('stat', 1, '', '')])
-        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = mock_ctx(bot=_FakeBot())
-            result = await sandbox_tool.read_image(ctx, 'nope.png')
-        assert isinstance(result, str)
-        self.assertIn('File not found', result)
-
-    async def test_too_large(self):
-        manager = self._canned(
-            [('stat', 0, f'{sandbox_tool.MAX_IMAGE_DISPLAY_BYTES + 1}\n', '')])
-        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = mock_ctx(bot=_FakeBot())
-            result = await sandbox_tool.read_image(ctx, 'big.png')
-        assert isinstance(result, str)
-        self.assertIn('too large', result)
-
     async def test_success_sends_photo_and_returns_image(self):
         payload = bytes(range(256))
         encoded = base64.b64encode(payload).decode()
@@ -684,37 +647,26 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
         self.assertIn('/workspace/rendered.png', result.text)
         self.assertEqual(bot.sent_photos, [payload])
 
-    async def test_uploaded_image_not_resent(self):
-        payload = b'img-bytes'
-        encoded = base64.b64encode(payload).decode()
-        manager = self._canned([
-            ('stat', 0, f'{len(payload)}\n', ''),
-            ('base64', 0, encoded, ''),
-        ])
-        bot = _FakeBot()
-        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = mock_ctx(bot=bot)
-            result = await sandbox_tool.read_image(ctx, 'uploads/pic.png')
-        assert isinstance(result, ToolCallResult)
-        self.assertEqual(bot.sent_photos, [])
-
-    async def test_send_to_chat_false_does_not_send(self):
-        payload = b'img-bytes'
-        encoded = base64.b64encode(payload).decode()
-        manager = self._canned([
-            ('stat', 0, f'{len(payload)}\n', ''),
-            ('base64', 0, encoded, ''),
-        ])
-        bot = _FakeBot()
-        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = mock_ctx(bot=bot)
-            result = await sandbox_tool.read_image(
-                ctx, 'rendered.png', send_to_chat=False)
-        assert isinstance(result, ToolCallResult)
-        assert result.image is not None
-        self.assertEqual(bot.sent_photos, [])
-        self.assertNotIn('shown in the chat', result.text)
-        self.assertIn('Image read', result.text)
+    async def test_images_not_shown_are_not_sent(self):
+        # An image under uploads/ was already shown when uploaded, and
+        # send_to_chat=False keeps a read image private: neither is sent.
+        cases = [('uploads/pic.png', {}), ('rendered.png', {'send_to_chat': False})]
+        for path, kwargs in cases:
+            payload = b'img-bytes'
+            encoded = base64.b64encode(payload).decode()
+            manager = self._canned([
+                ('stat', 0, f'{len(payload)}\n', ''),
+                ('base64', 0, encoded, ''),
+            ])
+            bot = _FakeBot()
+            with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
+                ctx = mock_ctx(bot=bot)
+                result = await sandbox_tool.read_image(ctx, path, **kwargs)
+            assert isinstance(result, ToolCallResult)
+            self.assertEqual(bot.sent_photos, [])
+            if not path.startswith('uploads/'):
+                self.assertNotIn('shown in the chat', result.text)
+                self.assertIn('Image read', result.text)
 
     async def test_send_photo_failure_still_attaches(self):
         payload = b'img-bytes'

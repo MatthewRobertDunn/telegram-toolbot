@@ -33,7 +33,7 @@ def _fake_client(captured: dict, chunks: list):
         completions=SimpleNamespace(create=fake_create)))
 
 
-class TestRunLlmToolToggle(unittest.IsolatedAsyncioTestCase):
+class TestRunLlmReplies(unittest.IsolatedAsyncioTestCase):
 
     async def test_tools_offered_by_default(self):
         captured: dict = {}
@@ -45,6 +45,7 @@ class TestRunLlmToolToggle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, 'plain reply')
         self.assertIn('tools', captured)
         self.assertEqual(captured['tool_choice'], 'auto')
+        self.assertIs(captured['stream'], True)
 
     async def test_allow_tools_false_omits_tools(self):
         captured: dict = {}
@@ -58,17 +59,6 @@ class TestRunLlmToolToggle(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('tools', captured)
         self.assertNotIn('tool_choice', captured)
 
-
-class TestRunLlmStreaming(unittest.IsolatedAsyncioTestCase):
-
-    async def test_always_requests_streaming(self):
-        captured: dict = {}
-        with unittest.mock.patch.object(
-                run_llm_mod, 'client',
-                _fake_client(captured, [_chunk('hi')])):
-            await run_llm_mod.run_llm(
-                mock_ctx(settings=SETTINGS, conversation=[]))
-        self.assertIs(captured['stream'], True)
 
     async def test_empty_reply_reports_no_content(self):
         # Regression: an empty completion (no content, no reasoning, no tool
@@ -113,16 +103,20 @@ class TestRunLlmSessionHeader(unittest.IsolatedAsyncioTestCase):
 
     async def test_nested_conversation_gets_a_fresh_session_id(self):
         # A nested call with its own Conversation (subagent, compaction)
-        # must not share the parent chat's session id.
+        # must not share the parent chat's session id. Its message list is
+        # used as given, so in-place appends stay visible to the caller.
         ctx = mock_ctx(settings=SETTINGS, conversation=[])
+        conversation = Conversation([{'role': 'user', 'content': 'parent'}])
         captured: dict = {}
         with unittest.mock.patch.object(
                 run_llm_mod, 'client',
                 _fake_client(captured, [_chunk('a')])):
-            await run_llm_mod.run_llm(ctx, conversation=Conversation([
-                {'role': 'user', 'content': 'parent'}]))
+            await run_llm_mod.run_llm(ctx, conversation=conversation)
         parent = captured['extra_headers']['x-opencode-session']
         self.assertNotEqual(parent, ctx.conversation.id)
+        self.assertIs(captured['messages'], conversation.messages)
+        self.assertEqual(
+            captured['extra_headers']['x-opencode-session'], conversation.id)
         with unittest.mock.patch.object(
                 run_llm_mod, 'client',
                 _fake_client(captured, [_chunk('b')])):
@@ -130,20 +124,6 @@ class TestRunLlmSessionHeader(unittest.IsolatedAsyncioTestCase):
                 {'role': 'user', 'content': 'another'}]))
         self.assertNotEqual(
             captured['extra_headers']['x-opencode-session'], parent)
-
-    async def test_explicit_conversation_is_used_as_given(self):
-        # Passing a Conversation explicitly sends its messages and its id,
-        # and in-place appends stay visible to the caller.
-        conversation = Conversation([{'role': 'user', 'content': 'hi'}])
-        ctx = mock_ctx(settings=SETTINGS, conversation=[])
-        captured: dict = {}
-        with unittest.mock.patch.object(
-                run_llm_mod, 'client',
-                _fake_client(captured, [_chunk('reply')])):
-            await run_llm_mod.run_llm(ctx, conversation=conversation)
-        self.assertIs(captured['messages'], conversation.messages)
-        self.assertEqual(captured['extra_headers']['x-opencode-session'],
-                         conversation.id)
 
 
 def _tool_chunk(name, arguments, call_id='c1', reasoning=None):

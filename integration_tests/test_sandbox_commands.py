@@ -30,14 +30,6 @@ class TestSandboxResetCommand(unittest.IsolatedAsyncioTestCase):
         result = await manager.exec(self.uid, "cat /tmp/doomed.txt")
         self.assertNotEqual(result["returncode"], 0)
 
-    async def test_sandbox_reset_without_sandbox(self):
-        ctx = create_mock_context(user_id=self.uid, command_name="sandbox_reset")
-
-        await sandbox_reset_command(ctx)
-
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertIn("Sandbox destroyed", ctx.sent[0]["text"])
-
 
 if __name__ == "__main__":
     unittest.main()

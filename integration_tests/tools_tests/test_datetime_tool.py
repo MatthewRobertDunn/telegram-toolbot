@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import bootstrap  # noqa: F401
@@ -14,12 +15,7 @@ class TestDatetimeTool(unittest.IsolatedAsyncioTestCase):
         result = await get_current_datetime()
         self.assertRegex(result,
                          r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC \(\w+\)")
-
-    async def test_includes_current_year(self):
-        from datetime import datetime, timezone
-        year = datetime.now(timezone.utc).year
-        result = await get_current_datetime()
-        self.assertIn(str(year), result)
+        self.assertIn(str(datetime.now(timezone.utc).year), result)
 
 
 if __name__ == "__main__":

@@ -30,17 +30,14 @@ class TestPythonRunner(unittest.IsolatedAsyncioTestCase):
         self.assertIn("stdout:", result)
         self.assertIn("4", result)
 
-    async def test_returns_stderr_output(self):
-        result = await run_python_code(
-            await self._ctx(), "import sys; sys.stderr.write('oops')")
-        self.assertIn("stderr:", result)
-        self.assertIn("oops", result)
-
     async def test_nonzero_return_code(self):
+        # An uncaught exception yields a nonzero code, and output written
+        # to stderr comes back in the stderr section.
         result = await run_python_code(
             await self._ctx(), "raise ValueError('boom')")
         self.assertIn("Return code: 1", result)
         self.assertIn("boom", result)
+        self.assertIn("stderr:", result)
 
     async def test_runs_in_workspace_and_persists_state(self):
         ctx = await self._ctx()
