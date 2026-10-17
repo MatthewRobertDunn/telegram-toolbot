@@ -1,5 +1,5 @@
 import re
-from types import SimpleNamespace
+from dataclasses import dataclass
 
 from .draft_streamer import DraftStreamer
 
@@ -8,6 +8,29 @@ from .draft_streamer import DraftStreamer
 # chain-of-thought never reaches Telegram in the final message.
 _THINK_CLOSE = '</th' + 'ink>'
 _THINK_RE = re.compile(r'^(.*?)(?:' + _THINK_CLOSE + r')(.*)$', flags=re.DOTALL)
+
+
+@dataclass
+class FunctionCall:
+    name: str
+    arguments: str
+
+
+@dataclass
+class ToolCall:
+    id: str
+    function: FunctionCall
+
+
+@dataclass
+class ConsumeStreamResult:
+    """A model reply assembled from one streamed completion.
+
+    All fields are always present; None when empty.
+    """
+    content: str | None
+    tool_calls: list[ToolCall] | None
+    reasoning_content: str | None
 
 
 def _split_thinking(text: str) -> tuple[str, str]:
@@ -23,11 +46,11 @@ def _split_thinking(text: str) -> tuple[str, str]:
 
 
 async def consume_stream(stream, streamer: DraftStreamer,
-                         strip_thinking: bool) -> SimpleNamespace:
+                         strip_thinking: bool) -> ConsumeStreamResult:
     """Read a chat completion stream, forwarding content to live drafts.
 
-    Returns an attribute-compatible stand-in for the non-streaming
-    ChatCompletionMessage (.content/.tool_calls/.reasoning_content).
+    Returns a ConsumeStreamResult; all fields are always present
+    (None when empty).
     """
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -71,16 +94,16 @@ async def consume_stream(stream, streamer: DraftStreamer,
     for idx in sorted(tool_acc):
         entry = tool_acc[idx]
         if entry['id'] or entry['name']:
-            tool_calls.append(SimpleNamespace(
-                id=entry['id'], type='function',
-                function=SimpleNamespace(name=entry['name'],
-                                         arguments=entry['arguments'])))
+            tool_calls.append(ToolCall(
+                id=entry['id'],
+                function=FunctionCall(name=entry['name'],
+                                      arguments=entry['arguments'])))
     if strip_thinking:
         visible, streamed_reasoning = _split_thinking(''.join(content_parts))
     else:
         visible = ''.join(content_parts).strip()
         streamed_reasoning = ''
-    return SimpleNamespace(
+    return ConsumeStreamResult(
         content=visible or None,
         tool_calls=tool_calls or None,
         reasoning_content=(''.join(reasoning_parts) or streamed_reasoning

@@ -5,9 +5,11 @@ API_TOKEN = os.environ.get("TELEGRAM_API_TOKEN", "")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
 LLM_MODEL = os.environ.get("LLM_MODEL", "big-pickle")
-STRONG_LLM_MODEL = os.environ.get("STRONG_LLM_MODEL", "z-ai/glm-5.3-flash")
+# Optional operator override for the model used by the `subagent` tool.
+# Unset means use the user's current model (their /model setting).
+SUBAGENT_MODEL = os.environ.get("SUBAGENT_MODEL") or None
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://192.168.0.2:28180/v1")
-IMAGE_GEN_URL = os.environ.get("IMAGE_GEN_URL", f"https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b")
+IMAGE_GEN_URL = os.environ.get("IMAGE_GEN_URL", f"https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux-3-image-klein")
 temperature = 1.0
 top_p = 0.95
 api_retry_time = 60
@@ -30,12 +32,17 @@ ALLOWED_IDS = [int(x.strip()) for x in ALLOWED_IDS_STR.split(",") if x.strip()]
 store_db_path = os.environ.get("STORE_DB_PATH", os.path.join(os.path.dirname(os.path.realpath(__file__)), '../store.db'))
 
 SANDBOX_IMAGE = os.environ.get("SANDBOX_IMAGE", "elpechos/toolbot-sandbox:latest")
-SANDBOX_IDLE_TIMEOUT = float(os.environ.get("SANDBOX_IDLE_TIMEOUT", "3600"))
+# Seconds of inactivity after which a sandbox is stopped. Stopping keeps the
+# container and its files; it is restarted on the next access.
+SANDBOX_IDLE_STOP_TIMEOUT = float(os.environ.get("SANDBOX_IDLE_STOP_TIMEOUT", "3600"))
+# Seconds since the last access after which a sandbox is removed, losing all
+# changes. Measured from the last access, so it also covers the stopped period.
+SANDBOX_IDLE_DESTROY_TIMEOUT = float(os.environ.get("SANDBOX_IDLE_DESTROY_TIMEOUT", "86400"))
 SANDBOX_EXEC_TIMEOUT = float(os.environ.get("SANDBOX_EXEC_TIMEOUT", "300"))
 SANDBOX_START_TIMEOUT = float(os.environ.get("SANDBOX_START_TIMEOUT", "300"))
 SANDBOX_REAP_INTERVAL = float(os.environ.get("SANDBOX_REAP_INTERVAL", "60"))
 SANDBOX_MEMORY = os.environ.get("SANDBOX_MEMORY", "1g")
-SANDBOX_CPUS = os.environ.get("SANDBOX_CPUS", "1.0")
+SANDBOX_CPUS = os.environ.get("SANDBOX_CPUS", "8.0")
 SANDBOX_PIDS_LIMIT = int(os.environ.get("SANDBOX_PIDS_LIMIT", "256"))
 
 

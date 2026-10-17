@@ -12,13 +12,14 @@ from handlers.message_handlers import text_message_handler
 from handlers.command_handlers import (
     start_restart_command,
     stop_command,
+    compact_command,
     systemprompt_command,
     systemprompt_reset_command,
     model_list_command,
     model_command,
     model_reset_command,
-    strong_model_command,
-    strong_model_reset_command,
+    subagent_model_command,
+    subagent_model_reset_command,
     top_p_command,
     top_p_reset_command,
     temperature_command,
@@ -29,6 +30,7 @@ from handlers.command_handlers import (
     user_profile_reset_command,
 )
 from handlers.upload_handler import upload_handler
+from handlers.sandbox_handlers import sandbox_reset_command
 from handlers.store_handlers import (
     store_command,
     store_list_command,
@@ -59,21 +61,22 @@ async def post_init(application: Application):
     async with create_settings_store() as store:
         await store.create_schema()
     try:
-        await manager.cleanup_all_stale()
+        await manager.recover_leftover_sandboxes()
     except Exception as e:
-        logger.warning("Could not clean up stale sandbox containers: %s", e)
+        logger.warning("Could not recover leftover sandbox containers: %s", e)
     await start_reaper()
     await application.bot.set_my_commands(
         [
             BotCommand("start", "Start a new conversation"),
             BotCommand("stop", "Stop the current AI response"),
+            BotCommand("compact", "Compact the conversation context"),
             BotCommand("systemprompt", "Set a custom system prompt"),
             BotCommand("systemprompt_reset", "Reset system prompt to default"),
             BotCommand("model", "Set the model to use"),
             BotCommand("model_list", "List available NVIDIA NIM models"),
             BotCommand("model_reset", "Reset model to default"),
-            BotCommand("strong_model", "Set the strong model used by ask_strong_llm"),
-            BotCommand("strong_model_reset", "Reset strong model to default"),
+            BotCommand("subagent_model", "Set the model used by the subagent tool"),
+            BotCommand("subagent_model_reset", "Reset subagent model to default"),
             BotCommand("top_p", "Set top_p sampling parameter"),
             BotCommand("top_p_reset", "Reset top_p to default"),
             BotCommand("temperature", "Set temperature parameter"),
@@ -84,6 +87,7 @@ async def post_init(application: Application):
             BotCommand("store_delete_all", "Delete all stored keys"),
             BotCommand("tool_output", "Toggle tool call output on/off"),
             BotCommand("settings_reset", "Reset all user settings to default"),
+            BotCommand("sandbox_reset", "Destroy your sandbox and all its files"),
             BotCommand("user_profile", "Set your profile/biography"),
             BotCommand("user_profile_reset", "Reset your profile to empty"),
         ]
@@ -121,13 +125,14 @@ def main():
 
     application.add_handler(CommandHandler('start', callback_adapter(start_restart_command)))
     application.add_handler(CommandHandler('stop', callback_adapter(stop_command)))
+    application.add_handler(CommandHandler('compact', callback_adapter(compact_command)))
     application.add_handler(CommandHandler('systemprompt', callback_adapter(systemprompt_command)))
     application.add_handler(CommandHandler('systemprompt_reset', callback_adapter(systemprompt_reset_command)))
     application.add_handler(CommandHandler('model_list', callback_adapter(model_list_command)))
     application.add_handler(CommandHandler('model', callback_adapter(model_command)))
     application.add_handler(CommandHandler('model_reset', callback_adapter(model_reset_command)))
-    application.add_handler(CommandHandler('strong_model', callback_adapter(strong_model_command)))
-    application.add_handler(CommandHandler('strong_model_reset', callback_adapter(strong_model_reset_command)))
+    application.add_handler(CommandHandler('subagent_model', callback_adapter(subagent_model_command)))
+    application.add_handler(CommandHandler('subagent_model_reset', callback_adapter(subagent_model_reset_command)))
     application.add_handler(CommandHandler('top_p', callback_adapter(top_p_command)))
     application.add_handler(CommandHandler('top_p_reset', callback_adapter(top_p_reset_command)))
     application.add_handler(CommandHandler('temperature', callback_adapter(temperature_command)))
@@ -138,6 +143,7 @@ def main():
     application.add_handler(CommandHandler('store_delete_all', callback_adapter(store_delete_all_command)))
     application.add_handler(CommandHandler('tool_output', callback_adapter(tool_output_command)))
     application.add_handler(CommandHandler('settings_reset', callback_adapter(settings_reset_command)))
+    application.add_handler(CommandHandler('sandbox_reset', callback_adapter(sandbox_reset_command)))
     application.add_handler(CommandHandler('user_profile', callback_adapter(user_profile_command)))
     application.add_handler(CommandHandler('user_profile_reset', callback_adapter(user_profile_reset_command)))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), callback_adapter(text_message_handler)))

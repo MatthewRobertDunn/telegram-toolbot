@@ -27,6 +27,9 @@ class DraftStreamer:
     first; if a partial markdown snippet can't be parsed it falls back to a
     plain draft, and disables itself entirely if the server won't accept
     drafts in this chat (e.g. pre-Bot-API-10.1 server).
+
+    When drafts are unavailable every call is a silent no-op, so callers
+    never need to check `enabled` themselves; just feed output through.
     """
 
     def __init__(self, ctx: ChatUpdateContext):
@@ -70,6 +73,8 @@ class DraftStreamer:
         await self._maybe_flush()
 
     async def flush(self, force: bool = False) -> None:
+        if not self.enabled:
+            return
         await self._maybe_flush(force=force)
 
     async def _maybe_flush(self, force: bool = False) -> None:

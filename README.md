@@ -23,9 +23,9 @@ The default configuration points at `https://integrate.api.nvidia.com/v1`, but y
 - **User preferences** — each user can set their own model, temperature, top_p, and system prompt via slash commands
 - **Rich command set** — 16+ slash commands for controlling model, parameters, profile, and persistent storage
 - **Tool calling** — the bot can search the web, run code, fetch pages, generate images, and more using OpenAI-compatible function calling
-- **Hierarchical LLM** — the primary model can delegate complex tasks to a stronger reasoning model via the `ask_strong_llm` tool
+- **Subagent** — the primary model can delegate research and multi-step tasks to a subagent via the `subagent` tool, keeping bulky tool output and intermediate work out of the main conversation
 - **Persistent key-value store** — both users (via commands) and the AI (via tools) can store and retrieve data across conversations
-- **Per-user sandboxes** — the AI gets a personal ephemeral Ubuntu container per user with a full coding environment (bash, read, write, edit, grep, glob, apply_patch), where it can run commands, install software, and work with files. Sandboxes expire one hour after the last command and lose all changes
+- **Per-user sandboxes** — the AI gets a personal ephemeral Ubuntu container per user with a full coding environment (bash, read, write, edit, grep, glob, patch), where it can run commands, install software, and work with files. Sandboxes are stopped one hour after the last command but their files are kept for 24 hours, after which the sandbox is removed and all changes are lost
 - **File uploads** — files users send to the bot (any file type) are placed in the sandbox at `/workspace/uploads/`, and the AI is notified so it can inspect them with the `read` tool
 
 ---
@@ -114,14 +114,15 @@ If you don't need the sandbox, you can disable its tools by commenting out the `
 | `OPENAI_KEY` | *(required)* | API key for chat completions |
 | `OPENAI_BASE_URL` | `https://integrate.api.nvidia.com/v1` | OpenAI-compatible API endpoint |
 | `LLM_MODEL` | `z-ai/glm-5.3-flash` | Default chat model |
-| `STRONG_LLM_MODEL` | `z-ai/glm-5.3-flash` | Model used by `ask_strong_llm` |
+| `SUBAGENT_MODEL` | *(falls back to the current `/model` setting)* | Optional override for the model used by the `subagent` tool |
 | `NVIDIA_API_KEY` | *(falls back to `OPENAI_KEY`)* | Key for NVIDIA Flux image generation |
 | `ALLOWED_USER_IDS` | *(none — open to all)* | Comma-separated Telegram user IDs |
 | `SANDBOX_IMAGE` | `elpechos/toolbot-sandbox:latest` | Docker image used for sandboxes |
-| `SANDBOX_IDLE_TIMEOUT` | `3600` | Seconds a sandbox survives after the last command (expiry loses all changes) |
+| `SANDBOX_IDLE_STOP_TIMEOUT` | `3600` | Seconds of inactivity before a sandbox is stopped (its files are kept and it is restarted on the next access) |
+| `SANDBOX_IDLE_DESTROY_TIMEOUT` | `86400` | Seconds since the last access before a sandbox is removed (loses all changes) |
 | `SANDBOX_EXEC_TIMEOUT` | `300` | Max seconds per sandbox command |
 | `SANDBOX_START_TIMEOUT` | `300` | Max seconds to start a sandbox (includes image pull) |
-| `SANDBOX_REAP_INTERVAL` | `60` | How often idle sandboxes are checked and destroyed |
+| `SANDBOX_REAP_INTERVAL` | `60` | How often idle sandboxes are checked, stopped and destroyed |
 | `SANDBOX_MEMORY` | `1g` | Memory limit per sandbox container |
 | `SANDBOX_CPUS` | `1.0` | CPU limit per sandbox container |
 | `SANDBOX_PIDS_LIMIT` | `256` | Process limit per sandbox container |
@@ -165,8 +166,8 @@ python -m unittest discover -s integration_tests -p "test_*.py" -v
 | `/model <model_id>` | Set the model to use |
 | `/model_list [filter]` | List available models (click any to select) |
 | `/model_reset` | Reset model to default |
-| `/strong_model <model_id>` | Set the strong model used by `ask_strong_llm` |
-| `/strong_model_reset` | Reset strong model to default |
+| `/subagent_model <model_id>` | Set the model used by the `subagent` tool |
+| `/subagent_model_reset` | Reset subagent model to default |
 | `/temperature <value>` | Set temperature (0.0–2.0) |
 | `/temperature_reset` | Reset temperature to default |
 | `/top_p <value>` | Set top_p (0.0–1.0) |
@@ -179,6 +180,7 @@ python -m unittest discover -s integration_tests -p "test_*.py" -v
 | `/store_delete <key>` | Delete a stored key |
 | `/store_delete_all` | Delete all stored keys |
 | `/settings_reset` | Reset all settings to defaults |
+| `/sandbox_reset` | Destroy your sandbox and all its files |
 
 ---
 
@@ -198,11 +200,11 @@ The bot uses OpenAI-compatible function calling. These tools are available to th
 | `edit` | Exact string replacement in sandbox files (with fallback matching for whitespace drift) |
 | `grep` | Regex content search in the sandbox, powered by ripgrep |
 | `glob` | Find sandbox files by glob pattern, sorted by modification time |
-| `apply_patch` | Apply Codex-style patch blocks (add/update/delete/move files) in the sandbox |
+| `patch` | Apply Codex-style patch blocks (add/update/delete/move files) in the sandbox |
 | `send_file` | Send a file from the sandbox to the user as a Telegram document |
 | `store_list` / `store_get` / `store_set` / `store_delete` | Persistent per-user key-value storage |
 | `display_status` | Send a progress message to the chat |
-| `ask_strong_llm` | Delegate a complex task to a more powerful reasoning model |
+| `subagent` | Spawn a subagent in a fresh conversation to work on a task (with the same tools and sandbox) and report back |
 | `generate_image` | Generate an image using NVIDIA Flux |
 
 ---
@@ -213,4 +215,4 @@ Messages are held as plaintext in the server's memory. There is no end-to-end en
 
 Anyone who knows your bot's username can send messages to it, potentially incurring API costs. Use `ALLOWED_USER_IDS` to restrict access, and ensure your API key has a spending limit. Avoid using this project with sensitive information or in production environments.
 
-The sandbox gives the AI root access inside an ephemeral, resource-limited Docker container (network enabled so it can install software). Sandbox state — including uploaded files — is destroyed when the sandbox expires, but while it runs the AI can execute arbitrary commands on it, so treat the sandbox and anything you upload to it as non-sensitive.
+The sandbox gives the AI root access inside an ephemeral, resource-limited Docker container (network enabled so it can install software). Sandbox state — including uploaded files — is destroyed when the sandbox expires or when you use `/sandbox_reset`, but while it runs the AI can execute arbitrary commands on it, so treat the sandbox and anything you upload to it as non-sensitive.

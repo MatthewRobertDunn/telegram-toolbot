@@ -1,4 +1,4 @@
-﻿import base64
+import base64
 import json
 import logging
 import posixpath
@@ -23,12 +23,14 @@ def _resolve_path(path: str) -> str:
     return posixpath.normpath(path)
 
 
+# The "_sandbox_read_files" user_data key tracks the files read so far.
+# Private to this module; its tests may reach in, nothing else should use it.
 def _mark_read(ctx: ChatUpdateContext, path: str) -> None:
-    ctx.user_data.setdefault("sandbox_read_files", set()).add(path)
+    ctx.user_data.setdefault("_sandbox_read_files", set()).add(path)
 
 
 def _ensure_read(ctx: ChatUpdateContext, path: str, tool: str) -> str | None:
-    if path not in ctx.user_data.get("sandbox_read_files", set()):
+    if path not in ctx.user_data.get("_sandbox_read_files", set()):
         return (f"Error: file has not been read. Use the read tool on "
                 f"{path} before using the {tool} tool on it.")
     return None
@@ -47,7 +49,7 @@ async def _run_helper(user_id: int, helper: str, args: list[str],
     if args:
         command += " " + " ".join(shlex.quote(arg) for arg in args)
     stdin_data = json.dumps(payload).encode() if payload is not None else None
-    result = await manager.exec_in_sandbox(user_id, command,
+    result = await manager.exec(user_id, command,
                                            stdin_data=stdin_data)
     if result["timeout"]:
         return {"ok": False, "error": "helper timed out"}
@@ -65,7 +67,7 @@ async def _run_helper(user_id: int, helper: str, args: list[str],
 async def bash(ctx: ChatUpdateContext, command: str) -> str:
     if not command.strip():
         return "Error: empty command."
-    result = await manager.exec_in_sandbox(ctx.user_id, command)
+    result = await manager.exec(ctx.user_id, command)
     output = []
     if result["timeout"]:
         output.append("Command timed out.")
@@ -132,7 +134,7 @@ async def read(ctx: ChatUpdateContext, filePath: str,
 @context_tool
 async def write(ctx: ChatUpdateContext, filePath: str, content: str) -> str:
     path = _resolve_path(filePath)
-    check = await manager.exec_in_sandbox(
+    check = await manager.exec(
         ctx.user_id, f"test -e {shlex.quote(path)}")
     if check["returncode"] == 0:
         error = _ensure_read(ctx, path, "write")
@@ -141,7 +143,7 @@ async def write(ctx: ChatUpdateContext, filePath: str, content: str) -> str:
     parent = posixpath.dirname(path)
     command = (f"mkdir -p {shlex.quote(parent)} && "
                f"cat > {shlex.quote(path)}")
-    result = await manager.exec_in_sandbox(ctx.user_id, command,
+    result = await manager.exec(ctx.user_id, command,
                                            stdin_data=content.encode())
     if result["timeout"]:
         return "Error: write timed out."
@@ -202,7 +204,7 @@ async def grep(ctx: ChatUpdateContext, pattern: str,
         parts += ["--glob", shlex.quote(include)]
     parts.append(shlex.quote(search_path))
     command = " ".join(parts) + f" | head -c {MAX_GREP_BYTES}"
-    result = await manager.exec_in_sandbox(ctx.user_id, command)
+    result = await manager.exec(ctx.user_id, command)
     all_matches = _parse_rg_json(result["stdout"])
     if not all_matches and result["stderr"].strip():
         return f"Error: {result['stderr'].strip()[:500]}"
@@ -250,11 +252,11 @@ async def glob(ctx: ChatUpdateContext, pattern: str,
 
 
 @context_tool
-async def apply_patch(ctx: ChatUpdateContext, patchText: str) -> str:
-    result = await manager.exec_in_sandbox(
+async def patch(ctx: ChatUpdateContext, patchText: str) -> str:
+    result = await manager.exec(
         ctx.user_id, "apply-patch-py", stdin_data=patchText.encode())
     if result["timeout"]:
-        return "Error: apply_patch timed out."
+        return "Error: patch timed out."
     if result["returncode"] != 0:
         return f"Error: {result['stderr'].strip()[:1000]}"
     summary = result["stdout"].strip()
@@ -284,7 +286,7 @@ async def read_image(ctx: ChatUpdateContext, filePath: str) -> str | ToolCallRes
     if mime is None:
         return ("Error: not a supported image type. Supported formats: "
                 "png, jpg, jpeg, gif, webp.")
-    stat = await manager.exec_in_sandbox(
+    stat = await manager.exec(
         ctx.user_id, f"stat -c %s {shlex.quote(path)}")
     if stat["returncode"] != 0:
         return f"Error: File not found: {path}"
@@ -293,7 +295,7 @@ async def read_image(ctx: ChatUpdateContext, filePath: str) -> str | ToolCallRes
         return (f"Error: image is too large to display "
                 f"({size:,} bytes; limit is {MAX_IMAGE_DISPLAY_BYTES:,}).")
 
-    encoded = await manager.exec_in_sandbox(
+    encoded = await manager.exec(
         ctx.user_id, f"base64 -w0 {shlex.quote(path)}")
     if encoded["returncode"] != 0:
         return f"Error: {encoded['stderr'].strip()[:500]}"
@@ -318,7 +320,7 @@ async def read_image(ctx: ChatUpdateContext, filePath: str) -> str | ToolCallRes
 @context_tool
 async def send_file(ctx: ChatUpdateContext, filePath: str) -> str:
     path = _resolve_path(filePath)
-    stat = await manager.exec_in_sandbox(
+    stat = await manager.exec(
         ctx.user_id, f"stat -c %s {shlex.quote(path)}")
     if stat["returncode"] != 0:
         return f"Error: File not found: {path}"
@@ -326,7 +328,7 @@ async def send_file(ctx: ChatUpdateContext, filePath: str) -> str:
     if size > MAX_SEND_FILE_BYTES:
         return (f"Error: file is too large to send "
                 f"({size:,} bytes; limit is {MAX_SEND_FILE_BYTES:,}).")
-    encoded = await manager.exec_in_sandbox(
+    encoded = await manager.exec(
         ctx.user_id, f"base64 -w0 {shlex.quote(path)}")
     if encoded["returncode"] != 0:
         return f"Error: {encoded['stderr'].strip()[:500]}"
@@ -345,7 +347,7 @@ WRITE = "write"
 EDIT = "edit"
 GREP = "grep"
 GLOB = "glob"
-APPLY_PATCH = "apply_patch"
+PATCH = "patch"
 SEND_FILE = "send_file"
 READ_IMAGE = "read_image"
 
@@ -358,6 +360,6 @@ def register(tools_list: list[dict], tool_map: dict):
     tool_map[EDIT] = edit
     tool_map[GREP] = grep
     tool_map[GLOB] = glob
-    tool_map[APPLY_PATCH] = apply_patch
+    tool_map[PATCH] = patch
     tool_map[SEND_FILE] = send_file
     tool_map[READ_IMAGE] = read_image

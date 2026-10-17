@@ -46,7 +46,7 @@ def _document(file_name=None):
     return media
 
 
-async def _fake_run_with_tools(ctx, **kwargs):
+async def _fake_run_llm(ctx, **kwargs):
     return "Upload received."
 
 
@@ -55,18 +55,18 @@ class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.uid = next_uid()
-        await manager.destroy_sandbox(self.uid)
+        await manager.destroy(self.uid)
 
     async def asyncTearDown(self):
-        await manager.destroy_sandbox(self.uid)
+        await manager.destroy(self.uid)
 
     async def test_document_upload_stored_and_llm_notified(self):
         ctx = _upload_ctx(self.uid, _document("hello.txt"))
-        with unittest.mock.patch("handlers.upload_handler.run_with_tools",
-                                 _fake_run_with_tools):
+        with unittest.mock.patch("handlers.upload_handler.run_llm",
+                                 _fake_run_llm):
             await upload_handler(ctx)
 
-        result = await manager.exec_in_sandbox(
+        result = await manager.exec(
             self.uid, "cat /workspace/uploads/hello.txt")
         self.assertEqual(result["returncode"], 0)
         self.assertEqual(result["stdout"], "mock file contents")
@@ -80,10 +80,10 @@ class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
 
     async def test_upload_without_name_gets_fallback(self):
         ctx = _upload_ctx(self.uid, _document(None))
-        with unittest.mock.patch("handlers.upload_handler.run_with_tools",
-                                 _fake_run_with_tools):
+        with unittest.mock.patch("handlers.upload_handler.run_llm",
+                                 _fake_run_llm):
             await upload_handler(ctx)
-        listing = await manager.exec_in_sandbox(
+        listing = await manager.exec(
             self.uid, "ls -1 /workspace/uploads")
         files = listing["stdout"].split()
         self.assertEqual(len(files), 1)
@@ -92,18 +92,18 @@ class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
     async def test_name_collision_gets_suffix(self):
         for _ in range(2):
             ctx = _upload_ctx(self.uid, _document("hello.txt"))
-            with unittest.mock.patch("handlers.upload_handler.run_with_tools",
-                                     _fake_run_with_tools):
+            with unittest.mock.patch("handlers.upload_handler.run_llm",
+                                     _fake_run_llm):
                 await upload_handler(ctx)
-        listing = await manager.exec_in_sandbox(
+        listing = await manager.exec(
             self.uid, "ls -1 /workspace/uploads")
         self.assertEqual(
             sorted(listing["stdout"].split()), ["hello-1.txt", "hello.txt"])
 
     async def test_caption_included_in_notification(self):
         ctx = _upload_ctx(self.uid, _document("notes.txt"), caption="please review")
-        with unittest.mock.patch("handlers.upload_handler.run_with_tools",
-                                 _fake_run_with_tools):
+        with unittest.mock.patch("handlers.upload_handler.run_llm",
+                                 _fake_run_llm):
             await upload_handler(ctx)
         user_messages = [m for m in ctx.conversation if m["role"] == "user"]
         last_user = user_messages[-1]["content"]
@@ -112,8 +112,8 @@ class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
 
     async def test_upload_refreshes_timer_and_starts_sandbox(self):
         ctx = _upload_ctx(self.uid, _document("timer.txt"))
-        with unittest.mock.patch("handlers.upload_handler.run_with_tools",
-                                 _fake_run_with_tools):
+        with unittest.mock.patch("handlers.upload_handler.run_llm",
+                                 _fake_run_llm):
             await upload_handler(ctx)
         running = await manager._container_running(manager._sandboxes[self.uid])
         self.assertTrue(running)

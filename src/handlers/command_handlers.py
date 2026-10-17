@@ -1,8 +1,11 @@
+import asyncio
+
 import openai
 from chat_update_context import ChatUpdateContext
+from compaction import (DEFAULT_KEEP_TOKENS, CompactionError, compact_context)
 from handlers.middleware import handler, settings
 from handlers.message_handlers import stop_generation
-from messaging import send_preformatted_message, send_message
+from messaging import send_preformatted_message, send_message, run_with_typing
 from config import OPENAI_KEY, OPENAI_BASE_URL
 
 
@@ -20,6 +23,41 @@ async def stop_command(ctx: ChatUpdateContext):
         await send_message(ctx, "Stopped the current response.")
     else:
         await send_message(ctx, "No response is currently being generated.")
+
+
+@handler
+async def compact_command(ctx: ChatUpdateContext):
+    keep_tokens = DEFAULT_KEEP_TOKENS
+    if ctx.command_text:
+        try:
+            keep_tokens = int(ctx.command_text)
+            if keep_tokens < 1:
+                raise ValueError
+        except ValueError:
+            await send_message(
+                ctx,
+                f'Usage: `/{ctx.command_name} [tokens of recent history to keep]`')
+            return
+
+    try:
+        result = await run_with_typing(
+            ctx,
+            compact_context(
+                ctx,
+                keep_tokens=keep_tokens,
+                on_start=lambda: send_message(ctx, 'Starting Compaction...')))
+    except asyncio.CancelledError:
+        await send_message(ctx, 'Compaction stopped.')
+        return
+    except CompactionError as e:
+        await send_message(ctx, str(e))
+        return
+
+    await send_message(ctx, result.summary, parse_mode='LLM')
+    await send_message(
+        ctx,
+        f'Compaction complete: {result.tokens_before:,} tokens '
+        f'-> {result.tokens_after:,} tokens')
 
 
 @handler
@@ -83,21 +121,21 @@ async def model_reset_command(ctx: ChatUpdateContext):
 
 @handler
 @settings
-async def strong_model_command(ctx: ChatUpdateContext):
+async def subagent_model_command(ctx: ChatUpdateContext):
     model = ctx.command_text
     if not model:
-        await send_message(ctx, f'Current strong model is `{ctx.settings.strong_model}`\n Usage: `/{ctx.command_name} <model_id>`')
+        await send_message(ctx, f'Current subagent model is `{ctx.settings.subagent_model}`\n Usage: `/{ctx.command_name} <model_id>`')
         return
 
-    ctx.settings.strong_model = model
-    await send_message(ctx, f'Strong model set to `{model}`.')
+    ctx.settings.subagent_model = model
+    await send_message(ctx, f'Subagent model set to `{model}`.')
 
 
 @handler
 @settings
-async def strong_model_reset_command(ctx: ChatUpdateContext):
-    ctx.settings.strong_model = None
-    await send_message(ctx, f'Strong model reset to default `{ctx.settings.strong_model}`.')
+async def subagent_model_reset_command(ctx: ChatUpdateContext):
+    ctx.settings.subagent_model = None
+    await send_message(ctx, f'Subagent model reset to default `{ctx.settings.subagent_model}`.')
 
 @handler
 @settings

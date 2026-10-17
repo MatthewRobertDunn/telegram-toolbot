@@ -9,17 +9,18 @@ import unittest
 import unittest.mock
 from types import SimpleNamespace
 
+sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sandbox_image', 'helpers'))
 
 import toolbot_edit
 import toolbot_glob
 import toolbot_read
-from chat_update_context import ChatUpdateContext
-from handlers import run_with_tools as run_with_tools_mod
+from handlers import run_llm as run_llm_mod
 from handlers import upload_handler
+from mock_context import mock_ctx
 from tools import sandbox_tool
-from sandbox import SandboxManager
+from sandbox import SandboxManager, _unique_name
 from tool_result import ImageAttachment, ToolCallResult
 
 
@@ -38,32 +39,12 @@ class _FakeBot:
         self.sent_photos.append(photo)
 
 
-def _mock_ctx(user_id: int = 1, bot=None) -> ChatUpdateContext:
-    context = SimpleNamespace(
-        bot=bot, bot_data={}, user_data={}, chat_data={})
-    message = SimpleNamespace(
-        text='', caption=None,
-        chat=SimpleNamespace(id=user_id, type='private'),
-        from_user=SimpleNamespace(id=user_id, first_name='T', last_name='U'))
-    return ChatUpdateContext(
-        update=None,  # type: ignore[arg-type]
-        context=context,  # type: ignore[arg-type]
-        bot=bot,  # type: ignore[arg-type]
-        chat=message.chat,
-        user=message.from_user,
-        message=message,  # type: ignore[arg-type]
-        user_data=context.user_data,
-        chat_data=None,
-        command_text='',
-        command_name='')
-
-
 class CannedDocker:
     """Fake docker CLI with scripted exec responses.
 
     exec responses are matched in order against the command string; the
     first matching (substring, returncode, stdout, stderr) tuple is used.
-    inspect/run/rm/ps behave like the FakeDocker in test_sandbox.
+    inspect/run/rm/ps/start/stop behave like the FakeDocker in test_sandbox.
     """
 
     def __init__(self, exec_responses: list[tuple[str, int, str, str]]):
@@ -83,6 +64,18 @@ class CannedDocker:
             name = args[args.index('--name') + 1]
             self.containers[name] = 'true'
             return 0, f'{name}-id\n', ''
+        if verb == 'start':
+            name = args[1]
+            if name not in self.containers:
+                return 1, '', 'No such container'
+            self.containers[name] = 'true'
+            return 0, name + '\n', ''
+        if verb == 'stop':
+            name = args[1]
+            if name not in self.containers:
+                return 1, '', 'No such container'
+            self.containers[name] = 'false'
+            return 0, name + '\n', ''
         if verb == 'rm':
             name = args[2]
             self.containers.pop(name, None)
@@ -332,26 +325,26 @@ class TestGlobHelper(unittest.TestCase):
 class TestUploadNaming(unittest.TestCase):
 
     def test_no_collision(self):
-        self.assertEqual(upload_handler._unique_name("f.txt", set()), "f.txt")
+        self.assertEqual(_unique_name("f.txt", set()), "f.txt")
 
     def test_collision_gets_suffix(self):
         self.assertEqual(
-            upload_handler._unique_name("f.txt", {"f.txt"}), "f-1.txt")
+            _unique_name("f.txt", {"f.txt"}), "f-1.txt")
 
     def test_multi_collision_increments(self):
         self.assertEqual(
-            upload_handler._unique_name(
+            _unique_name(
                 "f.txt", {"f.txt", "f-1.txt", "f-2.txt"}),
             "f-3.txt")
 
     def test_suffix_keeps_extension(self):
         self.assertEqual(
-            upload_handler._unique_name("photo.jpg", {"photo.jpg"}),
+            _unique_name("photo.jpg", {"photo.jpg"}),
             "photo-1.jpg")
 
     def test_no_extension(self):
         self.assertEqual(
-            upload_handler._unique_name("README", {"README"}), "README-1")
+            _unique_name("README", {"README"}), "README-1")
 
     def test_fallback_name_from_kind_and_path(self):
         class Document:
@@ -420,7 +413,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
     async def test_bash_formats_output(self):
         manager = self._canned([('echo', 0, 'hello\n', '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
+            ctx = mock_ctx()
             result = await sandbox_tool.bash(ctx, 'echo hello')
         self.assertIn('Return code: 0', result)
         self.assertIn('stdout:\nhello', result)
@@ -428,22 +421,22 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
     async def test_write_creates_and_marks_read(self):
         manager = self._canned([('test -e', 1, '', ''), ('mkdir', 0, '', '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
+            ctx = mock_ctx()
             result = await sandbox_tool.write(ctx, 'src/new.txt', 'data')
         self.assertEqual(result, 'Wrote file successfully.')
-        self.assertIn('/workspace/src/new.txt', ctx.user_data['sandbox_read_files'])
+        self.assertIn('/workspace/src/new.txt', ctx.user_data['_sandbox_read_files'])
 
     async def test_write_requires_read_first(self):
         manager = self._canned([('test -e', 0, '', '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
+            ctx = mock_ctx()
             result = await sandbox_tool.write(ctx, 'existing.txt', 'data')
         self.assertIn('has not been read', result)
 
     async def test_edit_requires_read_first(self):
         manager = self._canned([])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
+            ctx = mock_ctx()
             result = await sandbox_tool.edit(ctx, 'f.txt', 'old', 'new')
         self.assertIn('has not been read', result)
 
@@ -452,16 +445,16 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
             {'ok': True, 'data': {'output': 'Edit applied successfully.'}})
         manager = self._canned([('toolbot_edit.py', 0, helper_result, '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
-            ctx.user_data['sandbox_read_files'] = {'/workspace/f.txt'}
+            ctx = mock_ctx()
+            ctx.user_data['_sandbox_read_files'] = {'/workspace/f.txt'}
             result = await sandbox_tool.edit(ctx, 'f.txt', 'old', 'new')
         self.assertEqual(result, 'Edit applied successfully.')
 
     async def test_edit_identical_strings(self):
         manager = self._canned([])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
-            ctx.user_data['sandbox_read_files'] = {'/workspace/f.txt'}
+            ctx = mock_ctx()
+            ctx.user_data['_sandbox_read_files'] = {'/workspace/f.txt'}
             result = await sandbox_tool.edit(ctx, 'f.txt', 'same', 'same')
         self.assertIn('identical', result)
 
@@ -473,19 +466,19 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
             'more': False, 'cut': False}})
         manager = self._canned([('toolbot_read.py', 0, helper_result, '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
+            ctx = mock_ctx()
             result = await sandbox_tool.read(ctx, 'f.txt')
         self.assertIn('1: alpha', result)
         self.assertIn('2: beta', result)
         self.assertIn('End of file - total 2 lines', result)
-        self.assertIn('/workspace/f.txt', ctx.user_data['sandbox_read_files'])
+        self.assertIn('/workspace/f.txt', ctx.user_data['_sandbox_read_files'])
 
     async def test_read_error(self):
         helper_result = json.dumps(
             {'ok': False, 'error': 'File not found: /workspace/x'})
         manager = self._canned([('toolbot_read.py', 0, helper_result, '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
+            ctx = mock_ctx()
             result = await sandbox_tool.read(ctx, 'x')
         self.assertIn('File not found', result)
 
@@ -496,12 +489,12 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
             'totalEntries': 2, 'truncated': False}})
         manager = self._canned([('toolbot_read.py', 0, helper_result, '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
+            ctx = mock_ctx()
             result = await sandbox_tool.read(ctx, '.')
         self.assertIn('<type>directory</type>', result)
         self.assertIn('src/', result)
         self.assertNotIn('/workspace',
-                         ctx.user_data.get('sandbox_read_files', set()))
+                         ctx.user_data.get('_sandbox_read_files', set()))
 
     async def test_grep_formats_matches(self):
         events = '\n'.join([
@@ -514,7 +507,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
         ])
         manager = self._canned([('rg', 0, events, '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
+            ctx = mock_ctx()
             result = await sandbox_tool.grep(ctx, 'find_me')
         self.assertIn('Found 2 matches', result)
         self.assertIn('/workspace/src/a.py:', result)
@@ -524,14 +517,14 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
     async def test_grep_no_matches(self):
         manager = self._canned([('rg', 0, '', '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
+            ctx = mock_ctx()
             result = await sandbox_tool.grep(ctx, 'nothing')
         self.assertEqual(result, 'No files found')
 
     async def test_grep_reports_rg_error(self):
         manager = self._canned([('rg', 0, '', 'regex parse error')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
+            ctx = mock_ctx()
             result = await sandbox_tool.grep(ctx, '[')
         self.assertIn('regex parse error', result)
 
@@ -543,7 +536,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
             for i in range(sandbox_tool.MAX_GREP_MATCHES + 10))
         manager = self._canned([('rg', 0, events, '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
+            ctx = mock_ctx()
             result = await sandbox_tool.grep(ctx, 'hit')
         self.assertIn('Found 100 matches (more matches available)', result)
         self.assertIn('Results truncated', result)
@@ -554,7 +547,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
             'truncated': False}})
         manager = self._canned([('toolbot_glob.py', 0, helper_result, '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
+            ctx = mock_ctx()
             result = await sandbox_tool.glob(ctx, '*.py')
         self.assertIn('/workspace/a.py', result)
         self.assertIn('/workspace/b.py', result)
@@ -564,26 +557,26 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
             {'ok': True, 'data': {'files': [], 'truncated': False}})
         manager = self._canned([('toolbot_glob.py', 0, helper_result, '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
+            ctx = mock_ctx()
             result = await sandbox_tool.glob(ctx, '*.nope')
         self.assertEqual(result, 'No files found')
 
-    async def test_apply_patch_success(self):
+    async def test_patch_success(self):
         summary = 'Success. Updated the following files:\nA src/new.py\nM app.py'
         manager = self._canned([('apply-patch-py', 0, summary + '\n', '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
-            result = await sandbox_tool.apply_patch(
+            ctx = mock_ctx()
+            result = await sandbox_tool.patch(
                 ctx, '*** Begin Patch\n*** End Patch')
         self.assertIn('A src/new.py', result)
-        self.assertIn('/workspace/src/new.py', ctx.user_data['sandbox_read_files'])
+        self.assertIn('/workspace/src/new.py', ctx.user_data['_sandbox_read_files'])
 
-    async def test_apply_patch_error(self):
+    async def test_patch_error(self):
         manager = self._canned(
             [('apply-patch-py', 1, '', 'patch rejected: bad header')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx()
-            result = await sandbox_tool.apply_patch(ctx, 'garbage')
+            ctx = mock_ctx()
+            result = await sandbox_tool.patch(ctx, 'garbage')
         self.assertIn('patch rejected', result)
 
 
@@ -600,7 +593,7 @@ class TestSendFile(unittest.IsolatedAsyncioTestCase):
         ])
         bot = _FakeBot()
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx(bot=bot)
+            ctx = mock_ctx(bot=bot)
             result = await sandbox_tool.send_file(ctx, 'f.txt')
         self.assertEqual(result, 'Sent f.txt (11 bytes).')
         self.assertEqual(bot.sent[0]['filename'], 'f.txt')
@@ -609,7 +602,7 @@ class TestSendFile(unittest.IsolatedAsyncioTestCase):
     async def test_send_file_not_found(self):
         manager = self._canned([('stat', 1, '', 'No such file')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx(bot=_FakeBot())
+            ctx = mock_ctx(bot=_FakeBot())
             result = await sandbox_tool.send_file(ctx, 'nope.txt')
         self.assertIn('File not found', result)
 
@@ -617,7 +610,7 @@ class TestSendFile(unittest.IsolatedAsyncioTestCase):
         manager = self._canned(
             [('stat', 0, f'{sandbox_tool.MAX_SEND_FILE_BYTES + 1}\n', '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx(bot=_FakeBot())
+            ctx = mock_ctx(bot=_FakeBot())
             result = await sandbox_tool.send_file(ctx, 'big.bin')
         self.assertIn('too large', result)
 
@@ -630,14 +623,14 @@ class TestSendFile(unittest.IsolatedAsyncioTestCase):
         ])
         bot = _FakeBot()
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx(bot=bot)
+            ctx = mock_ctx(bot=bot)
             await sandbox_tool.send_file(ctx, 'blob.bin')
         self.assertEqual(bot.sent[0]['document'], payload)
 
     async def test_send_file_base64_failure(self):
         manager = self._canned([('stat', 0, '4\n', ''), ('base64', 1, '', 'Is a directory')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx(bot=_FakeBot())
+            ctx = mock_ctx(bot=_FakeBot())
             result = await sandbox_tool.send_file(ctx, 'dir')
         self.assertIn('Is a directory', result)
 
@@ -650,7 +643,7 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
     async def test_unsupported_extension(self):
         manager = self._canned([])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx(bot=_FakeBot())
+            ctx = mock_ctx(bot=_FakeBot())
             result = await sandbox_tool.read_image(ctx, 'file.txt')
         assert isinstance(result, str)
         self.assertIn('not a supported image type', result)
@@ -658,7 +651,7 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
     async def test_not_found(self):
         manager = self._canned([('stat', 1, '', '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx(bot=_FakeBot())
+            ctx = mock_ctx(bot=_FakeBot())
             result = await sandbox_tool.read_image(ctx, 'nope.png')
         assert isinstance(result, str)
         self.assertIn('File not found', result)
@@ -667,7 +660,7 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
         manager = self._canned(
             [('stat', 0, f'{sandbox_tool.MAX_IMAGE_DISPLAY_BYTES + 1}\n', '')])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx(bot=_FakeBot())
+            ctx = mock_ctx(bot=_FakeBot())
             result = await sandbox_tool.read_image(ctx, 'big.png')
         assert isinstance(result, str)
         self.assertIn('too large', result)
@@ -681,7 +674,7 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
         ])
         bot = _FakeBot()
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx(bot=bot)
+            ctx = mock_ctx(bot=bot)
             result = await sandbox_tool.read_image(ctx, 'rendered.png')
         assert isinstance(result, ToolCallResult)
         assert result.image is not None
@@ -699,7 +692,7 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
         ])
         bot = _FakeBot()
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx(bot=bot)
+            ctx = mock_ctx(bot=bot)
             result = await sandbox_tool.read_image(ctx, 'uploads/pic.png')
         assert isinstance(result, ToolCallResult)
         self.assertEqual(bot.sent_photos, [])
@@ -717,7 +710,7 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError('telegram down')
         bot.send_photo = broken_send_photo
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = _mock_ctx(bot=bot)
+            ctx = mock_ctx(bot=bot)
             result = await sandbox_tool.read_image(ctx, 'rendered.png')
         assert isinstance(result, ToolCallResult)
         assert result.image is not None
@@ -736,9 +729,9 @@ class TestToolResultImageContract(unittest.IsolatedAsyncioTestCase):
                 text="shown", image=ImageAttachment(b"img", "image/png"))
         setattr(fake_tool, "_requires_context", True)
         with unittest.mock.patch.object(
-                run_with_tools_mod, 'TOOL_MAP', {"fake_tool": fake_tool}):
-            ctx = _mock_ctx()
-            result = await run_with_tools_mod.execute_tool_call(
+                run_llm_mod, 'TOOL_MAP', {"fake_tool": fake_tool}):
+            ctx = mock_ctx()
+            result = await run_llm_mod.execute_tool_call(
                 ctx, self._tool_call("fake_tool", '{"filePath": "x.png"}'))
         assert isinstance(result, ToolCallResult)
         assert result.image is not None
@@ -749,9 +742,9 @@ class TestToolResultImageContract(unittest.IsolatedAsyncioTestCase):
             return "plain text result"
         setattr(fake_tool, "_requires_context", True)
         with unittest.mock.patch.object(
-                run_with_tools_mod, 'TOOL_MAP', {"fake_tool": fake_tool}):
-            ctx = _mock_ctx()
-            result = await run_with_tools_mod.execute_tool_call(
+                run_llm_mod, 'TOOL_MAP', {"fake_tool": fake_tool}):
+            ctx = mock_ctx()
+            result = await run_llm_mod.execute_tool_call(
                 ctx, self._tool_call("fake_tool", '{}'))
         self.assertEqual(result, "plain text result")
 
@@ -762,38 +755,42 @@ class TestToolResultImageContract(unittest.IsolatedAsyncioTestCase):
             ('stat', 0, f'{len(payload)}\n', ''),
             ('base64', 0, encoded, ''),
         ]))
-        tool_call_msg = SimpleNamespace(content=None, tool_calls=[
-            SimpleNamespace(
-                id='call_1', type='function',
-                function=SimpleNamespace(
-                    name=sandbox_tool.READ_IMAGE,
-                    arguments='{"filePath": "pic.png"}')),
-        ])
-        final_msg = SimpleNamespace(
-            content='It is a space scene.', tool_calls=None)
-        responses = [
-            SimpleNamespace(choices=[SimpleNamespace(
-                message=tool_call_msg, finish_reason='tool_calls')]),
-            SimpleNamespace(choices=[SimpleNamespace(
-                message=final_msg, finish_reason='stop')]),
-        ]
+        tool_chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(
+                content=None, reasoning_content=None,
+                tool_calls=[SimpleNamespace(
+                    index=0, id='call_1',
+                    function=SimpleNamespace(
+                        name=sandbox_tool.READ_IMAGE,
+                        arguments='{"filePath": "pic.png"}'))]),
+            finish_reason='tool_calls')])
+        final_chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(
+                content='It is a space scene.', reasoning_content=None,
+                tool_calls=None),
+            finish_reason='stop')])
+        responses = [tool_chunk, final_chunk]
 
         async def fake_create(**kwargs):
-            return responses.pop(0)
+            chunk = responses.pop(0)
+
+            async def stream():
+                yield chunk
+            return stream()
 
         fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
             create=fake_create)))
         bot = _FakeBot()
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager), \
              unittest.mock.patch.object(
-                 run_with_tools_mod, 'TOOL_MAP',
+                 run_llm_mod, 'TOOL_MAP',
                  {sandbox_tool.READ_IMAGE: sandbox_tool.read_image}), \
-             unittest.mock.patch.object(run_with_tools_mod, 'client', fake_client):
-            ctx = _mock_ctx(bot=bot)
+             unittest.mock.patch.object(run_llm_mod, 'client', fake_client):
+            ctx = mock_ctx(bot=bot)
             ctx.user_data['settings'] = SimpleNamespace(
                 show_tool_output=False, model='m', temperature=1.0, top_p=0.95)
             conversation = []
-            result = await run_with_tools_mod.run_with_tools(
+            result = await run_llm_mod.run_llm(
                 ctx, conversation=conversation)
 
         self.assertEqual(result, 'It is a space scene.')

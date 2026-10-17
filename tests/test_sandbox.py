@@ -14,34 +14,60 @@ from sandbox import (
 )
 
 
+def docker_time(epoch: float) -> str:
+    """Format an epoch timestamp the way docker inspect reports times."""
+    return time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(epoch)) + '.000000000Z'
+
+
 class FakeDocker:
     """In-memory stand-in for the docker CLI.
 
     Tracks container states in a dict so lifecycle logic can be exercised
     without Docker. A container name maps to its state: 'true' (running),
-    'false' (stopped), or absent (never created / removed). Commands whose
-    last argument contains 'TIMEOUT_MARKER' raise DockerTimeoutError.
+    'false' (stopped), or absent (never created / removed). FinishedAt
+    timestamps and the toolbot.uid label can be faked to simulate containers
+    left over from a previous bot run. Commands whose last argument contains
+    'TIMEOUT_MARKER' raise DockerTimeoutError.
     """
 
     def __init__(self):
         self.calls: list[list[str]] = []
         self.containers: dict[str, str] = {}
+        self.finished_at: dict[str, str] = {}
+        self.labels: dict[str, str] = {}
         self.fail_run = False
+        self.fail_start = False
 
     async def __call__(self, args: list[str], timeout=None, input=None):
         self.calls.append(list(args))
         verb = args[0]
         if verb == 'inspect':
             name = args[3]
-            if name in self.containers:
-                return 0, self.containers[name] + '\n', ''
-            return 1, '', f'Error: No such object: {name}'
+            if name not in self.containers:
+                return 1, '', f'Error: No such object: {name}'
+            if 'FinishedAt' in args[2]:
+                finished = self.finished_at.get(name, '0001-01-01T00:00:00Z')
+                uid = self.labels.get(name, '')
+                return 0, f'{self.containers[name]} {finished} {uid}\n', ''
+            return 0, self.containers[name] + '\n', ''
         if verb == 'run':
             name = args[args.index('--name') + 1]
             if self.fail_run:
                 return 1, '', 'simulated docker run failure'
             self.containers[name] = 'true'
             return 0, f'{name}-id\n', ''
+        if verb == 'start':
+            name = args[1]
+            if self.fail_start or name not in self.containers:
+                return 1, '', f'Error: No such container: {name}'
+            self.containers[name] = 'true'
+            return 0, name + '\n', ''
+        if verb == 'stop':
+            name = args[1]
+            if name not in self.containers:
+                return 1, '', f'Error: No such container: {name}'
+            self.containers[name] = 'false'
+            return 0, name + '\n', ''
         if verb == 'rm':
             name = args[2]
             if name in self.containers:
@@ -63,6 +89,12 @@ class FakeDocker:
     def rm_calls(self) -> list[list[str]]:
         return [c for c in self.calls if c[0] == 'rm']
 
+    def start_calls(self) -> list[list[str]]:
+        return [c for c in self.calls if c[0] == 'start']
+
+    def stop_calls(self) -> list[list[str]]:
+        return [c for c in self.calls if c[0] == 'stop']
+
     def exec_calls(self) -> list[list[str]]:
         return [c for c in self.calls if c[0] == 'exec']
 
@@ -74,7 +106,14 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.manager = SandboxManager(docker=self.fake)
 
     async def _ensure(self, user_id: int) -> Sandbox:
-        return await self.manager.ensure_sandbox(user_id)
+        return await self.manager.ensure(user_id)
+
+    def _add_leftover(self, name: str, uid: int | None, running: bool,
+                      finished: float):
+        self.fake.containers[name] = 'true' if running else 'false'
+        self.fake.finished_at[name] = docker_time(finished)
+        if uid is not None:
+            self.fake.labels[name] = str(uid)
 
     async def test_container_name_per_user(self):
         self.assertEqual(SandboxManager.container_name_for(42),
@@ -102,9 +141,25 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertIn(config.SANDBOX_IMAGE, run)
         self.assertEqual(run[-2:], ['sleep', 'infinity'])
 
-    async def test_ensure_recreates_dead_container(self):
+    async def test_ensure_restarts_stopped_container(self):
+        sandbox = await self._ensure(1)
+        sandbox.last_activity = (
+            time.time() - config.SANDBOX_IDLE_STOP_TIMEOUT - 1)
+        stopped, destroyed = await self.manager.reap_idle()
+        self.assertEqual((stopped, destroyed), ([1], []))
+        self.assertEqual(self.fake.containers['toolbot-sandbox-1'], 'false')
+
+        restarted = await self._ensure(1)
+        self.assertEqual(self.fake.start_calls()[-1],
+                         ['start', 'toolbot-sandbox-1'])
+        self.assertEqual(len(self.fake.run_calls()), 1)  # files preserved
+        self.assertEqual(self.fake.containers['toolbot-sandbox-1'], 'true')
+        self.assertGreater(restarted.last_activity, time.time() - 60)
+
+    async def test_ensure_recreates_when_restart_fails(self):
         await self._ensure(1)
         self.fake.containers['toolbot-sandbox-1'] = 'false'
+        self.fake.fail_start = True
         await self._ensure(1)
         self.assertEqual(len(self.fake.run_calls()), 2)
         self.assertEqual(self.fake.containers['toolbot-sandbox-1'], 'true')
@@ -118,7 +173,7 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
     async def test_exec_returns_output_and_updates_timer(self):
         sandbox = await self._ensure(1)
         sandbox.last_activity = time.time() - 1000
-        result = await self.manager.exec_in_sandbox(1, 'echo hi')
+        result = await self.manager.exec(1, 'echo hi')
         self.assertEqual(result['returncode'], 0)
         self.assertEqual(result['stdout'], 'out(echo hi)')
         self.assertEqual(result['stderr'], 'err(echo hi)')
@@ -128,12 +183,12 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertIn('echo hi', self.fake.exec_calls()[0])
 
     async def test_exec_starts_sandbox_if_needed(self):
-        await self.manager.exec_in_sandbox(7, 'uptime')
+        await self.manager.exec(7, 'uptime')
         self.assertEqual(len(self.fake.run_calls()), 1)
         self.assertEqual(self.fake.exec_calls()[0][1], 'toolbot-sandbox-7')
 
     async def test_exec_timeout_reported(self):
-        result = await self.manager.exec_in_sandbox(1, 'sleep TIMEOUT_MARKER')
+        result = await self.manager.exec(1, 'sleep TIMEOUT_MARKER')
         self.assertTrue(result['timeout'])
         self.assertIsNone(result['returncode'])
         self.assertIn('timed out', result['stderr'])
@@ -147,7 +202,7 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
     async def test_destroy_removes_container(self):
         await self._ensure(1)
         rm_before = len(self.fake.rm_calls())
-        destroyed = await self.manager.destroy_sandbox(1)
+        destroyed = await self.manager.destroy(1)
         self.assertTrue(destroyed)
         self.assertNotIn('toolbot-sandbox-1', self.fake.containers)
         rm_calls = self.fake.rm_calls()
@@ -156,36 +211,115 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(1, self.manager._sandboxes)
 
     async def test_destroy_without_sandbox_returns_false(self):
-        destroyed = await self.manager.destroy_sandbox(1)
+        destroyed = await self.manager.destroy(1)
         self.assertFalse(destroyed)
 
-    async def test_reap_destroys_only_idle_sandboxes(self):
+    async def test_reap_stops_only_idle_sandboxes(self):
         await self._ensure(1)
         await self._ensure(2)
         assert isinstance(self.manager._sandboxes[1], Sandbox)
         self.manager._sandboxes[1].last_activity = (
-            time.time() - config.SANDBOX_IDLE_TIMEOUT - 1)
+            time.time() - config.SANDBOX_IDLE_STOP_TIMEOUT - 1)
 
-        destroyed = await self.manager.reap_idle()
+        stopped, destroyed = await self.manager.reap_idle()
 
-        self.assertEqual(destroyed, [1])
-        self.assertNotIn('toolbot-sandbox-1', self.fake.containers)
+        self.assertEqual((stopped, destroyed), ([1], []))
+        self.assertEqual(self.fake.stop_calls()[-1], ['stop', 'toolbot-sandbox-1'])
+        self.assertEqual(self.fake.containers['toolbot-sandbox-1'], 'false')
         self.assertEqual(self.fake.containers['toolbot-sandbox-2'], 'true')
+        # Still tracked so it is destroyed once the destroy timeout passes.
+        self.assertIn(1, self.manager._sandboxes)
 
-    async def test_reap_leaves_sandbox_just_under_timeout(self):
+    async def test_reap_leaves_sandbox_just_under_stop_timeout(self):
         await self._ensure(1)
         self.manager._sandboxes[1].last_activity = (
-            time.time() - config.SANDBOX_IDLE_TIMEOUT + 1)
-        self.assertEqual(await self.manager.reap_idle(), [])
+            time.time() - config.SANDBOX_IDLE_STOP_TIMEOUT + 1)
+        self.assertEqual(await self.manager.reap_idle(), ([], []))
         self.assertEqual(self.fake.containers['toolbot-sandbox-1'], 'true')
 
-    async def test_cleanup_all_stale_removes_labeled_containers(self):
-        self.fake.containers = {'abc123': 'true', 'def456': 'false'}
-        count = await self.manager.cleanup_all_stale()
-        self.assertEqual(count, 2)
-        self.assertEqual([c[2] for c in self.fake.rm_calls()],
-                         ['abc123', 'def456'])
-        self.assertIn('--filter', self.fake.calls[0])
+    async def test_reap_keeps_stopped_sandbox_under_destroy_timeout(self):
+        await self._ensure(1)
+        self.manager._sandboxes[1].last_activity = (
+            time.time() - config.SANDBOX_IDLE_DESTROY_TIMEOUT + 1)
+
+        stopped, destroyed = await self.manager.reap_idle()
+
+        self.assertEqual((stopped, destroyed), ([1], []))
+        self.assertEqual(self.fake.containers['toolbot-sandbox-1'], 'false')
+        self.assertIn(1, self.manager._sandboxes)
+
+    async def test_reap_destroys_sandboxes_past_destroy_timeout(self):
+        await self._ensure(1)
+        self.manager._sandboxes[1].last_activity = (
+            time.time() - config.SANDBOX_IDLE_DESTROY_TIMEOUT - 1)
+
+        stopped, destroyed = await self.manager.reap_idle()
+
+        self.assertEqual((stopped, destroyed), ([], [1]))
+        self.assertNotIn('toolbot-sandbox-1', self.fake.containers)
+        self.assertNotIn(1, self.manager._sandboxes)
+
+    async def test_reap_ignores_already_stopped_sandbox(self):
+        await self._ensure(1)
+        sandbox = self.manager._sandboxes[1]
+        self.assertTrue(await self.manager._stop_sandbox(sandbox))
+        sandbox.last_activity = (
+            time.time() - config.SANDBOX_IDLE_STOP_TIMEOUT - 1)
+
+        stop_before = len(self.fake.stop_calls())
+        self.assertEqual(await self.manager.reap_idle(), ([], []))
+        self.assertEqual(len(self.fake.stop_calls()), stop_before)
+        self.assertIn(1, self.manager._sandboxes)
+
+    async def test_recover_adopts_stopped_leftover(self):
+        now = time.time()
+        self._add_leftover('toolbot-sandbox-5', 5, running=False,
+                           finished=now - 100)
+
+        adopted, removed = await self.manager.recover_leftover_sandboxes()
+
+        self.assertEqual((adopted, removed), (1, 0))
+        sandbox = self.manager._sandboxes[5]
+        self.assertEqual(sandbox.container_name, 'toolbot-sandbox-5')
+        self.assertFalse(sandbox.running)
+        self.assertAlmostEqual(
+            sandbox.last_activity,
+            now - 100 - config.SANDBOX_IDLE_STOP_TIMEOUT, delta=5)
+
+    async def test_recover_adopts_running_leftover(self):
+        now = time.time()
+        self._add_leftover('toolbot-sandbox-6', 6, running=True,
+                           finished=now - 90000)
+
+        adopted, removed = await self.manager.recover_leftover_sandboxes()
+
+        self.assertEqual((adopted, removed), (1, 0))
+        sandbox = self.manager._sandboxes[6]
+        self.assertTrue(sandbox.running)
+        # A running container is assumed to be in use right now.
+        self.assertGreater(sandbox.last_activity, now - 60)
+
+    async def test_recover_removes_containers_past_destroy_timeout(self):
+        now = time.time()
+        self._add_leftover('toolbot-sandbox-5', 5, running=False,
+                           finished=now - 100000)
+
+        adopted, removed = await self.manager.recover_leftover_sandboxes()
+
+        self.assertEqual((adopted, removed), (0, 1))
+        self.assertEqual(self.fake.rm_calls()[-1],
+                         ['rm', '-f', 'toolbot-sandbox-5'])
+        self.assertNotIn(5, self.manager._sandboxes)
+
+    async def test_recover_removes_unidentifiable_leftovers(self):
+        now = time.time()
+        self._add_leftover('toolbot-sandbox-5', None, running=True,
+                           finished=now)
+
+        adopted, removed = await self.manager.recover_leftover_sandboxes()
+
+        self.assertEqual((adopted, removed), (0, 1))
+        self.assertNotIn('toolbot-sandbox-5', self.fake.containers)
 
 
 if __name__ == '__main__':
