@@ -15,6 +15,8 @@ MIN_DIM = 512
 MAX_DIM = 1568
 DIM_STEP = 16
 DEFAULT_RESOLUTION = "1024x1024"
+# Cap on the endpoint error body echoed back to the model as the tool result.
+MAX_ERROR_CHARS = 2000
 
 
 def parse_resolution(resolution: str) -> tuple[int, int]:
@@ -81,9 +83,15 @@ async def generate_and_send_image(ctx: ChatUpdateContext, prompt: str,
             return f"Image sent to chat (prompt: {prompt})"
         return (f"Image sent to chat and stored in the sandbox at {path} "
                 f"(prompt: {prompt})")
+    except requests.HTTPError as e:
+        # The endpoint's error body (e.g. a content-policy rejection or a bad
+        # parameter) is the useful part for the model, so pass it back.
+        logger.exception("Error generating image: %s", e)
+        detail = e.response.text if e.response is not None else str(e)
+        return f"Failed to generate image: {detail.strip()[:MAX_ERROR_CHARS]}"
     except Exception as e:
         logger.exception("Error generating image: %s", e)
-        return "Failed to generate image"
+        return f"Failed to generate image: {e}"
 
 TOOL_NAME = "generate_image"    
 TOOL_DEFINITIONS: list[dict] = [
