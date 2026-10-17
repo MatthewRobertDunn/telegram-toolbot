@@ -20,7 +20,7 @@ IMAGE_TOKEN_ESTIMATE = 1_500
 # Text left behind where an image was pruned.
 IMAGE_PLACEHOLDER = '[image omitted]'
 # How many of the most recent images a conversation holds onto.
-MAX_IMAGES = 10
+MAX_IMAGES = 8
 
 
 def estimate_conversation_tokens(conversation) -> int:

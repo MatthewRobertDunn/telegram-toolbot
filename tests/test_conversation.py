@@ -6,7 +6,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from conversation import (Conversation, IMAGE_PLACEHOLDER,
+from conversation import (Conversation, MAX_IMAGES, IMAGE_PLACEHOLDER,
                           estimate_conversation_tokens,
                           estimate_message_tokens, token_count)
 
@@ -112,20 +112,20 @@ class TestConversationAddImage(unittest.TestCase):
                                   f'{base64.b64encode(b"abc").decode()}'}},
         ])
 
-    def test_only_the_ten_most_recent_images_are_kept(self):
+    def test_only_the_eight_most_recent_images_are_kept(self):
         conversation = Conversation()
-        for n in range(12):
+        for n in range(MAX_IMAGES + 4):
             conversation.add_image(bytes([n]), 'image/png', f'img {n}')
         image_urls = [part['image_url']['url']
                       for message in conversation
                       for part in message['content']
                       if part['type'] == 'image_url']
-        self.assertEqual(len(image_urls), 10)
-        # The two oldest images merged their placeholder into the caption.
+        self.assertEqual(len(image_urls), MAX_IMAGES)
+        # The four oldest images merged their placeholder into the caption.
         self.assertEqual(
-            [message['content'] for message in conversation[:2]],
+            [message['content'] for message in conversation[:4]],
             [[{'type': 'text', 'text': f'img {n}\n{IMAGE_PLACEHOLDER}'}]
-             for n in range(2)])
+             for n in range(4)])
 
     def test_pruning_leaves_messages_without_images_untouched(self):
         conversation = Conversation()
