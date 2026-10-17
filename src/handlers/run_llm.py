@@ -126,6 +126,11 @@ async def run_llm(ctx: ChatUpdateContext,
                 return NO_CONTENT_MESSAGE
             
         assistant_message = conversation.add_assistant(message.content or '')
+        if message.reasoning_content:
+            # DeepSeek/Kimi thinking mode require the reasoning_content of a
+            # tool-call turn to be passed back on every later request; dropping
+            # it makes the API reject the turn and poisons the whole session.
+            assistant_message['reasoning_content'] = message.reasoning_content
         assistant_message['tool_calls'] = [
             {
                 "id": tc.id,

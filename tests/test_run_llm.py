@@ -146,5 +146,57 @@ class TestRunLlmSessionHeader(unittest.IsolatedAsyncioTestCase):
                          conversation.id)
 
 
+def _tool_chunk(name, arguments, call_id='c1', reasoning=None):
+    return SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(
+        content=None, reasoning_content=reasoning,
+        tool_calls=[SimpleNamespace(
+            index=0, id=call_id,
+            function=SimpleNamespace(name=name, arguments=arguments))]))])
+
+
+def _fake_client_calls(captured: list, streams: list):
+    """A client returning one preset stream per successive create call."""
+    async def fake_create(**kwargs):
+        index = len(captured)
+        captured.append(kwargs)
+
+        async def stream():
+            for c in streams[index]:
+                yield c
+        return stream()
+    return SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=fake_create)))
+
+
+class TestReasoningContentPassback(unittest.IsolatedAsyncioTestCase):
+    # DeepSeek/Kimi thinking mode reject later turns when a tool-call
+    # assistant message drops the reasoning_content the model produced.
+    # Regression: it used to be discarded when the message was appended.
+
+    async def _run_tool_turn(self, reasoning):
+        captured: list = []
+        streams = [
+            [_tool_chunk('unknown_tool', '{}', reasoning=reasoning)],
+            [_chunk('done')],
+        ]
+        with unittest.mock.patch.object(
+                run_llm_mod, 'client',
+                _fake_client_calls(captured, streams)):
+            result = await run_llm_mod.run_llm(
+                mock_ctx(settings=SETTINGS, conversation=[]))
+        self.assertEqual(result, 'done')
+        return next(m for m in captured[1]['messages']
+                    if m.get('role') == 'assistant' and m.get('tool_calls'))
+
+    async def test_reasoning_is_echoed_back(self):
+        assistant = await self._run_tool_turn('deliberate reasoning')
+        self.assertEqual(assistant['reasoning_content'], 'deliberate reasoning')
+
+    async def test_no_reasoning_adds_no_field(self):
+        # Backends that never emit reasoning must not be sent the extra key.
+        assistant = await self._run_tool_turn(None)
+        self.assertNotIn('reasoning_content', assistant)
+
+
 if __name__ == '__main__':
     unittest.main()
