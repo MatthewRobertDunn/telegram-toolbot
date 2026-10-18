@@ -1,6 +1,13 @@
 import os
 from dotenv import load_dotenv
-load_dotenv()
+
+# Load the project-root .env explicitly: dotenv's default discovery starts
+# from this file's directory (src/) and would silently prefer a stale
+# src/.env over the .env that `pake publish_env` deploys to the project root.
+_SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
+_ENV_FILE = os.path.join(os.path.dirname(_SOURCE_DIR), ".env")
+load_dotenv(_ENV_FILE if os.path.isfile(_ENV_FILE) else None)
+
 API_TOKEN = os.environ.get("TELEGRAM_API_TOKEN", "")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
