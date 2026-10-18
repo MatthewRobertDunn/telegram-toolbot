@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import requests
 from tools import image_gen
+from tool_result import ToolCallResult
 from mock_context import mock_ctx
 
 
@@ -20,7 +21,9 @@ class TestImageGenErrors(unittest.IsolatedAsyncioTestCase):
         async def boom(*args, **kwargs):
             raise error
         with unittest.mock.patch.object(image_gen, 'generate_image', boom):
-            return await image_gen.generate_and_send_image(mock_ctx(), 'a cat')
+            result = await image_gen.generate_and_send_image(mock_ctx(), 'a cat')
+        assert isinstance(result, str)
+        return result
 
     async def test_http_error_body_is_returned(self):
         response = requests.Response()
@@ -56,6 +59,7 @@ class TestParseResolution(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_resolution_reported_to_the_model(self):
         result = await image_gen.generate_and_send_image(
             mock_ctx(), 'a cat', resolution='big')
+        assert isinstance(result, str)
         self.assertIn("Invalid resolution 'big'", result)
         self.assertNotIn('a cat', result)  # generation never starts
 
@@ -86,6 +90,7 @@ class TestSendToChat(unittest.IsolatedAsyncioTestCase):
                         image_gen.manager, 'store_file', fake_store):
                     result = await image_gen.generate_and_send_image(
                         mock_ctx(), 'a cat', **kwargs)
+        assert isinstance(result, str)
         return result, sent
 
     async def test_send_to_chat_branches(self):
@@ -109,6 +114,43 @@ class TestSendToChat(unittest.IsolatedAsyncioTestCase):
     async def test_store_error_without_sending(self):
         result, sent = await self._run(store_error='disk full', send_to_chat=False)
         self.assertEqual(result, 'Image generated (prompt: a cat)')
+
+
+class TestAttachToContext(unittest.IsolatedAsyncioTestCase):
+    # add_to_context (default false) attaches the generated image to the
+    # conversation so a vision-capable model can inspect it; otherwise the
+    # tool result stays a plain string.
+
+    STORED_PATH = '/workspace/uploads/generated_1.png'
+
+    async def _run(self, **kwargs):
+        async def fake_generate(*args, **_):
+            return base64.b64encode(b'\x89PNG').decode()
+
+        async def fake_send_image(ctx, data):
+            pass
+
+        async def fake_store(user_id, data, name):
+            return self.STORED_PATH, None
+
+        with unittest.mock.patch.object(image_gen, 'generate_image', fake_generate):
+            with unittest.mock.patch.object(image_gen, 'send_image', fake_send_image):
+                with unittest.mock.patch.object(
+                        image_gen.manager, 'store_file', fake_store):
+                    return await image_gen.generate_and_send_image(
+                        mock_ctx(), 'a cat', **kwargs)
+
+    async def test_default_is_plain_string(self):
+        result = await self._run()
+        self.assertIsInstance(result, str)
+
+    async def test_attach_returns_image_result(self):
+        result = await self._run(add_to_context=True)
+        assert isinstance(result, ToolCallResult)
+        assert result.image is not None
+        self.assertEqual(result.image.data, b'\x89PNG')
+        self.assertEqual(result.image.mime, 'image/png')
+        self.assertIn(self.STORED_PATH, result.text)
 
 
 if __name__ == '__main__':
