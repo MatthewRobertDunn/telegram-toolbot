@@ -62,7 +62,7 @@ class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
 
     async def test_document_upload_stored_and_llm_notified(self):
         ctx = _upload_ctx(self.uid, _document("hello.txt"))
-        with unittest.mock.patch("handlers.upload_handler.run_llm",
+        with unittest.mock.patch("handlers.generation_queue.run_llm",
                                  _fake_run_llm):
             await upload_handler(ctx)
 
@@ -86,7 +86,7 @@ class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
 
     async def test_upload_without_name_gets_fallback(self):
         ctx = _upload_ctx(self.uid, _document(None))
-        with unittest.mock.patch("handlers.upload_handler.run_llm",
+        with unittest.mock.patch("handlers.generation_queue.run_llm",
                                  _fake_run_llm):
             await upload_handler(ctx)
         listing = await manager.exec(
@@ -98,7 +98,7 @@ class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
     async def test_name_collision_gets_suffix(self):
         for _ in range(2):
             ctx = _upload_ctx(self.uid, _document("hello.txt"))
-            with unittest.mock.patch("handlers.upload_handler.run_llm",
+            with unittest.mock.patch("handlers.generation_queue.run_llm",
                                      _fake_run_llm):
                 await upload_handler(ctx)
         listing = await manager.exec(
@@ -108,7 +108,7 @@ class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
 
     async def test_caption_included_in_notification(self):
         ctx = _upload_ctx(self.uid, _document("notes.txt"), caption="please review")
-        with unittest.mock.patch("handlers.upload_handler.run_llm",
+        with unittest.mock.patch("handlers.generation_queue.run_llm",
                                  _fake_run_llm):
             await upload_handler(ctx)
         user_messages = [m for m in ctx.conversation if m["role"] == "user"]

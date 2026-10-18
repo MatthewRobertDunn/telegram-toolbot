@@ -4,11 +4,13 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import bootstrap  # noqa: F401
+from bootstrap import requires_sandbox_image
 from mocks import create_mock_context
 
 from tools.image_gen import generate_and_send_image
 
 
+@requires_sandbox_image
 class TestImageGenTool(unittest.IsolatedAsyncioTestCase):
 
     async def test_generates_and_sends_photo(self):
