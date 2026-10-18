@@ -54,7 +54,18 @@ async def consume_stream(stream, streamer: DraftStreamer,
     """
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
-    tool_acc: dict[int, dict] = {}
+    # Accumulated tool calls keyed by their id. The id is the identity
+    # of a call (opens a new call whenever a new id appears); `index` is
+    # only a stream-slot hint telling id-less argument fragments which
+    # call they extend.
+    calls: dict[str, dict] = {}
+    order: list[str] = []
+    # Which open call each streamed index currently points at.
+    active: dict[int, dict] = {}
+    # The most recently opened call, for fragments with neither id nor
+    # index (linear streams).
+    current: dict | None = None
+    anon = 0
 
     async for chunk in stream:
         choices = getattr(chunk, 'choices', None)
@@ -76,12 +87,32 @@ async def consume_stream(stream, streamer: DraftStreamer,
             await streamer.update(reasoning)
         for part in getattr(delta, 'tool_calls', None) or []:
             idx = getattr(part, 'index', None)
-            if not isinstance(idx, int):
-                idx = max(tool_acc, default=-1) + 1
-            entry = tool_acc.setdefault(
-                idx, {'id': '', 'name': '', 'arguments': ''})
-            if getattr(part, 'id', None):
-                entry['id'] = part.id
+            pid = getattr(part, 'id', None)
+            if pid:
+                # A (new) id opens or continues that call. This also
+                # absorbs backends that stream a follow-up call reusing
+                # the same index (observed: step-5-preview on NVIDIA
+                # NIM): identity follows the id, never the index.
+                entry = calls.get(pid)
+                if entry is None:
+                    entry = calls[pid] = {
+                        'id': pid, 'name': '', 'arguments': ''}
+                    order.append(pid)
+            else:
+                # Id-less fragment: extend the call this slot is
+                # currently streaming (keyed by index), or the last
+                # opened call if the stream has no indexes.
+                entry = active.get(idx) if isinstance(idx, int) else None
+                if entry is None:
+                    entry = current
+                if entry is None:
+                    anon += 1
+                    entry = {'id': '', 'name': '', 'arguments': ''}
+                    calls[f'anon#{anon}'] = entry
+                    order.append(f'anon#{anon}')
+            if isinstance(idx, int):
+                active[idx] = entry
+            current = entry
             fn = getattr(part, 'function', None)
             if fn is not None:
                 if getattr(fn, 'name', None):
@@ -91,8 +122,8 @@ async def consume_stream(stream, streamer: DraftStreamer,
     await streamer.flush(force=True)
 
     tool_calls = []
-    for idx in sorted(tool_acc):
-        entry = tool_acc[idx]
+    for key in order:
+        entry = calls[key]
         if entry['id'] or entry['name']:
             tool_calls.append(ToolCall(
                 id=entry['id'],

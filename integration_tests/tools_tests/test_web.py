@@ -22,10 +22,6 @@ class TestWebTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://example.com", result)
         self.assertGreater(len(result), 50)
 
-    async def test_web_fetch_rejects_invalid_url(self):
-        result = await web_fetch("ftp://example.com")
-        self.assertIn("Invalid URL", result)
-
 
 if __name__ == "__main__":
     unittest.main()

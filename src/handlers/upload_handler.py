@@ -5,8 +5,8 @@ from typing import Any
 
 from chat_update_context import ChatUpdateContext
 from handlers.middleware import handler
-from handlers.run_llm import run_llm
-from messaging import run_with_typing, send_message
+from handlers.generation_queue import submit_generation
+from messaging import send_message
 from sandbox import manager
 from tools.sandbox_tool import IMAGE_MIME_TYPES
 
@@ -66,9 +66,7 @@ async def upload_handler(ctx: ChatUpdateContext):
         f"{hint} if it is relevant.]")
     caption = msg.caption
     content = f"{caption}\n\n{notification}" if caption else notification
-    ctx.conversation.add_user(content)
 
-    gpt_response = await run_with_typing(ctx, run_llm(ctx))
-
-    await send_message(ctx, gpt_response, parse_mode='LLM')
-    ctx.conversation.add_assistant(gpt_response)
+    # Same single submission point as text replies: the queue appends the
+    # user turn and generates the reply, stopping included.
+    await submit_generation(ctx, content)

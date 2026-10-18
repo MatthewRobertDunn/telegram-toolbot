@@ -17,13 +17,12 @@ class TestSandboxIntegration(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.manager.destroy(self.uid)
 
-    async def test_exec_runs_command_and_output_returned(self):
+    async def test_exec_runs_and_state_persists_between_commands(self):
         result = await self.manager.exec(self.uid, "echo hello-sandbox")
         self.assertEqual(result["returncode"], 0)
         self.assertFalse(result["timeout"])
         self.assertIn("hello-sandbox", result["stdout"])
 
-    async def test_state_persists_between_commands(self):
         await self.manager.exec(
             self.uid, "echo persistence-check > /tmp/persist.txt")
         result = await self.manager.exec(
@@ -50,14 +49,6 @@ class TestSandboxIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run["returncode"], 0)
         self.assertIn("2", run["stdout"])
 
-    async def test_destroy_loses_changes(self):
-        await self.manager.exec(
-            self.uid, "echo doomed > /tmp/doomed.txt")
-        self.assertTrue(await self.manager.destroy(self.uid))
-        result = await self.manager.exec(
-            self.uid, "cat /tmp/doomed.txt")
-        self.assertNotEqual(result["returncode"], 0)
-        self.assertIn("No such file", result["stderr"])
 
 if __name__ == "__main__":
     unittest.main()

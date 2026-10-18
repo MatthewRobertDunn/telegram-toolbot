@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import json
 import logging
 from typing import Any
@@ -126,6 +125,11 @@ async def run_llm(ctx: ChatUpdateContext,
                 return NO_CONTENT_MESSAGE
             
         assistant_message = conversation.add_assistant(message.content or '')
+        if message.reasoning_content:
+            # DeepSeek/Kimi thinking mode require the reasoning_content of a
+            # tool-call turn to be passed back on every later request; dropping
+            # it makes the API reject the turn and poisons the whole session.
+            assistant_message['reasoning_content'] = message.reasoning_content
         assistant_message['tool_calls'] = [
             {
                 "id": tc.id,
@@ -156,10 +160,6 @@ async def run_llm(ctx: ChatUpdateContext,
             conversation.add_tool(result, tc.id)
 
         for image in images:
-            b64 = base64.b64encode(image.data).decode()
-            conversation.add_user([
-                {"type": "text", "text": "(a tool attached this image)"},
-                {"type": "image_url",
-                 "image_url": {"url": f"data:{image.mime};base64,{b64}"}},
-            ])
+            conversation.add_image(image.data, image.mime,
+                                   "(a tool attached this image)")
 

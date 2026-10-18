@@ -76,6 +76,14 @@ class ChatUpdateContext:
         self.user_data['generation_task'] = value
 
     @property
+    def generation_worker(self) -> "asyncio.Task | None":
+        return self.user_data.get('generation_worker')
+
+    @generation_worker.setter
+    def generation_worker(self, value: "asyncio.Task | None") -> None:
+        self.user_data['generation_worker'] = value
+
+    @property
     def compaction_task(self) -> asyncio.Task | None:
         return self.user_data.get('compaction_task')
 

@@ -11,6 +11,8 @@ pk = pake.init()
 SANDBOX_IMAGE = "elpechos/toolbot-sandbox:latest"
 SANDBOX_PLATFORMS = "linux/amd64,linux/arm64"
 DEPLOY_HOST = "matty@derg.top"
+REMOTE_DIR = "/home/matty/tbot"
+ROOT = os.path.dirname(os.path.abspath(__file__))
 
 @pk.task
 def build_sandbox_image(ctx):
@@ -59,19 +61,20 @@ def integration_test(ctx):
 
 
 @pk.task
-def deploy(ctx):
+def publish(ctx):
     """Copy src/ to the server and restart the tbot user service."""
 
-    remote_dir = "/home/matty/tbot"
     tar_path = os.path.join(tempfile.gettempdir(), "tbot_src.tar")
 
-    # Ship a tarball without __pycache__: pyc files on the server may be
-    # root-owned (from the service) and scp cannot overwrite them anyway,
-    # plus they are never worth deploying.
-    ctx.call("tar", "-C", os.path.dirname(os.path.abspath(__file__)),
-             "--exclude", "__pycache__", "-cf", tar_path, "src")
+    # Ship a tarball without __pycache__ or .env: pyc files on the server
+    # may be root-owned (from the service) and scp cannot overwrite them
+    # anyway, they are never worth deploying, and secrets travel via
+    # pake publish_env instead.
+    ctx.call("tar", "-C", ROOT,
+             "--exclude", "__pycache__", "--exclude", ".env",
+             "-cf", tar_path, "src")
     ctx.call("scp", tar_path, f"{DEPLOY_HOST}:/tmp/")
-    ctx.call("ssh", DEPLOY_HOST, f"tar -C {remote_dir} -xf /tmp/tbot_src.tar")
+    ctx.call("ssh", DEPLOY_HOST, f"tar -C {REMOTE_DIR} -xf /tmp/tbot_src.tar")
     ctx.call("ssh", DEPLOY_HOST, "rm -f /tmp/tbot_src.tar")
 
 
@@ -81,6 +84,36 @@ def deploy(ctx):
     # cannot be decoded by pake's Windows locale text streams.
     ctx.call("ssh", DEPLOY_HOST,
              "LC_ALL=C systemctl status tbot --user -l --no-pager")
+
+
+def _find_env_file():
+    """The local .env to deploy, if any: the project root's, else src's."""
+
+    for relative in [".env", os.path.join("src", ".env")]:
+        path = os.path.join(ROOT, relative)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+@pk.task
+def publish_env(ctx):
+    """Copy the local .env to the server, if there is one."""
+
+    env_path = _find_env_file()
+    if env_path is None:
+        print("No .env file found; nothing to copy.")
+        return
+
+    # Mirror the local layout on the server; load_dotenv() finds the
+    # .env from either place. Forward slashes: the remote side is Linux
+    # and scp would misread Windows backslash paths.
+    relative = os.path.relpath(env_path, ROOT).replace(os.sep, "/")
+    remote_path = f"{REMOTE_DIR}/{relative}"
+
+    ctx.call("scp", env_path, f"{DEPLOY_HOST}:{remote_path}")
+    print(f"Copied {env_path} to {DEPLOY_HOST}:{remote_path}")
+    print("Restart the tbot service (pake publish) to pick up the change.")
 
 
 @pk.task

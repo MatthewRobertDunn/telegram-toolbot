@@ -4,7 +4,7 @@ load_dotenv()
 API_TOKEN = os.environ.get("TELEGRAM_API_TOKEN", "")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
-LLM_MODEL = os.environ.get("LLM_MODEL", "big-pickle")
+LLM_MODEL = os.environ.get("LLM_MODEL", "nim/stepfun-ai/step-5-preview")
 # Optional operator override for the model used by the `subagent` tool.
 # Unset means use the user's current model (their /model setting).
 SUBAGENT_MODEL = os.environ.get("SUBAGENT_MODEL") or None

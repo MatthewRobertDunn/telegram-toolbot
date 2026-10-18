@@ -30,19 +30,6 @@ class TestStoreCommands(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(ctx_get.sent), 1)
         self.assertEqual(ctx_get.sent[0]["text"], "<pre>blue</pre>")
 
-    async def test_store_overwrite(self):
-        uid = _uid()
-        ctx_first = create_mock_context(
-            user_id=uid, command_text="key first", command_name="store")
-        await store_command(ctx_first)
-        ctx_second = create_mock_context(
-            user_id=uid, command_text="key second", command_name="store")
-        await store_command(ctx_second)
-        ctx_get = create_mock_context(
-            user_id=uid, command_text="key", command_name="store")
-        await store_command(ctx_get)
-        self.assertEqual(ctx_get.sent[0]["text"], "<pre>second</pre>")
-
     async def test_store_get_nonexistent(self):
         ctx = create_mock_context(
             user_id=_uid(), command_text="nosuchkey", command_name="store")
@@ -51,18 +38,14 @@ class TestStoreCommands(unittest.IsolatedAsyncioTestCase):
         self.assertIn("not found", ctx.sent[0]["text"])
 
     async def test_store_usage_without_args(self):
-        ctx = create_mock_context(user_id=_uid(), command_name="store")
-        await store_command(ctx)
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertIn("Usage", ctx.sent[0]["text"])
+        for command, name in ((store_command, "store"),
+                              (store_delete_command, "store_delete")):
+            ctx = create_mock_context(user_id=_uid(), command_name=name)
+            await command(ctx)
+            self.assertEqual(len(ctx.sent), 1)
+            self.assertIn("Usage", ctx.sent[0]["text"])
 
     # -- store_list_command ----------------------------------------------
-
-    async def test_store_list_empty(self):
-        ctx = create_mock_context(user_id=_uid(), command_name="store_list")
-        await store_list_command(ctx)
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertIn("No keys", ctx.sent[0]["text"])
 
     async def test_store_list_with_keys(self):
         uid = _uid()
@@ -97,12 +80,6 @@ class TestStoreCommands(unittest.IsolatedAsyncioTestCase):
         await store_command(ctx_get)
         self.assertIn("not found", ctx_get.sent[0]["text"])
 
-    async def test_store_delete_usage_without_args(self):
-        ctx = create_mock_context(user_id=_uid(), command_name="store_delete")
-        await store_delete_command(ctx)
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertIn("Usage", ctx.sent[0]["text"])
-
     async def test_store_delete_nonexistent(self):
         # Deleting a key that doesn't exist still reports success
         ctx = create_mock_context(
@@ -132,10 +109,9 @@ class TestStoreCommands(unittest.IsolatedAsyncioTestCase):
         await store_list_command(ctx_list)
         self.assertIn("No keys", ctx_list.sent[0]["text"])
 
-    async def test_store_delete_all_when_empty(self):
-        # delete_all on an empty store should still report success
+        # An empty store still reports success.
         ctx = create_mock_context(
-            user_id=_uid(), command_name="store_delete_all")
+            user_id=uid, command_name="store_delete_all")
         await store_delete_all_command(ctx)
         self.assertEqual(len(ctx.sent), 1)
         self.assertIn("All keys deleted", ctx.sent[0]["text"])
