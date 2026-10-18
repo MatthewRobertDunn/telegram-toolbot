@@ -112,8 +112,8 @@ If you don't need the sandbox, you can disable its tools by commenting out the `
 |---|---|---|
 | `TELEGRAM_API_TOKEN` | *(required)* | Your Telegram bot token |
 | `OPENAI_KEY` | *(required)* | API key for chat completions |
-| `OPENAI_BASE_URL` | `https://integrate.api.nvidia.com/v1` | OpenAI-compatible API endpoint |
-| `LLM_MODEL` | `z-ai/glm-5.3-flash` | Default chat model |
+| `OPENAI_BASE_URL` | `http://192.168.0.2:3001/v1` | OpenAI-compatible API endpoint |
+| `LLM_MODEL` | `auto` | Default chat model |
 | `SUBAGENT_MODEL` | *(falls back to the current `/model` setting)* | Optional override for the model used by the `subagent` tool |
 | `NVIDIA_API_KEY` | *(falls back to `OPENAI_KEY`)* | Key for NVIDIA Flux image generation |
 | `ALLOWED_USER_IDS` | *(none — open to all)* | Comma-separated Telegram user IDs |

@@ -4,11 +4,11 @@ load_dotenv()
 API_TOKEN = os.environ.get("TELEGRAM_API_TOKEN", "")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
-LLM_MODEL = os.environ.get("LLM_MODEL", "nim/stepfun-ai/step-5-preview")
+LLM_MODEL = os.environ.get("LLM_MODEL", "auto")
 # Optional operator override for the model used by the `subagent` tool.
 # Unset means use the user's current model (their /model setting).
 SUBAGENT_MODEL = os.environ.get("SUBAGENT_MODEL") or None
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://192.168.0.2:28180/v1")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://192.168.0.2:3001/v1")
 IMAGE_GEN_URL = os.environ.get("IMAGE_GEN_URL", f"https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux-3-image-klein")
 temperature = 1.0
 top_p = 0.95
