@@ -8,6 +8,7 @@ import config
 from chat_update_context import context_tool, ChatUpdateContext
 from messaging import send_image
 from sandbox import manager
+from tool_result import ImageAttachment, ToolCallResult
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +65,11 @@ async def generate_image(prompt: str, width: int = 1024, height: int = 1024, see
 
 
 @context_tool
-async def generate_and_send_image(ctx: ChatUpdateContext, prompt: str,
-                                  resolution: str = DEFAULT_RESOLUTION,
-                                  send_to_chat: bool = True) -> str:
+async def generate_and_send_image(
+        ctx: ChatUpdateContext, prompt: str,
+        resolution: str = DEFAULT_RESOLUTION,
+        send_to_chat: bool = True,
+        add_to_context: bool = False) -> str | ToolCallResult:
     try:
         width, height = parse_resolution(resolution)
     except ValueError as e:
@@ -77,16 +80,24 @@ async def generate_and_send_image(ctx: ChatUpdateContext, prompt: str,
         image_bytes = base64.b64decode(b64)
         if send_to_chat:
             await send_image(ctx, image_bytes)
+        # Optionally hand the image back to the conversation so a
+        # vision-capable model can look at what it just generated.
+        attachment = (ImageAttachment(data=image_bytes, mime="image/png")
+                      if add_to_context else None)
         path, error = await manager.store_file(
             ctx.user_id, image_bytes, f"generated_{int(time.time())}.png")
         if error is not None:
             logger.error("Error storing generated image in sandbox: %s",
                          error)
             delivered = "sent to chat" if send_to_chat else "generated"
-            return f"Image {delivered} (prompt: {prompt})"
-        delivered = "sent to chat and " if send_to_chat else ""
-        return (f"Image {delivered}stored in the sandbox at {path} "
-                f"(prompt: {prompt})")
+            text = f"Image {delivered} (prompt: {prompt})"
+        else:
+            delivered = "sent to chat and " if send_to_chat else ""
+            text = (f"Image {delivered}stored in the sandbox at {path} "
+                    f"(prompt: {prompt})")
+        if attachment is not None:
+            return ToolCallResult(text=text, image=attachment)
+        return text
     except requests.HTTPError as e:
         # The endpoint's error body (e.g. a content-policy rejection or a bad
         # parameter) is the useful part for the model, so pass it back.
@@ -104,7 +115,12 @@ TOOL_DEFINITIONS: list[dict] = [
         "function": {
             "name": TOOL_NAME,
             "strict": False,
-            "description": "Generate an image from a text prompt. The image is sent to the user in the chat and stored in the sandbox at /workspace/uploads, so it can be processed with sandbox tools. Set send_to_chat to false to generate an image without showing it to the user.",
+            "description": ("Generate an image from a text prompt. The image is sent to the user "
+                            "in the chat and stored in the sandbox at /workspace/uploads, so it "
+                            "can be processed with sandbox tools. Set send_to_chat to false to "
+                            "generate an image without showing it to the user. Set "
+                            "add_to_context to true to attach the generated image to this "
+                            "conversation so you can look at it (requires a vision-capable model)."),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -124,6 +140,12 @@ TOOL_DEFINITIONS: list[dict] = [
                         "description": ("Whether to send the generated image to the user in the chat. "
                                         "Defaults to true. Set to false to generate the image privately: "
                                         "it is still stored in the sandbox, but not shown to the user.")
+                    },
+                    "add_to_context": {
+                        "type": "boolean",
+                        "description": ("Whether to attach the generated image to this conversation "
+                                        "so you can see it. Defaults to false. Requires a "
+                                        "vision-capable model.")
                     }
                 },
                 "required": ["prompt"],
