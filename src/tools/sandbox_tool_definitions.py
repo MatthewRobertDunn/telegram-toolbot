@@ -354,9 +354,8 @@ TOOL_DEFINITIONS: list[dict] = [
                 "Read an image file (png, jpg, jpeg, gif, webp) from the "
                 "sandbox and attach it to the conversation so you can see "
                 "it. Requires a vision-capable model. The image is also "
-                "sent to the user's chat, unless send_to_chat is false or "
-                "the image was uploaded by the user (uploads are never "
-                "re-sent). Use this instead of the read tool for image "
+                "sent to the user's chat, unless send_to_chat is false. "
+                "Use this instead of the read tool for image "
                 "files; the read tool rejects binary files. Images larger "
                 "than 5 MB cannot be displayed."
             ),

@@ -5,7 +5,7 @@ import posixpath
 import shlex
 
 from chat_update_context import ChatUpdateContext, context_tool
-from sandbox import manager, UPLOADS_DIR
+from sandbox import manager
 from .sandbox_tool_definitions import TOOL_DEFINITIONS, WORKSPACE_ROOT
 from tool_result import ImageAttachment, ToolCallResult
 
@@ -305,10 +305,8 @@ async def read_image(ctx: ChatUpdateContext, filePath: str,
     except ValueError:
         return "Error: could not read the image contents."
 
-    # Uploaded images were already shown when the user sent them, so they are
-    # never echoed back; send_to_chat lets the model suppress the send for any
-    # other image too.
-    shown = send_to_chat and not path.startswith(f"{UPLOADS_DIR}/")
+    # send_to_chat lets the model decide whether the image is sent to the chat.
+    shown = send_to_chat
     if shown:
         try:
             await ctx.bot.send_photo(ctx.chat_id, photo=data)

@@ -648,25 +648,22 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.sent_photos, [payload])
 
     async def test_images_not_shown_are_not_sent(self):
-        # An image under uploads/ was already shown when uploaded, and
-        # send_to_chat=False keeps a read image private: neither is sent.
-        cases = [('uploads/pic.png', {}), ('rendered.png', {'send_to_chat': False})]
-        for path, kwargs in cases:
-            payload = b'img-bytes'
-            encoded = base64.b64encode(payload).decode()
-            manager = self._canned([
-                ('stat', 0, f'{len(payload)}\n', ''),
-                ('base64', 0, encoded, ''),
-            ])
-            bot = _FakeBot()
-            with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-                ctx = mock_ctx(bot=bot)
-                result = await sandbox_tool.read_image(ctx, path, **kwargs)
-            assert isinstance(result, ToolCallResult)
-            self.assertEqual(bot.sent_photos, [])
-            if not path.startswith('uploads/'):
-                self.assertNotIn('shown in the chat', result.text)
-                self.assertIn('Image read', result.text)
+        # send_to_chat=False keeps a read image private.
+        payload = b'img-bytes'
+        encoded = base64.b64encode(payload).decode()
+        manager = self._canned([
+            ('stat', 0, f'{len(payload)}\n', ''),
+            ('base64', 0, encoded, ''),
+        ])
+        bot = _FakeBot()
+        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
+            ctx = mock_ctx(bot=bot)
+            result = await sandbox_tool.read_image(
+                ctx, 'rendered.png', send_to_chat=False)
+        assert isinstance(result, ToolCallResult)
+        self.assertEqual(bot.sent_photos, [])
+        self.assertNotIn('shown in the chat', result.text)
+        self.assertIn('Image read', result.text)
 
     async def test_send_photo_failure_still_attaches(self):
         payload = b'img-bytes'
