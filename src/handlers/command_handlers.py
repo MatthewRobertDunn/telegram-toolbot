@@ -87,7 +87,7 @@ async def model_list_command(ctx: ChatUpdateContext):
             base_url=OPENAI_BASE_URL,
             api_key=OPENAI_KEY,
         )
-        models = sorted({model.id for model in client.models.list()})
+        models = sorted({model.id for model in client.models.list(extra_query={"available": "true"})})
         if ctx.command_text:
             models = [m for m in models if ctx.command_text.lower() in m.lower()]
         message = "\n".join(
