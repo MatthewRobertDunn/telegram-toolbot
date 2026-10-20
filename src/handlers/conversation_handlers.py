@@ -16,23 +16,23 @@ logger = logging.getLogger(__name__)
 BUSY_RESPONSE = ("A response is currently being generated; "
                  "use /stop first.")
 
-# Seconds before the /undo command message and its status replies are
+# Seconds before a command's own message and its status replies are
 # deleted, so the chat is left tidy without leaving debris behind.
-UNDO_CLEAR_DELAY = 10
+COMMAND_CLEAR_DELAY = 10
 
 
-async def _schedule_undo_clear(ctx: ChatUpdateContext,
-                               message_ids: list) -> None:
-    """Delete the /undo command message and the status replies it sent
+async def _schedule_command_clear(ctx: ChatUpdateContext,
+                                  message_ids: list) -> None:
+    """Delete the command message and the status replies it sent
     after a short delay. Fire-and-forget: the handler returns at once and
     this task cleans up later, so a slow Telegram delete never blocks the
     next update."""
-    await asyncio.sleep(UNDO_CLEAR_DELAY)
+    await asyncio.sleep(COMMAND_CLEAR_DELAY)
     await delete_from_telegram(ctx, message_ids)
 
 
-def _undo_command_message_id(ctx: ChatUpdateContext) -> int | None:
-    """The Telegram message id of the /undo command itself, if known."""
+def _command_message_id(ctx: ChatUpdateContext) -> int | None:
+    """The Telegram message id of the command itself, if known."""
     return getattr(ctx.message, 'message_id', None)
 
 
@@ -124,8 +124,8 @@ async def undo_command(ctx: ChatUpdateContext):
     messages = ctx.conversation.messages
     if not messages or messages[-1].get('role') == 'system':
         message_ids = await send_message(ctx, "Nothing to undo.")
-        asyncio.create_task(_schedule_undo_clear(
-            ctx, [_undo_command_message_id(ctx), *message_ids]))
+        asyncio.create_task(_schedule_command_clear(
+            ctx, [_command_message_id(ctx), *message_ids]))
         return
 
     # Walk the history back to and including the last user turn: a whole
@@ -150,8 +150,8 @@ async def undo_command(ctx: ChatUpdateContext):
             ctx,
             f"Removed message ({role}):\n"
             f"{message_preview(last, context=messages + removed)}")
-        asyncio.create_task(_schedule_undo_clear(
-            ctx, [_undo_command_message_id(ctx), *message_ids]))
+        asyncio.create_task(_schedule_command_clear(
+            ctx, [_command_message_id(ctx), *message_ids]))
         return
 
     removed_messages = []
@@ -180,15 +180,19 @@ async def undo_command(ctx: ChatUpdateContext):
             + "\n".join(f"- {message_preview(m)}"
                          for m in removed_messages))
 
-    asyncio.create_task(_schedule_undo_clear(
-        ctx, [_undo_command_message_id(ctx), *message_ids]))
+    asyncio.create_task(_schedule_command_clear(
+        ctx, [_command_message_id(ctx), *message_ids]))
 
 
 @handler
 async def regenerate_command(ctx: ChatUpdateContext):
     """Drop the last assistant turn (conversation and Telegram) and answer
     again, or - if the history ends on the user's turn - just answer it
-    without re-adding it."""
+    without re-adding it.
+
+    The /regenerate command message is deleted a short while later, so
+    the chat is left tidy: the queued generation replies on its own and
+    is not touched."""
     if await refuse_while_generating(ctx):
         return
 
@@ -198,7 +202,9 @@ async def regenerate_command(ctx: ChatUpdateContext):
     while messages and messages[-1].get('role') == 'tool':
         messages.pop()
     if not messages or messages[-1].get('role') == 'system':
-        await send_message(ctx, "Nothing to regenerate yet.")
+        message_ids = await send_message(ctx, "Nothing to regenerate yet.")
+        asyncio.create_task(_schedule_command_clear(
+            ctx, [_command_message_id(ctx), *message_ids]))
         return
 
     last = messages[-1]
@@ -210,6 +216,10 @@ async def regenerate_command(ctx: ChatUpdateContext):
     # user turn - after the pop the history ends on the original prompt,
     # unchanged, and the model answers it again.
     await submit_generation(ctx, None)
+    # The command message itself goes away shortly after; the queued
+    # generation replies on its own and is left alone.
+    asyncio.create_task(_schedule_command_clear(
+        ctx, [_command_message_id(ctx)]))
 
 
 @handler
