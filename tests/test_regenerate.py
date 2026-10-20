@@ -13,6 +13,7 @@ from handlers import generation_queue as generation_queue_mod
 from handlers.conversation_handlers import (
     message_preview,
     regenerate_command,
+    retry_command,
     undo_command,
 )
 from mock_context import mock_ctx
@@ -50,6 +51,13 @@ async def _run_regenerate(ctx, canned='fresh reply'):
     with mock.patch.object(generation_queue_mod, 'run_llm',
                            mock.AsyncMock(return_value=canned)):
         await regenerate_command(ctx)
+
+
+async def _run_retry(ctx, canned='fresh reply'):
+    """Run retry_command with a stubbed model replacing run_llm."""
+    with mock.patch.object(generation_queue_mod, 'run_llm',
+                           mock.AsyncMock(return_value=canned)):
+        await retry_command(ctx)
 
 
 class TestRegenerate(unittest.TestCase):
@@ -196,6 +204,58 @@ class TestUndo(unittest.TestCase):
         self.assertEqual(_roles(ctx.conversation), [])
         self.assertEqual(bot.sent, ['Nothing to undo.'])
         self.assertEqual(bot.deleted, [])
+
+
+class TestRetry(unittest.TestCase):
+
+    def test_retry_appends_a_reply_without_touching_the_history(self):
+        bot = _Bot()
+        conversation = Conversation()
+        conversation.add_user('hello', telegram_message_id=42)
+        conversation.add_assistant('first reply', telegram_message_id=43)
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+        asyncio.run(_run_retry(ctx))
+        self.assertEqual(_roles(ctx.conversation),
+                         ['user', 'assistant', 'assistant'])
+        self.assertEqual(ctx.conversation.messages[-1]['content'],
+                         'fresh reply')
+        # Nothing was popped, so nothing was deleted from Telegram, and
+        # the reply went out (LLM replies post via bot._post, whose stub
+        # hands back message id 555).
+        self.assertEqual(bot.deleted, [])
+        self.assertEqual(
+            ctx.conversation.messages[-1][CUSTOM]['telegram_message_id'], 555)
+
+    def test_retry_answers_an_unanswered_user_turn(self):
+        bot = _Bot()
+        conversation = Conversation()
+        conversation.add_user('hello', telegram_message_id=42)
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+        asyncio.run(_run_retry(ctx))
+        self.assertEqual(_roles(ctx.conversation), ['user', 'assistant'])
+        # The handler middleware inserts a system head, so the untouched
+        # user turn sits one from the end, before the fresh reply.
+        self.assertEqual(ctx.conversation.messages[-2]['content'], 'hello')
+
+    def test_busy_generation_is_refused(self):
+        bot = _Bot()
+        ctx = mock_ctx(user_id=5, bot=bot,
+                       conversation=[{'role': 'user', 'content': 'hi'}])
+        ctx.generation_task = SimpleNamespace(  # type: ignore[assignment]
+            done=lambda: False)
+        asyncio.run(retry_command(ctx))
+        self.assertEqual(len(_roles(ctx.conversation)), 1)
+        self.assertEqual(bot.sent, ["A response is currently being "
+                                    "generated; use /stop first."])
+
+    def test_only_system_head_has_nothing_to_retry(self):
+        conversation = Conversation()
+        conversation.set_system_head('prompt')
+        bot = _Bot()
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+        asyncio.run(retry_command(ctx))
+        self.assertEqual(_roles(ctx.conversation), [])
+        self.assertEqual(bot.sent, ['Nothing to retry yet.'])
 
 
 if __name__ == '__main__':

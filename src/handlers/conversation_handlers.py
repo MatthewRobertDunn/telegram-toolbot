@@ -129,6 +129,24 @@ async def regenerate_command(ctx: ChatUpdateContext):
 
 
 @handler
+async def retry_command(ctx: ChatUpdateContext):
+    """Answer the conversation again exactly as it stands: nothing is
+    popped or deleted, a fresh reply is appended after the history."""
+    if await refuse_while_generating(ctx):
+        return
+
+    messages = ctx.conversation.messages
+    if not any(message.get('role') != 'system' for message in messages):
+        await send_message(ctx, "Nothing to retry yet.")
+        return
+
+    # content=None: the queued item runs the model without appending a
+    # user turn - the history is left alone, and the model answers it
+    # again wherever it currently ends.
+    await submit_generation(ctx, None)
+
+
+@handler
 async def compact_command(ctx: ChatUpdateContext):
     keep_tokens = DEFAULT_KEEP_TOKENS
     if ctx.command_text:

@@ -12,6 +12,7 @@ from handlers.message_handlers import text_message_handler
 from handlers.conversation_handlers import (
     compact_command,
     regenerate_command,
+    retry_command,
     undo_command,
 )
 from handlers.command_handlers import (
@@ -74,6 +75,7 @@ async def post_init(application: Application):
             BotCommand("start", "Start a new conversation"),
             BotCommand("stop", "Stop the current AI response"),
             BotCommand("regenerate", "Regenerate the last response"),
+            BotCommand("retry", "Retry the conversation"),
             BotCommand("undo", "Undo the last message"),
             BotCommand("compact", "Compact the conversation context"),
             BotCommand("systemprompt", "Set a custom system prompt"),
@@ -132,6 +134,7 @@ def main():
     application.add_handler(CommandHandler('start', callback_adapter(start_restart_command)))
     application.add_handler(CommandHandler('stop', callback_adapter(stop_command)))
     application.add_handler(CommandHandler('regenerate', callback_adapter(regenerate_command)))
+    application.add_handler(CommandHandler('retry', callback_adapter(retry_command)))
     application.add_handler(CommandHandler('undo', callback_adapter(undo_command)))
     application.add_handler(CommandHandler('compact', callback_adapter(compact_command)))
     application.add_handler(CommandHandler('systemprompt', callback_adapter(systemprompt_command)))
