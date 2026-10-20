@@ -147,6 +147,28 @@ class TestUndo(unittest.TestCase):
         asyncio.run(undo_command(ctx))
         self.assertEqual(_roles(ctx.conversation), [])
         self.assertEqual(bot.deleted, [(5, 42)])
+        self.assertEqual(bot.sent,
+                         ["Removed message (User):\n```\nhello\n```"])
+
+    def test_undo_preview_is_truncated_to_twenty_characters(self):
+        bot = _Bot()
+        conversation = Conversation(
+            [{'role': 'user', 'content': 'a' * 30}])
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+        asyncio.run(undo_command(ctx))
+        self.assertEqual(
+            bot.sent,
+            ["Removed message (User):\n```\n" + 'a' * 20 + "...\n```"])
+
+    def test_undo_of_assistant_turn_names_the_role(self):
+        bot = _Bot()
+        conversation = Conversation()
+        conversation.add_user('hello')
+        conversation.add_assistant('sure thing')
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+        asyncio.run(undo_command(ctx))
+        self.assertEqual(bot.sent,
+                         ["Removed message (Assistant):\n```\nsure thing\n```"])
 
     def test_undo_without_telegram_id_deletes_nothing(self):
         bot = _Bot()

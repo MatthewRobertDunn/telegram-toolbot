@@ -44,6 +44,42 @@ def stored_message_id(message: dict):
     return (message.get(CUSTOM) or {}).get('telegram_message_id')
 
 
+def message_preview(message: dict, limit: int = 20) -> str:
+    """A short one-line identification of a message's contents, for
+    feedback like /undo. Multimodal parts become placeholders and tool
+    payloads are shown as raw json."""
+    content = message.get('content')
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        parts = []
+        for part in content or []:
+            if not isinstance(part, dict):
+                continue
+            if part.get('type') == 'text':
+                parts.append(part.get('text') or '')
+            elif part.get('type') == 'image_url':
+                parts.append('[image]')
+        text = ' '.join(parts)
+    else:
+        text = ''
+    if not text:
+        for tool_call in message.get('tool_calls') or []:
+            function = (tool_call or {}).get('function') or {}
+            text = (f"{function.get('name') or ''}"
+                    f"({function.get('arguments') or ''})")
+            if text != '()':
+                break
+        if not text and message.get('role') == 'tool':
+            text = message.get('content') or ''
+    text = ' '.join(str(text).split())
+    if not text:
+        return '(no content)'
+    if len(text) <= limit:
+        return text
+    return text[:limit] + '...'
+
+
 @handler
 async def undo_command(ctx: ChatUpdateContext):
     """Remove the last conversation message, deleting it from Telegram
@@ -58,6 +94,10 @@ async def undo_command(ctx: ChatUpdateContext):
 
     last = messages.pop()
     await delete_from_telegram(ctx, stored_message_id(last))
+    role = str(last.get('role') or 'message').capitalize()
+    await send_message(
+        ctx,
+        f"Removed message ({role}):\n```\n{message_preview(last)}\n```")
 
 
 @handler
