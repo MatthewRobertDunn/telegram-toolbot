@@ -174,8 +174,11 @@ class TestUndo(unittest.TestCase):
         conversation.add_assistant('sure thing')
         ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
         asyncio.run(undo_command(ctx))
+        self.assertEqual(_roles(ctx.conversation), [])
         self.assertEqual(bot.sent,
-                         ["Removed message (Assistant):\n```\nsure thing\n```"])
+                         ["Removed 2 message(s).\n"
+                          "- ```\nsure thing\n```\n"
+                          "- ```\nhello\n```"])
 
     def test_undo_without_telegram_id_deletes_nothing(self):
         bot = _Bot()
@@ -247,7 +250,7 @@ class TestUndo(unittest.TestCase):
         ])
         ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
         asyncio.run(undo_command(ctx))
-        self.assertEqual(_roles(ctx.conversation), ['user'])
+        self.assertEqual(_roles(ctx.conversation), [])
 
     def test_busy_generation_is_refused(self):
         bot = _Bot()
@@ -260,6 +263,35 @@ class TestUndo(unittest.TestCase):
         self.assertEqual(bot.deleted, [])
         self.assertEqual(bot.sent, ["A response is currently being "
                                     "generated; use /stop first."])
+
+    def test_undo_removes_everything_from_the_last_user_prompt_inclusively(self):
+        # /undo now walks the conversation back to and including the last
+        # user turn, so a whole exchange is gone in one command.
+        bot = _Bot()
+        conversation = Conversation()
+        conversation.add_assistant('first reply', telegram_message_ids=[10])
+        conversation.add_user('second prompt', telegram_message_ids=[11])
+        conversation.add_assistant('second reply', telegram_message_ids=[12])
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+        asyncio.run(undo_command(ctx))
+        self.assertEqual(_roles(ctx.conversation), ['assistant'])
+        self.assertEqual(ctx.conversation.messages[-1]['content'],
+                         'first reply')
+        self.assertEqual(bot.deleted, [(5, 12), (5, 11)])
+
+    def test_undo_removes_only_the_last_user_turn_when_it_is_the_tail(self):
+        # When the history ends on the user's prompt, /undo removes just
+        # that prompt - the assistant reply before it stays.
+        bot = _Bot()
+        conversation = Conversation()
+        conversation.add_assistant('first reply', telegram_message_ids=[10])
+        conversation.add_user('second prompt', telegram_message_ids=[11])
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+        asyncio.run(undo_command(ctx))
+        self.assertEqual(_roles(ctx.conversation), ['assistant'])
+        self.assertEqual(ctx.conversation.messages[-1]['content'],
+                         'first reply')
+        self.assertEqual(bot.deleted, [(5, 11)])
 
     def test_only_system_head_says_nothing_to_undo(self):
         conversation = Conversation()

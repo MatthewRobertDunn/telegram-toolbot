@@ -91,10 +91,11 @@ def message_preview(message: dict, limit: int = 100,
 
 @handler
 async def undo_command(ctx: ChatUpdateContext):
-    """Remove the last conversation message, deleting it from Telegram
-    when it has a known message id. When the message references tool
-    call ids, every message sharing those ids is stripped too - a call
-    left without its results (or vice versa) can't be replayed."""
+    """Remove the tail of the conversation back to and including the last
+    user prompt, deleting the removed messages from Telegram when they
+    have a known message id. When a removed message references tool call
+    ids, every message sharing those ids is stripped too - a call left
+    without its results (or vice versa) can't be replayed."""
     if await refuse_while_generating(ctx):
         return
 
@@ -103,18 +104,55 @@ async def undo_command(ctx: ChatUpdateContext):
         await send_message(ctx, "Nothing to undo.")
         return
 
-    last = messages.pop()
-    await delete_from_telegram(ctx, stored_message_ids(last))
+    # Walk the history back to and including the last user turn: a whole
+    # exchange (prompt + reply + any tool rounds) is removed in one go.
+    last_user_index = -1
+    for i, message in enumerate(messages):
+        if message.get('role') == 'user':
+            last_user_index = i
 
-    removed = ctx.conversation.remove_tool_calls(last)
-    for message in removed:
-        await delete_from_telegram(ctx, stored_message_ids(message))
+    if last_user_index == -1:
+        # No user turn exists (e.g. only an assistant greeting); undo just
+        # the last message, preserving the old single-message behaviour.
+        last = messages.pop()
+        await delete_from_telegram(ctx, stored_message_ids(last))
 
-    role = str(last.get('role') or 'message').capitalize()
-    await send_message(
-        ctx,
-        f"Removed message ({role}):\n"
-        f"{message_preview(last, context=messages + removed)}")
+        removed = ctx.conversation.remove_tool_calls(last)
+        for message in removed:
+            await delete_from_telegram(ctx, stored_message_ids(message))
+
+        role = str(last.get('role') or 'message').capitalize()
+        await send_message(
+            ctx,
+            f"Removed message ({role}):\n"
+            f"{message_preview(last, context=messages + removed)}")
+        return
+
+    removed_messages = []
+    while len(messages) > last_user_index:
+        last = messages.pop()
+        removed_messages.append(last)
+        await delete_from_telegram(ctx, stored_message_ids(last))
+
+        removed = ctx.conversation.remove_tool_calls(last)
+        for message in removed:
+            await delete_from_telegram(ctx, stored_message_ids(message))
+            if message not in removed_messages:
+                removed_messages.append(message)
+
+    if len(removed_messages) == 1:
+        last = removed_messages[0]
+        role = str(last.get('role') or 'message').capitalize()
+        await send_message(
+            ctx,
+            f"Removed message ({role}):\n"
+            f"{message_preview(last, context=messages + removed_messages)}")
+    else:
+        await send_message(
+            ctx,
+            f"Removed {len(removed_messages)} message(s).\n"
+            + "\n".join(f"- {message_preview(m)}"
+                         for m in removed_messages))
 
 
 @handler
