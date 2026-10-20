@@ -9,7 +9,7 @@ from conversation import Conversation, TOKENS_PER_CHAR
 from mocks import create_mock_context
 
 import compaction
-from handlers.command_handlers import compact_command
+from handlers.conversation_handlers import compact_command
 
 
 def _text(tokens: int) -> str:

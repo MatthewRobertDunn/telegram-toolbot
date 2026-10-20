@@ -10,7 +10,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from conversation import CUSTOM, Conversation
 from handlers import generation_queue as generation_queue_mod
-from handlers.command_handlers import regenerate_command
+from handlers.conversation_handlers import (
+    regenerate_command,
+    undo_command,
+)
 from handlers.generation_queue import STOPPED_BY_USER
 from mock_context import mock_ctx
 
@@ -131,6 +134,48 @@ class TestRegenerate(unittest.TestCase):
         self.assertEqual(bot.deleted, [])
         self.assertEqual(ctx.conversation.messages[-1]['content'],
                          'fresh reply')
+
+
+class TestUndo(unittest.TestCase):
+
+    def test_undoes_last_message_and_deletes_it_from_telegram(self):
+        bot = _Bot()
+        conversation = Conversation()
+        conversation.add_user('hello', telegram_message_id=42)
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+        asyncio.run(undo_command(ctx))
+        self.assertEqual(_roles(ctx.conversation), [])
+        self.assertEqual(bot.deleted, [(5, 42)])
+
+    def test_undo_without_telegram_id_deletes_nothing(self):
+        bot = _Bot()
+        conversation = Conversation([{'role': 'user', 'content': 'hello'}])
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+        asyncio.run(undo_command(ctx))
+        self.assertEqual(_roles(ctx.conversation), [])
+        self.assertEqual(bot.deleted, [])
+
+    def test_busy_generation_is_refused(self):
+        bot = _Bot()
+        ctx = mock_ctx(user_id=5, bot=bot,
+                       conversation=[{'role': 'user', 'content': 'hi'}])
+        ctx.generation_task = SimpleNamespace(  # type: ignore[assignment]
+            done=lambda: False)
+        asyncio.run(undo_command(ctx))
+        self.assertEqual(len(_roles(ctx.conversation)), 1)
+        self.assertEqual(bot.deleted, [])
+        self.assertEqual(bot.sent, ["A response is currently being "
+                                    "generated; use /stop first."])
+
+    def test_only_system_head_says_nothing_to_undo(self):
+        conversation = Conversation()
+        conversation.set_system_head('prompt')
+        bot = _Bot()
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+        asyncio.run(undo_command(ctx))
+        self.assertEqual(_roles(ctx.conversation), [])
+        self.assertEqual(bot.sent, ['Nothing to undo.'])
+        self.assertEqual(bot.deleted, [])
 
 
 if __name__ == '__main__':
