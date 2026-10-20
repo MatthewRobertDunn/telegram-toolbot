@@ -161,9 +161,11 @@ class TestUndo(unittest.TestCase):
 
     def test_undo_preview_is_truncated_to_the_limit(self):
         message = {'role': 'user', 'content': 'a' * 30}
-        self.assertEqual(message_preview(message, limit=7), 'a' * 7)
+        self.assertEqual(message_preview(message, limit=7),
+                         "```\n" + 'a' * 7 + "\n```")
         # At the limit or below, the text is returned whole.
-        self.assertEqual(message_preview(message, limit=30), 'a' * 30)
+        self.assertEqual(message_preview(message, limit=30),
+                         "```\n" + 'a' * 30 + "\n```")
 
     def test_undo_of_assistant_turn_names_the_role(self):
         bot = _Bot()
@@ -182,6 +184,70 @@ class TestUndo(unittest.TestCase):
         asyncio.run(undo_command(ctx))
         self.assertEqual(_roles(ctx.conversation), [])
         self.assertEqual(bot.deleted, [])
+
+    def test_undo_of_tool_result_removes_the_whole_tool_round(self):
+        # Leaving the assistant tool_calls message behind would end the
+        # history on a call with no result, which can't be replayed.
+        bot = _Bot()
+        conversation = Conversation([
+            {'role': 'assistant', 'content': '',
+             'tool_calls': [{'id': 'c1', 'type': 'function',
+                             'function': {'name': 'web_search',
+                                          'arguments': '{"query": "x"}'}}]},
+            {'role': 'tool', 'tool_call_id': 'c1', 'content': 'results'},
+        ])
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+        asyncio.run(undo_command(ctx))
+        self.assertEqual(_roles(ctx.conversation), [])
+        self.assertEqual(bot.deleted, [])
+
+    def test_undo_of_tool_result_leaves_earlier_tool_rounds_alone(self):
+        bot = _Bot()
+        conversation = Conversation([
+            {'role': 'assistant', 'content': '',
+             'tool_calls': [{'id': 'c1', 'type': 'function',
+                             'function': {'name': 'a', 'arguments': '{}'}}]},
+            {'role': 'tool', 'tool_call_id': 'c1', 'content': 'one'},
+            {'role': 'assistant', 'content': '',
+             'tool_calls': [{'id': 'c2', 'type': 'function',
+                             'function': {'name': 'b', 'arguments': '{}'}}]},
+            {'role': 'tool', 'tool_call_id': 'c2', 'content': 'two'},
+        ])
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+        asyncio.run(undo_command(ctx))
+        self.assertEqual(_roles(ctx.conversation), ['assistant', 'tool'])
+        self.assertEqual(ctx.conversation.messages[-1]['tool_call_id'], 'c1')
+
+    def test_undo_of_tool_result_removes_parallel_sibling_results(self):
+        bot = _Bot()
+        conversation = Conversation([
+            {'role': 'assistant', 'content': '',
+             'tool_calls': [
+                 {'id': 'c1', 'type': 'function',
+                  'function': {'name': 'a', 'arguments': '{}'}},
+                 {'id': 'c2', 'type': 'function',
+                  'function': {'name': 'b', 'arguments': '{}'}},
+             ]},
+            {'role': 'tool', 'tool_call_id': 'c1', 'content': 'one'},
+            {'role': 'tool', 'tool_call_id': 'c2', 'content': 'two'},
+        ])
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+        asyncio.run(undo_command(ctx))
+        self.assertEqual(_roles(ctx.conversation), [])
+
+    def test_undo_of_unanswered_tool_call_just_pops_it(self):
+        # Generation stopped mid-call: no results follow, so there is
+        # nothing else in the round to remove.
+        bot = _Bot()
+        conversation = Conversation([
+            {'role': 'user', 'content': 'go'},
+            {'role': 'assistant', 'content': '',
+             'tool_calls': [{'id': 'c1', 'type': 'function',
+                             'function': {'name': 'a', 'arguments': '{}'}}]},
+        ])
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+        asyncio.run(undo_command(ctx))
+        self.assertEqual(_roles(ctx.conversation), ['user'])
 
     def test_busy_generation_is_refused(self):
         bot = _Bot()

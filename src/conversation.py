@@ -26,6 +26,15 @@ IMAGE_PLACEHOLDER = '[image omitted]'
 MAX_IMAGES = 8
 
 
+def _tool_call_ids(message: dict) -> set:
+    """Every tool call id a message references: the ids in an assistant
+    message's tool_calls, or a tool result's tool_call_id."""
+    if message.get('role') == 'tool':
+        return {message.get('tool_call_id')} - {None}
+    return {((call or {}).get('id'))
+            for call in message.get('tool_calls') or []} - {None}
+
+
 def estimate_conversation_tokens(conversation) -> int:
     """Estimated tokens of a whole conversation, images included."""
     return sum(estimate_message_tokens(message) for message in conversation)
@@ -149,6 +158,32 @@ class Conversation:
             else:
                 message['content'][index] = {'type': 'text',
                                              'text': IMAGE_PLACEHOLDER}
+
+    def remove_tool_calls(self, message: dict) -> list:
+        """Remove every message referencing the tool calls `message`
+        references - its own tool_calls, or the results answering its
+        tool_call_id - and return the removed messages, so the caller
+        can clean up anything attached to them (e.g. Telegram messages)
+        and preview what went.
+
+        Removal cascades: an assistant message removed for one id drags
+        the results of its other parallel calls along, since a call left
+        without its results (or vice versa) can't be replayed."""
+        ids = _tool_call_ids(message)
+        removed = []
+        while True:
+            batch = [message for message in self.messages
+                     if _tool_call_ids(message) & ids
+                     and not any(message is old for old in removed)]
+            if not batch:
+                break
+            removed.extend(batch)
+            for message in batch:
+                ids |= _tool_call_ids(message)
+        if removed:
+            self.messages[:] = [message for message in self.messages
+                                if not any(message is old for old in removed)]
+        return removed
 
     def to_openai(self) -> list:
         """The message list as the endpoint should see it: `custom` local

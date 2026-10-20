@@ -44,10 +44,22 @@ def stored_message_id(message: dict):
     return (message.get(CUSTOM) or {}).get('telegram_message_id')
 
 
-def message_preview(message: dict, limit: int = 100) -> str:
-    """A short one-line identification of a message's contents, for
-    feedback like /undo. Multimodal parts become placeholders and tool
-    payloads are shown as raw json."""
+def _tool_call_name(call_id, context: list | None) -> str:
+    """The function name a tool result's tool_call_id refers to, looked
+    up among the tool calls of the other messages in the conversation."""
+    for message in context or []:
+        for call in message.get('tool_calls') or []:
+            if (call or {}).get('id') == call_id:
+                return ((call or {}).get('function') or {}).get('name') or ''
+    return ''
+
+
+def message_preview(message: dict, limit: int = 100,
+                    context: list | None = None) -> str:
+    """A short identification of a message's contents, for feedback like
+    /undo: the text inside a code fence, trimmed to `limit` characters.
+    Tool calls and results are prefixed with the tool's name and dump
+    their raw json; multimodal parts become placeholders."""
     content = message.get('content')
     if isinstance(content, str):
         text = content
@@ -64,26 +76,28 @@ def message_preview(message: dict, limit: int = 100) -> str:
     else:
         text = ''
     if not text:
-        for tool_call in message.get('tool_calls') or []:
-            function = (tool_call or {}).get('function') or {}
-            text = (f"{function.get('name') or ''}"
-                    f"({function.get('arguments') or ''})")
-            if text != '()':
-                break
-        if not text and message.get('role') == 'tool':
-            text = message.get('content') or ''
+        tool_calls = message.get('tool_calls') or []
+        if tool_calls:
+            function = (tool_calls[0] or {}).get('function') or {}
+            text = (f"{function.get('name') or ''} "
+                    f"{function.get('arguments') or ''}")
+        elif message.get('role') == 'tool':
+            name = _tool_call_name(message.get('tool_call_id'), context)
+            text = f"{name} {message.get('content') or ''}"
     text = ' '.join(str(text).split())
     if not text:
         return '(no content)'
-    if len(text) <= limit:
-        return text
-    return text[:limit]
+    if len(text) > limit:
+        text = text[:limit]
+    return f"```\n{text}\n```"
 
 
 @handler
 async def undo_command(ctx: ChatUpdateContext):
     """Remove the last conversation message, deleting it from Telegram
-    when it has a known message id."""
+    when it has a known message id. When the message references tool
+    call ids, every message sharing those ids is stripped too - a call
+    left without its results (or vice versa) can't be replayed."""
     if await refuse_while_generating(ctx):
         return
 
@@ -94,10 +108,16 @@ async def undo_command(ctx: ChatUpdateContext):
 
     last = messages.pop()
     await delete_from_telegram(ctx, stored_message_id(last))
+
+    removed = ctx.conversation.remove_tool_calls(last)
+    for message in removed:
+        await delete_from_telegram(ctx, stored_message_id(message))
+
     role = str(last.get('role') or 'message').capitalize()
     await send_message(
         ctx,
-        f"Removed message ({role}):\n```\n{message_preview(last)}\n```")
+        f"Removed message ({role}):\n"
+        f"{message_preview(last, context=messages + removed)}")
 
 
 @handler
