@@ -14,7 +14,6 @@ from handlers.conversation_handlers import (
     regenerate_command,
     undo_command,
 )
-from handlers.generation_queue import STOPPED_BY_USER
 from mock_context import mock_ctx
 
 
@@ -124,10 +123,12 @@ class TestRegenerate(unittest.TestCase):
         self.assertEqual(bot.deleted, [])
 
     def test_reply_without_stored_id_deletes_nothing(self):
-        # A stopped-by-user marker carries no telegram id.
+        # An assistant turn recorded before message-id tracking, or with
+        # no reply sent at all, carries no telegram id: pop without
+        # attempting any deletion.
         conversation = Conversation()
         conversation.add_user('hello')
-        conversation.add_assistant(STOPPED_BY_USER)
+        conversation.add_assistant('no telegram id')
         bot = _Bot()
         ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
         asyncio.run(_run_regenerate(ctx))

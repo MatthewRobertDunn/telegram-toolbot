@@ -192,7 +192,6 @@ class TestCompactContext(unittest.IsolatedAsyncioTestCase):
         self.assertIn('THE SUMMARY', checkpoint)
         self.assertIn('second question', checkpoint)
         self.assertNotIn('first question', checkpoint)
-        self.assertIsNone(ctx.compaction_task)
 
     async def test_compacts_without_recent_context(self):
         conversation = [
@@ -240,7 +239,7 @@ class TestCompactContext(unittest.IsolatedAsyncioTestCase):
                 await compaction.compact_context(ctx)
 
         self.assertEqual(ctx.conversation, conversation)
-        self.assertIsNone(ctx.compaction_task)
+
 
     async def test_on_start_runs_before_the_summary_call(self):
         ctx = mock_ctx(conversation=_big_conversation())
@@ -258,22 +257,21 @@ class TestCompactContext(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(events, ['start', 'llm'])
 
-    async def test_compaction_runs_in_its_own_task(self):
+    async def test_compaction_runs_inline_under_the_caller(self):
         ctx = mock_ctx(conversation=_big_conversation())
         seen = {}
 
         async def fake_run_llm(ctx, **kwargs):
-            seen['stored'] = ctx.compaction_task
-            seen['current'] = asyncio.current_task()
+            seen['caller'] = asyncio.current_task()
             return 'THE SUMMARY'
 
         with unittest.mock.patch.object(compaction, 'run_llm', fake_run_llm):
             result = await compaction.compact_context(ctx)
 
-        # The stored task is the compaction task, never the caller's task.
-        self.assertIs(seen['stored'], seen['current'])
-        self.assertIsNot(seen['stored'], asyncio.current_task())
-        self.assertIsNone(ctx.compaction_task)
+        # No internal task is spawned: the caller awaits the work itself,
+        # and whoever calls in (a queued unit) tracks it in
+        # ctx.generation_task.
+        self.assertIs(seen['caller'], asyncio.current_task())
         self.assertEqual(result.summary, 'THE SUMMARY')
 
 

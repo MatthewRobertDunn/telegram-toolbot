@@ -35,10 +35,6 @@ class CompactionError(Exception):
     """Base error for failed or refused compactions."""
 
 
-class CompactionBusyError(CompactionError):
-    """Raised when compaction is requested while the bot is busy."""
-
-
 @dataclass
 class CompactionSplit:
     """A conversation divided into the part to summarize and the part to keep.
@@ -216,30 +212,20 @@ async def compact_context(
     then replaced by a single checkpoint message holding the summary plus the
     newest `keep_tokens` of messages verbatim.
 
-    The work runs as its own task, tracked in ctx.compaction_task the same way
-    generation is tracked in ctx.generation_task, so cancelling it stops just
-    the compaction and never its caller's task.
+    Runs inline - whoever awaits it owns the task. The /compact handler
+    enqueues it onto the per-user work queue like any other unit of work,
+    so it never overlaps a running generation; the queue slot means it
+    cannot be busy and no CompactionBusyError exists anymore.
 
-    Raises CompactionError when the context is too small to compact or the
-    summary fails, and CompactionBusyError when a reply is being generated or
-    another compaction is already running. `on_start`, when given, is awaited
-    just before the summarizing call begins.
+    Raises CompactionError when the context is too small to compact or
+    the summary fails. `on_start`, when given, is awaited just before the
+    summarizing call begins.
     """
-    if ctx.is_busy:
-        raise CompactionBusyError(
-            'Cannot compact the context while a response is being generated '
-            'or a compaction is already running.')
-
     split = split_for_compaction(ctx.conversation, keep_tokens)
     if split is None:
         raise CompactionError('Context too small to compact')
 
-    task = asyncio.create_task(_run_compaction(ctx, split, on_start))
-    ctx.compaction_task = task
-    try:
-        return await task
-    finally:
-        ctx.compaction_task = None
+    return await _run_compaction(ctx, split, on_start)
 
 
 async def _run_compaction(

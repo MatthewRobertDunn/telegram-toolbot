@@ -84,20 +84,11 @@ class ChatUpdateContext:
         self.user_data['generation_worker'] = value
 
     @property
-    def compaction_task(self) -> asyncio.Task | None:
-        return self.user_data.get('compaction_task')
-
-    @compaction_task.setter
-    def compaction_task(self, value: asyncio.Task | None) -> None:
-        self.user_data['compaction_task'] = value
-
-    @property
     def is_busy(self) -> bool:
-        """Whether a response is being generated or a compaction is running."""
+        """Whether a tracked unit of work (generation, compaction, ...) is
+        running."""
         generation = self.generation_task
-        compaction = self.compaction_task
-        return ((generation is not None and not generation.done())
-                or (compaction is not None and not compaction.done()))
+        return generation is not None and not generation.done()
 
 
     @property

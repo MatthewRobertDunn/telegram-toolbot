@@ -1,7 +1,11 @@
+import asyncio
+import logging
+
 import openai
 from chat_update_context import ChatUpdateContext
 from conversation import Conversation
 from handlers.middleware import handler, settings
+from handlers.generation_queue import generation_queue
 from handlers.message_handlers import stop_generation
 from messaging import send_preformatted_message, send_message
 from config import OPENAI_KEY, OPENAI_BASE_URL
@@ -17,8 +21,24 @@ async def start_restart_command(ctx: ChatUpdateContext):
 
 @handler
 async def stop_command(ctx: ChatUpdateContext):
-    if stop_generation(ctx):
+    stopped = stop_generation(ctx)
+    # Clear anything waiting behind the running unit: queued items are
+    # released so their submitters resume instead of waiting forever.
+    queue = generation_queue(ctx)
+    dropped = 0
+    while not queue.empty():
+        item = queue.get_nowait()
+        if not item.done.is_set():
+            item.done.set()
+            dropped += 1
+
+    if stopped and dropped:
+        await send_message(ctx, f"Stopped the current response and dropped "
+                                f"{dropped} queued request(s).")
+    elif stopped:
         await send_message(ctx, "Stopped the current response.")
+    elif dropped:
+        await send_message(ctx, f"Dropped {dropped} queued request(s).")
     else:
         await send_message(ctx, "No response is currently being generated.")
 

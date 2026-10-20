@@ -8,7 +8,7 @@ from chat_update_context import ChatUpdateContext
 from compaction import (DEFAULT_KEEP_TOKENS, CompactionError, compact_context)
 from conversation import CUSTOM
 from handlers.middleware import handler
-from handlers.generation_queue import submit_generation
+from handlers.generation_queue import submit_generation, submit_task
 from messaging import send_message, run_with_typing
 
 logger = logging.getLogger(__name__)
@@ -102,22 +102,35 @@ async def compact_command(ctx: ChatUpdateContext):
                 f'Usage: `/{ctx.command_name} [tokens of recent history to keep]`')
             return
 
-    try:
-        result = await run_with_typing(
+    await submit_task(ctx, run_compaction(ctx, keep_tokens))
+
+
+async def run_compaction(ctx: ChatUpdateContext, keep_tokens: int) -> None:
+    """One unit of work: compact the conversation, reporting progress and
+    the token savings. The task is tracked in ctx.generation_task, so
+    /stop cancels it just like a reply generation."""
+    ctx.generation_task = inner = asyncio.create_task(
+        run_with_typing(
             ctx,
             compact_context(
                 ctx,
                 keep_tokens=keep_tokens,
-                on_start=lambda: send_message(ctx, 'Starting Compaction...')))
+                on_start=lambda: send_message(ctx, 'Starting Compaction...'))))
+    try:
+        result = await inner
     except asyncio.CancelledError:
+        if not inner.cancelled():
+            # This job itself was cancelled (bot shutdown).
+            inner.cancel()
+            raise
         await send_message(ctx, 'Compaction stopped.')
-        return
     except CompactionError as e:
         await send_message(ctx, str(e))
-        return
-
-    await send_message(ctx, result.summary, parse_mode='LLM')
-    await send_message(
-        ctx,
-        f'Compaction complete: {result.tokens_before:,} tokens '
-        f'-> {result.tokens_after:,} tokens')
+    else:
+        await send_message(ctx, result.summary, parse_mode='LLM')
+        await send_message(
+            ctx,
+            f'Compaction complete: {result.tokens_before:,} tokens '
+            f'-> {result.tokens_after:,} tokens')
+    finally:
+        ctx.generation_task = None

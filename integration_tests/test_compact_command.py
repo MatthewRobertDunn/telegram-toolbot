@@ -63,24 +63,6 @@ class TestCompactCommand(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(ctx.sent), 1)
         self.assertIn("Usage:", ctx.sent[0]["text"])
 
-    async def test_refused_while_busy(self):
-        for field, reason in (("generation_task", "being generated"),
-                              ("compaction_task", "already running")):
-            ctx = create_mock_context(user_id=_uid(), command_name="compact")
-            _fill_big_conversation(ctx)
-            pending = asyncio.create_task(asyncio.sleep(30))
-            setattr(ctx, field, pending)
-            try:
-                with unittest.mock.patch("compaction.run_llm", _fake_run_llm):
-                    await compact_command(ctx)
-            finally:
-                pending.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await pending
-            self.assertEqual(len(ctx.sent), 1)
-            self.assertIn(reason, ctx.sent[0]["text"])
-            self.assertIn("first question", ctx.conversation[1]["content"])
-
     async def test_stopping_compaction_mid_run(self):
         ctx = create_mock_context(user_id=_uid(), command_name="compact")
         _fill_big_conversation(ctx)
@@ -94,7 +76,7 @@ class TestCompactCommand(unittest.IsolatedAsyncioTestCase):
         with unittest.mock.patch("compaction.run_llm", slow_run_llm):
             command = asyncio.create_task(compact_command(ctx))
             await started.wait()
-            task = ctx.compaction_task
+            task = ctx.generation_task
             assert task is not None
             task.cancel()
             await command
