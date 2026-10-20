@@ -16,6 +16,25 @@ logger = logging.getLogger(__name__)
 BUSY_RESPONSE = ("A response is currently being generated; "
                  "use /stop first.")
 
+# Seconds before the /undo command message and its status replies are
+# deleted, so the chat is left tidy without leaving debris behind.
+UNDO_CLEAR_DELAY = 10
+
+
+async def _schedule_undo_clear(ctx: ChatUpdateContext,
+                               message_ids: list) -> None:
+    """Delete the /undo command message and the status replies it sent
+    after a short delay. Fire-and-forget: the handler returns at once and
+    this task cleans up later, so a slow Telegram delete never blocks the
+    next update."""
+    await asyncio.sleep(UNDO_CLEAR_DELAY)
+    await delete_from_telegram(ctx, message_ids)
+
+
+def _undo_command_message_id(ctx: ChatUpdateContext) -> int | None:
+    """The Telegram message id of the /undo command itself, if known."""
+    return getattr(ctx.message, 'message_id', None)
+
 
 async def refuse_while_generating(ctx: ChatUpdateContext) -> bool:
     """True if a response or compaction is in flight; the caller should
@@ -95,13 +114,18 @@ async def undo_command(ctx: ChatUpdateContext):
     user prompt, deleting the removed messages from Telegram when they
     have a known message id. When a removed message references tool call
     ids, every message sharing those ids is stripped too - a call left
-    without its results (or vice versa) can't be replayed."""
+    without its results (or vice versa) can't be replayed.
+
+    The /undo command message and the status replies it sends are deleted
+    a short while later, so the chat is left tidy."""
     if await refuse_while_generating(ctx):
         return
 
     messages = ctx.conversation.messages
     if not messages or messages[-1].get('role') == 'system':
-        await send_message(ctx, "Nothing to undo.")
+        message_ids = await send_message(ctx, "Nothing to undo.")
+        asyncio.create_task(_schedule_undo_clear(
+            ctx, [_undo_command_message_id(ctx), *message_ids]))
         return
 
     # Walk the history back to and including the last user turn: a whole
@@ -122,10 +146,12 @@ async def undo_command(ctx: ChatUpdateContext):
             await delete_from_telegram(ctx, stored_message_ids(message))
 
         role = str(last.get('role') or 'message').capitalize()
-        await send_message(
+        message_ids = await send_message(
             ctx,
             f"Removed message ({role}):\n"
             f"{message_preview(last, context=messages + removed)}")
+        asyncio.create_task(_schedule_undo_clear(
+            ctx, [_undo_command_message_id(ctx), *message_ids]))
         return
 
     removed_messages = []
@@ -143,16 +169,19 @@ async def undo_command(ctx: ChatUpdateContext):
     if len(removed_messages) == 1:
         last = removed_messages[0]
         role = str(last.get('role') or 'message').capitalize()
-        await send_message(
+        message_ids = await send_message(
             ctx,
             f"Removed message ({role}):\n"
             f"{message_preview(last, context=messages + removed_messages)}")
     else:
-        await send_message(
+        message_ids = await send_message(
             ctx,
             f"Removed {len(removed_messages)} message(s).\n"
             + "\n".join(f"- {message_preview(m)}"
                          for m in removed_messages))
+
+    asyncio.create_task(_schedule_undo_clear(
+        ctx, [_undo_command_message_id(ctx), *message_ids]))
 
 
 @handler
