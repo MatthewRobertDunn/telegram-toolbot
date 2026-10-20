@@ -1,13 +1,17 @@
 import asyncio
+import logging
 
 import openai
 from chat_update_context import ChatUpdateContext
 from compaction import (DEFAULT_KEEP_TOKENS, CompactionError, compact_context)
-from conversation import Conversation
+from conversation import CUSTOM, Conversation
 from handlers.middleware import handler, settings
+from handlers.generation_queue import submit_generation
 from handlers.message_handlers import stop_generation
 from messaging import send_preformatted_message, send_message, run_with_typing
 from config import OPENAI_KEY, OPENAI_BASE_URL
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -24,6 +28,47 @@ async def stop_command(ctx: ChatUpdateContext):
         await send_message(ctx, "Stopped the current response.")
     else:
         await send_message(ctx, "No response is currently being generated.")
+
+
+@handler
+async def regenerate_command(ctx: ChatUpdateContext):
+    """Drop the last assistant turn (conversation and Telegram) and answer
+    again, or - if the history ends on the user's turn - just answer it
+    without re-adding it."""
+    task = ctx.generation_task
+    if task is not None and not task.done():
+        await send_message(ctx, "A response is currently being generated; "
+                                "use /stop first.")
+        return
+
+    messages = ctx.conversation.messages
+    # An unfinished assistant turn leaves its tool results trailing; skip
+    # past them so the real last speaker is what decides the branch.
+    while messages and messages[-1].get('role') == 'tool':
+        messages.pop()
+    if not messages or messages[-1].get('role') == 'system':
+        await send_message(ctx, "Nothing to regenerate yet.")
+        return
+
+    last = messages[-1]
+    if last.get('role') == 'assistant':
+        messages.pop()
+        custom = last.get(CUSTOM) or {}
+        message_id = custom.get('telegram_message_id')
+        if message_id is not None:
+            try:
+                # The stored id belongs to the last chunk of a chunked
+                # reply, so multi-message answers would leave earlier
+                # chunks behind.
+                await ctx.bot.delete_message(ctx.chat_id, message_id)
+            except Exception as e:
+                logger.warning("Could not delete telegram message %s: %s",
+                               message_id, e)
+
+    # content=None: the queued item runs the model without appending a
+    # user turn - after the pop the history ends on the original prompt,
+    # unchanged, and the model answers it again.
+    await submit_generation(ctx, None)
 
 
 @handler
