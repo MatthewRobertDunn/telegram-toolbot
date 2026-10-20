@@ -16,7 +16,7 @@ MAX_RICH_MSG_LEN = 32000
 async def send_rich_message(ctx: ChatUpdateContext, text: str):
     # PTB doesn't expose sendRichMessage yet (Bot API 10.1); we use the raw
     # request layer as recommended by the PTB maintainers until it ships.
-    await ctx.bot._post(
+    return await ctx.bot._post(
         "sendRichMessage",
         data={
             "chat_id": ctx.chat_id,
@@ -53,17 +53,24 @@ def _split_at_linebreak(text: str, limit: int) -> list[str]:
 
 
 async def send_message(ctx: ChatUpdateContext, text: str, parse_mode='Markdown', disable_web_page_preview=True):
+    """Send text, chunking if needed. Returns the message_id of the last
+    posted message, or None if it could not be determined."""
+    message_id = None
     if parse_mode == 'LLM':
         for chunk in _split_at_linebreak(text, MAX_RICH_MSG_LEN):
-            await send_rich_message(ctx, chunk)
+            result = await send_rich_message(ctx, chunk)
+            if isinstance(result, dict):
+                message_id = result.get("message_id")
     else:
         for chunk in _split_at_linebreak(text, MAX_MSG_LEN):
-            await _send_chunk_maybe_fallback(
+            message = await _send_chunk_maybe_fallback(
                 ctx,
                 chunk,
                 parse_mode,
                 disable_web_page_preview,
             )
+            message_id = getattr(message, "message_id", None)
+    return message_id
 
 
 async def send_preformatted_message(ctx: ChatUpdateContext, text: str):
