@@ -23,6 +23,7 @@ never coming back don't leave a task parked forever.
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 
 from chat_update_context import ChatUpdateContext
 from .run_llm import run_llm
@@ -33,11 +34,25 @@ logger = logging.getLogger(__name__)
 STOPPED_BY_USER = '(response was stopped by the user)'
 
 
+@dataclass
+class GenerationItem:
+    """One queued user turn: the conversation content to append when the
+    item's turn comes, and the telegram message_id (if any) of the user
+    message it came from, for later edit/delete bookkeeping."""
+    ctx: ChatUpdateContext
+    content: str | None
+    # Owned by the queue machinery: set once the item has been processed.
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+    telegram_message_id: int | None = None
+
+
 def generation_queue(ctx: ChatUpdateContext) -> "asyncio.Queue":
     return ctx.user_data.setdefault('generation_queue', asyncio.Queue())
 
 
-async def submit_generation(ctx: ChatUpdateContext, content: str) -> None:
+async def submit_generation(
+        ctx: ChatUpdateContext, content: str | None,
+        telegram_message_id: int | None = None) -> None:
     """Queue a generation for a user turn, and wait for its reply to be sent.
 
     `content` is the user turn, already formatted for the conversation
@@ -47,8 +62,9 @@ async def submit_generation(ctx: ChatUpdateContext, content: str) -> None:
     Returns once the reply went out (or the generation was stopped), so
     callers keep the old run-and-reply sequencing.
     """
-    item: asyncio.Event = asyncio.Event()
-    generation_queue(ctx).put_nowait((item, ctx, content))
+    item = GenerationItem(ctx=ctx, content=content,
+                          telegram_message_id=telegram_message_id)
+    generation_queue(ctx).put_nowait(item)
     if ctx.generation_worker is None:
         # Queue idle: nothing is draining it. Claims run without an await
         # between the put and the spawn, and the worker releases and
@@ -56,7 +72,7 @@ async def submit_generation(ctx: ChatUpdateContext, content: str) -> None:
         # one worker exists per user and no enqueued item can outlive
         # every worker.
         ctx.generation_worker = asyncio.create_task(_generation_worker(ctx))
-    await item.wait()
+    await item.done.wait()
 
 
 async def _generation_worker(submitter: ChatUpdateContext) -> None:
@@ -69,18 +85,20 @@ async def _generation_worker(submitter: ChatUpdateContext) -> None:
     """
     queue = generation_queue(submitter)
     while True:
-        event, ctx, content = await queue.get()
+        item = await queue.get()
         try:
-            if content is not None:
-                ctx.conversation.add_user(content)
+            if item.content is not None:
+                item.ctx.conversation.add_user(
+                    item.content,
+                    telegram_message_id=item.telegram_message_id)
             # A concurrent compaction rewrites the same conversation; wait
             # it out so the generation starts against the compacted state.
-            compaction = ctx.compaction_task
+            compaction = item.ctx.compaction_task
             if compaction is not None and not compaction.done():
                 await asyncio.wait([compaction])
 
-            ctx.generation_task = inner = asyncio.create_task(
-                run_with_typing(ctx, run_llm(ctx)))
+            item.ctx.generation_task = inner = asyncio.create_task(
+                run_with_typing(item.ctx, run_llm(item.ctx)))
             try:
                 gpt_response = await inner
             except asyncio.CancelledError:
@@ -90,15 +108,17 @@ async def _generation_worker(submitter: ChatUpdateContext) -> None:
                     inner.cancel()
                     raise
                 # /stop cancelled just the generation task.
-                ctx.conversation.add_assistant(STOPPED_BY_USER)
+                item.ctx.conversation.add_assistant(STOPPED_BY_USER)
             else:
-                await send_message(ctx, gpt_response, parse_mode='LLM')
-                ctx.conversation.add_assistant(gpt_response)
+                message_id = await send_message(item.ctx, gpt_response,
+                                                parse_mode='LLM')
+                item.ctx.conversation.add_assistant(
+                    gpt_response, telegram_message_id=message_id)
         except Exception:
             logger.exception('Generation failed')
         finally:
-            ctx.generation_task = None
-            event.set()
+            item.ctx.generation_task = None
+            item.done.set()
 
         # Queue ran dry: drop the claim and exit. Releasing the claim
         # *before* the final empty check keeps the no-worker race

@@ -74,4 +74,5 @@ async def upload_handler(ctx: ChatUpdateContext):
 
     # Same single submission point as text replies: the queue appends the
     # user turn and generates the reply, stopping included.
-    await submit_generation(ctx, content)
+    await submit_generation(ctx, content,
+                            telegram_message_id=msg.message_id)

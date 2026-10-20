@@ -30,7 +30,8 @@ async def group_text_message_handler(ctx: ChatUpdateContext):
         ctx.conversation.add_user(f"{name}: {text}")
         return
 
-    await submit_generation(ctx, f"{name}: {text}")
+    await submit_generation(ctx, f"{name}: {text}",
+                            telegram_message_id=ctx.message.message_id)
 
 
 @handler
@@ -43,4 +44,5 @@ async def text_message_handler(ctx: ChatUpdateContext):
         await group_text_message_handler(ctx)
         return
 
-    await submit_generation(ctx, text)
+    await submit_generation(ctx, text,
+                            telegram_message_id=ctx.message.message_id)
