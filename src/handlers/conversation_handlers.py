@@ -44,7 +44,7 @@ def stored_message_id(message: dict):
     return (message.get(CUSTOM) or {}).get('telegram_message_id')
 
 
-def message_preview(message: dict, limit: int = 20) -> str:
+def message_preview(message: dict, limit: int = 100) -> str:
     """A short one-line identification of a message's contents, for
     feedback like /undo. Multimodal parts become placeholders and tool
     payloads are shown as raw json."""
@@ -77,7 +77,7 @@ def message_preview(message: dict, limit: int = 20) -> str:
         return '(no content)'
     if len(text) <= limit:
         return text
-    return text[:limit] + '...'
+    return text[:limit]
 
 
 @handler

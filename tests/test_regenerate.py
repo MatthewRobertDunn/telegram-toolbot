@@ -150,15 +150,15 @@ class TestUndo(unittest.TestCase):
         self.assertEqual(bot.sent,
                          ["Removed message (User):\n```\nhello\n```"])
 
-    def test_undo_preview_is_truncated_to_twenty_characters(self):
+    def test_undo_preview_is_truncated_to_the_limit(self):
         bot = _Bot()
         conversation = Conversation(
-            [{'role': 'user', 'content': 'a' * 30}])
+            [{'role': 'user', 'content': 'a' * 120}])
         ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
         asyncio.run(undo_command(ctx))
         self.assertEqual(
             bot.sent,
-            ["Removed message (User):\n```\n" + 'a' * 20 + "...\n```"])
+            ["Removed message (User):\n```\n" + 'a' * 100 + "\n```"])
 
     def test_undo_of_assistant_turn_names_the_role(self):
         bot = _Bot()
