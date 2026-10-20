@@ -199,10 +199,8 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rm_calls), rm_before + 1)
         self.assertEqual(rm_calls[-1], ['rm', '-f', 'toolbot-sandbox-1'])
         self.assertNotIn(1, self.manager._sandboxes)
-
-    async def test_destroy_without_sandbox_returns_false(self):
-        destroyed = await self.manager.destroy(1)
-        self.assertFalse(destroyed)
+        # Destroying a user with no sandbox at all is a no-op, not an error.
+        self.assertFalse(await self.manager.destroy(1))
 
     async def test_reap_stops_only_idle_sandboxes(self):
         await self._ensure(1)
@@ -221,22 +219,23 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertIn(1, self.manager._sandboxes)
 
     async def test_reap_leaves_sandbox_just_under_stop_timeout(self):
+        # One reap pass, both thresholds: a sandbox a second under the
+        # stop timeout is left running, while one past it is stopped but -
+        # still under the destroy timeout - kept for a later pass.
         await self._ensure(1)
+        await self._ensure(2)
         self.manager._sandboxes[1].last_activity = (
             time.time() - config.SANDBOX_IDLE_STOP_TIMEOUT + 1)
-        self.assertEqual(await self.manager.reap_idle(), ([], []))
-        self.assertEqual(self.fake.containers['toolbot-sandbox-1'], 'true')
-
-    async def test_reap_keeps_stopped_sandbox_under_destroy_timeout(self):
-        await self._ensure(1)
-        self.manager._sandboxes[1].last_activity = (
+        self.manager._sandboxes[2].last_activity = (
             time.time() - config.SANDBOX_IDLE_DESTROY_TIMEOUT + 1)
 
         stopped, destroyed = await self.manager.reap_idle()
 
-        self.assertEqual((stopped, destroyed), ([1], []))
-        self.assertEqual(self.fake.containers['toolbot-sandbox-1'], 'false')
+        self.assertEqual((stopped, destroyed), ([2], []))
+        self.assertEqual(self.fake.containers['toolbot-sandbox-1'], 'true')
+        self.assertEqual(self.fake.containers['toolbot-sandbox-2'], 'false')
         self.assertIn(1, self.manager._sandboxes)
+        self.assertIn(2, self.manager._sandboxes)
 
     async def test_reap_destroys_sandboxes_past_destroy_timeout(self):
         await self._ensure(1)

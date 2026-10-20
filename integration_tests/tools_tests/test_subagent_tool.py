@@ -43,31 +43,33 @@ class TestSubagentTool(unittest.IsolatedAsyncioTestCase):
                          {"role": "user", "content": "Do the thing"})
         self.assertIn("Research task", conversation[0]["content"])
 
-    async def test_default_model_follows_current_model(self):
-        ctx = self._context_with_settings(model="chat-model")
+    async def test_model_precedence(self):
+        # The subagent model resolves as: the user's /subagent_model
+        # override, else the operator's SUBAGENT_MODEL config, else the
+        # user's current /model.
         captured = {}
 
         async def fake_run_llm(ctx_arg, **kwargs):
             captured["kwargs"] = kwargs
             return "ok"
 
-        with unittest.mock.patch.object(config, "SUBAGENT_MODEL", None), \
-                unittest.mock.patch("tools.subagent.run_llm", fake_run_llm):
-            await subagent(ctx, "Label", "Task")
-        self.assertEqual(captured["kwargs"]["model"], "chat-model")
-
-    async def test_subagent_model_setting_overrides_config(self):
-        ctx = self._context_with_settings(
-            model="chat-model", subagent_model="custom-model")
-        captured = {}
-
-        async def fake_run_llm(ctx_arg, **kwargs):
-            captured["kwargs"] = kwargs
-            return "ok"
-
-        with unittest.mock.patch("tools.subagent.run_llm", fake_run_llm):
-            await subagent(ctx, "Label", "Task")
-        self.assertEqual(captured["kwargs"]["model"], "custom-model")
+        cases = (
+            # (settings overrides, config.SUBAGENT_MODEL, expected model)
+            ({}, None, "chat-model"),
+            ({}, "config-model", "config-model"),
+            ({"subagent_model": "custom-model"}, None, "custom-model"),
+            ({"subagent_model": "custom-model"}, "config-model", "custom-model"),
+        )
+        for overrides, config_model, expected in cases:
+            with self.subTest(overrides=overrides, config=config_model):
+                ctx = self._context_with_settings(model="chat-model",
+                                                  **overrides)
+                with unittest.mock.patch.object(config, "SUBAGENT_MODEL",
+                                                config_model), \
+                        unittest.mock.patch("tools.subagent.run_llm",
+                                            fake_run_llm):
+                    await subagent(ctx, "Label", "Task")
+                self.assertEqual(captured["kwargs"]["model"], expected)
 
     def test_tool_definition_shape(self):
         self.assertEqual(len(TOOL_DEFINITIONS), 1)

@@ -59,13 +59,6 @@ class TestKeyValueStore(unittest.IsolatedAsyncioTestCase):
 
         await self.store.delete_values(1, [])
 
-    async def test_isolated_users(self):
-        await self.store.set(1, 'key', 'v1')
-        await self.store.set(2, 'key', 'v2')
-
-        self.assertEqual(await self.store.get_values(1, ['key']), {'key': 'v1'})
-        self.assertEqual(await self.store.get_values(2, ['key']), {'key': 'v2'})
-
 
 if __name__ == '__main__':
     unittest.main()

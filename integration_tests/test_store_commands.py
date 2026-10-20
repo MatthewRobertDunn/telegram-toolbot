@@ -80,8 +80,7 @@ class TestStoreCommands(unittest.IsolatedAsyncioTestCase):
         await store_command(ctx_get)
         self.assertIn("not found", ctx_get.sent[0]["text"])
 
-    async def test_store_delete_nonexistent(self):
-        # Deleting a key that doesn't exist still reports success
+        # Deleting a key that isn't there still reports success.
         ctx = create_mock_context(
             user_id=_uid(), command_text="ghost", command_name="store_delete")
         await store_delete_command(ctx)

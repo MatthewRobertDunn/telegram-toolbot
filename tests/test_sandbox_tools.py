@@ -114,11 +114,9 @@ class TestEditHelper(unittest.TestCase):
         self.assertEqual(self._replace('foo\nbar\nbaz\n', 'bar', 'qux'),
                          'foo\nqux\nbaz\n')
 
-    def test_not_found(self):
+    def test_not_found_or_ambiguous_is_refused(self):
         with self.assertRaises(ValueError, msg='Could not find oldString'):
             self._replace('foo\n', 'nope', 'x')
-
-    def test_multiple_matches_error(self):
         with self.assertRaises(ValueError, msg='Found multiple matches'):
             self._replace('x = 1\ny = x\nx = 2\n', 'x', 'z')
 
@@ -667,6 +665,32 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
     def _canned(self, exec_responses):
         return SandboxManager(docker=CannedDocker(exec_responses))
 
+    async def _read_image(self, payload=b'img-bytes', path='rendered.png',
+                          uploaded_by=None, broken_send_photo=False,
+                          **kwargs):
+        """Run read_image against a docker that serves `payload` at `path`.
+
+        uploaded_by: record the file as a recent upload by that user, so
+        the "already visible in the chat" shortcut can be exercised.
+        Returns (result, bot) so callers can assert on both.
+        """
+        encoded = base64.b64encode(payload).decode()
+        manager = self._canned([
+            ('stat', 0, f'{len(payload)}\n', ''),
+            ('base64', 0, encoded, ''),
+        ])
+        bot = _FakeBot()
+        if uploaded_by is not None:
+            upload_cache.record_upload(uploaded_by, f'/workspace/{path}')
+        if broken_send_photo:
+            async def broken(*args, **kwargs):
+                raise RuntimeError('telegram down')
+            bot.send_photo = broken
+        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
+            result = await sandbox_tool.read_image(
+                mock_ctx(bot=bot), path, **kwargs)  # user_id defaults to 1
+        return result, bot
+
     async def test_unsupported_extension(self):
         manager = self._canned([])
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
@@ -676,96 +700,48 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
         self.assertIn('not a supported image type', result)
 
     async def test_success_sends_photo_and_returns_image(self):
-        payload = bytes(range(256))
-        encoded = base64.b64encode(payload).decode()
-        manager = self._canned([
-            ('stat', 0, f'{len(payload)}\n', ''),
-            ('base64', 0, encoded, ''),
-        ])
-        bot = _FakeBot()
-        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = mock_ctx(bot=bot)
-            result = await sandbox_tool.read_image(ctx, 'rendered.png')
+        result, bot = await self._read_image(bytes(range(256)))
         assert isinstance(result, ToolCallResult)
         assert result.image is not None
-        self.assertEqual(result.image.data, payload)
+        self.assertEqual(result.image.data, bytes(range(256)))
         self.assertEqual(result.image.mime, 'image/png')
         self.assertIn('/workspace/rendered.png', result.text)
-        self.assertEqual(bot.sent_photos, [payload])
+        self.assertEqual(bot.sent_photos, [bytes(range(256))])
 
     async def test_images_not_shown_are_not_sent(self):
         # send_to_chat=False keeps a read image private.
-        payload = b'img-bytes'
-        encoded = base64.b64encode(payload).decode()
-        manager = self._canned([
-            ('stat', 0, f'{len(payload)}\n', ''),
-            ('base64', 0, encoded, ''),
-        ])
-        bot = _FakeBot()
-        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = mock_ctx(bot=bot)
-            result = await sandbox_tool.read_image(
-                ctx, 'rendered.png', send_to_chat=False)
+        result, bot = await self._read_image(send_to_chat=False)
         assert isinstance(result, ToolCallResult)
         self.assertEqual(bot.sent_photos, [])
         self.assertNotIn('shown in the chat', result.text)
         self.assertIn('Image read', result.text)
 
-    async def test_recently_uploaded_not_resent_to_chat(self):
+    async def test_recent_upload_is_not_resent_to_the_chat(self):
         # An image the user just uploaded is already visible in the chat
-        # window; read_image attaches it for the model without re-sending it.
-        payload = b'img-bytes'
-        encoded = base64.b64encode(payload).decode()
-        manager = self._canned([
-            ('stat', 0, f'{len(payload)}\n', ''),
-            ('base64', 0, encoded, ''),
-        ])
-        bot = _FakeBot()
-        upload_cache.record_upload(1, '/workspace/uploads/pic.png')
-        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = mock_ctx(bot=bot)  # user_id defaults to 1
-            result = await sandbox_tool.read_image(ctx, 'uploads/pic.png')
+        # window; read_image attaches it for the model without re-sending
+        # it. Another user's upload of the same name is not spared.
+        result, bot = await self._read_image(
+            path='uploads/pic.png', uploaded_by=1)
         assert isinstance(result, ToolCallResult)
         assert result.image is not None
-        self.assertEqual(result.image.data, payload)
+        self.assertEqual(result.image.data, b'img-bytes')
         self.assertEqual(bot.sent_photos, [])
         self.assertIn('recently uploaded', result.text)
         self.assertIn('attached to this result', result.text)
 
-    async def test_upload_by_other_user_still_shows(self):
-        payload = b'img-bytes'
-        encoded = base64.b64encode(payload).decode()
-        manager = self._canned([
-            ('stat', 0, f'{len(payload)}\n', ''),
-            ('base64', 0, encoded, ''),
-        ])
-        bot = _FakeBot()
-        upload_cache.record_upload(2, '/workspace/uploads/pic.png')
-        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = mock_ctx(bot=bot)  # user 1; the upload was user 2's
-            result = await sandbox_tool.read_image(ctx, 'uploads/pic.png')
+        # Another user's upload of the same name is not spared.
+        upload_cache._recent_uploads.pop((1, 'pic.png'), None)
+        result, bot = await self._read_image(
+            path='uploads/pic.png', uploaded_by=2)
         assert isinstance(result, ToolCallResult)
-        self.assertEqual(bot.sent_photos, [payload])
+        self.assertEqual(bot.sent_photos, [b'img-bytes'])
         self.assertIn('Image shown in the chat', result.text)
 
     async def test_send_photo_failure_still_attaches(self):
-        payload = b'img-bytes'
-        encoded = base64.b64encode(payload).decode()
-        manager = self._canned([
-            ('stat', 0, f'{len(payload)}\n', ''),
-            ('base64', 0, encoded, ''),
-        ])
-        bot = _FakeBot()
-
-        async def broken_send_photo(*args, **kwargs):
-            raise RuntimeError('telegram down')
-        bot.send_photo = broken_send_photo
-        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
-            ctx = mock_ctx(bot=bot)
-            result = await sandbox_tool.read_image(ctx, 'rendered.png')
+        result, _ = await self._read_image(broken_send_photo=True)
         assert isinstance(result, ToolCallResult)
         assert result.image is not None
-        self.assertEqual(result.image.data, payload)
+        self.assertEqual(result.image.data, b'img-bytes')
 
 
 class TestToolResultImageContract(unittest.IsolatedAsyncioTestCase):
@@ -774,30 +750,33 @@ class TestToolResultImageContract(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(
             function=SimpleNamespace(name=name, arguments=arguments))
 
-    async def test_execute_tool_call_returns_tool_call_result(self):
-        async def fake_tool(ctx, filePath):
+    async def test_execute_tool_call_passes_results_through(self):
+        # A tool's return value reaches the model unchanged: an
+        # image-bearing ToolCallResult stays one, a plain string stays a
+        # string the tool message can carry verbatim.
+        async def image_tool(ctx, filePath):
             return ToolCallResult(
                 text="shown", image=ImageAttachment(b"img", "image/png"))
-        setattr(fake_tool, "_requires_context", True)
-        with unittest.mock.patch.object(
-                run_llm_mod, 'TOOL_MAP', {"fake_tool": fake_tool}):
-            ctx = mock_ctx()
-            result = await run_llm_mod.execute_tool_call(
-                ctx, self._tool_call("fake_tool", '{"filePath": "x.png"}'))
-        assert isinstance(result, ToolCallResult)
-        assert result.image is not None
-        self.assertEqual(result.image.data, b"img")
 
-    async def test_execute_tool_call_stringifies_plain_results(self):
-        async def fake_tool(ctx):
+        async def text_tool(ctx):
             return "plain text result"
-        setattr(fake_tool, "_requires_context", True)
-        with unittest.mock.patch.object(
-                run_llm_mod, 'TOOL_MAP', {"fake_tool": fake_tool}):
-            ctx = mock_ctx()
-            result = await run_llm_mod.execute_tool_call(
-                ctx, self._tool_call("fake_tool", '{}'))
-        self.assertEqual(result, "plain text result")
+
+        expected_image = ToolCallResult(
+            text="shown", image=ImageAttachment(b"img", "image/png"))
+        for tool, arguments, expected in (
+                (image_tool, '{"filePath": "x.png"}', expected_image),
+                (text_tool, '{}', "plain text result")):
+            with self.subTest(tool=tool.__name__):
+                setattr(tool, "_requires_context", True)
+                with unittest.mock.patch.object(
+                        run_llm_mod, 'TOOL_MAP', {"fake_tool": tool}):
+                    result = await run_llm_mod.execute_tool_call(
+                        mock_ctx(), self._tool_call("fake_tool", arguments))
+                self.assertEqual(result, expected)
+                if isinstance(expected, ToolCallResult):
+                    assert isinstance(result, ToolCallResult)
+                    assert result.image is not None
+                    self.assertEqual(result.image.data, b"img")
 
     async def test_image_tool_call_appends_user_message(self):
         payload = b'png-bytes'

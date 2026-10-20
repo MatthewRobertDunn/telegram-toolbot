@@ -241,33 +241,23 @@ class TestCompactContext(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.conversation, conversation)
 
 
-    async def test_on_start_runs_before_the_summary_call(self):
+    async def test_on_start_runs_inline_before_the_summary_call(self):
         ctx = mock_ctx(conversation=_big_conversation())
         events = []
+        seen = {}
 
         async def on_start():
             events.append('start')
 
         async def fake_run_llm(ctx, **kwargs):
             events.append('llm')
-            return 'THE SUMMARY'
-
-        with unittest.mock.patch.object(compaction, 'run_llm', fake_run_llm):
-            await compaction.compact_context(ctx, on_start=on_start)
-
-        self.assertEqual(events, ['start', 'llm'])
-
-    async def test_compaction_runs_inline_under_the_caller(self):
-        ctx = mock_ctx(conversation=_big_conversation())
-        seen = {}
-
-        async def fake_run_llm(ctx, **kwargs):
             seen['caller'] = asyncio.current_task()
             return 'THE SUMMARY'
 
         with unittest.mock.patch.object(compaction, 'run_llm', fake_run_llm):
-            result = await compaction.compact_context(ctx)
+            result = await compaction.compact_context(ctx, on_start=on_start)
 
+        self.assertEqual(events, ['start', 'llm'])
         # No internal task is spawned: the caller awaits the work itself,
         # and whoever calls in (a queued unit) tracks it in
         # ctx.generation_task.

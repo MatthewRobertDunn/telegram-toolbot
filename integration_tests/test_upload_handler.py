@@ -17,7 +17,7 @@ def _upload_ctx(user_id: int, media, caption=None) -> ChatUpdateContext:
     context = SimpleNamespace(
         bot=bot, bot_data={"allowed_ids": []}, user_data={}, chat_data={})
     message = SimpleNamespace(
-        text=None, caption=caption,
+        text=None, caption=caption, message_id=4321,
         chat=SimpleNamespace(id=user_id, type="private"),
         from_user=SimpleNamespace(id=user_id, first_name="T", last_name="U"),
         document=media,

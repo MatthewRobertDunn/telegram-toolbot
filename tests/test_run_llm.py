@@ -35,30 +35,24 @@ def _fake_client(captured: dict, chunks: list):
 
 class TestRunLlmReplies(unittest.IsolatedAsyncioTestCase):
 
-    async def test_tools_offered_by_default(self):
-        captured: dict = {}
-        with unittest.mock.patch.object(
-                run_llm_mod, 'client',
-                _fake_client(captured, [_chunk('plain reply')])):
-            result = await run_llm_mod.run_llm(
-                mock_ctx(settings=SETTINGS, conversation=[]))
-        self.assertEqual(result, 'plain reply')
-        self.assertIn('tools', captured)
-        self.assertEqual(captured['tool_choice'], 'auto')
-        self.assertIs(captured['stream'], True)
-
-    async def test_allow_tools_false_omits_tools(self):
-        captured: dict = {}
-        with unittest.mock.patch.object(
-                run_llm_mod, 'client',
-                _fake_client(captured, [_chunk('plain reply')])):
-            result = await run_llm_mod.run_llm(
-                mock_ctx(settings=SETTINGS, conversation=[]),
-                allow_tools=False)
-        self.assertEqual(result, 'plain reply')
-        self.assertNotIn('tools', captured)
-        self.assertNotIn('tool_choice', captured)
-
+    async def test_tools_offered_by_default_and_omitted_on_request(self):
+        # Tools are offered unless the caller opts out (e.g. the nested
+        # summarizing call compaction makes).
+        for allow_tools, expected in ((True, True), (False, False)):
+            with self.subTest(allow_tools=allow_tools):
+                captured: dict = {}
+                with unittest.mock.patch.object(
+                        run_llm_mod, 'client',
+                        _fake_client(captured, [_chunk('plain reply')])):
+                    result = await run_llm_mod.run_llm(
+                        mock_ctx(settings=SETTINGS, conversation=[]),
+                        allow_tools=allow_tools)
+                self.assertEqual(result, 'plain reply')
+                self.assertEqual('tools' in captured, expected)
+                self.assertEqual('tool_choice' in captured, expected)
+                if expected:
+                    self.assertEqual(captured['tool_choice'], 'auto')
+                self.assertIs(captured['stream'], True)
 
     async def test_empty_reply_reports_no_content(self):
         # Regression: an empty completion (no content, no reasoning, no tool

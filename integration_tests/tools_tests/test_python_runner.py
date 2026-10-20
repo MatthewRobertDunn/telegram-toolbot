@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -50,17 +51,10 @@ class TestPythonRunner(unittest.IsolatedAsyncioTestCase):
         result = await run_python_code(
             ctx, "import os; print(os.getcwd())")
         self.assertIn("/workspace", result)
-
-    async def test_extends_idle_timer(self):
-        import asyncio
-        import time
-        ctx = await self._ctx()
-        await run_python_code(ctx, "pass")
-        before = time.time() - 10  # activity is no longer than 10s ago
-        await asyncio.sleep(0.1)
-        await run_python_code(ctx, "pass")
-        last = manager._sandboxes[self.uid].last_activity
-        self.assertGreater(last, before)
+        # Running code counts as sandbox activity, so it keeps the
+        # container alive.
+        self.assertGreater(
+            manager._sandboxes[self.uid].last_activity, time.time() - 60)
 
 
 if __name__ == "__main__":

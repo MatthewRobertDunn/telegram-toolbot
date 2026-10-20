@@ -26,24 +26,19 @@ class TestConversationIdentity(unittest.TestCase):
 
 class TestTelegramIds(unittest.TestCase):
 
-    def test_add_user_stores_telegram_message_ids_in_custom(self):
+    def test_add_helpers_store_telegram_message_ids_in_custom(self):
         conversation = Conversation()
-        message = conversation.add_user('hello', telegram_message_ids=[42])
-        self.assertEqual(message['custom'], {'telegram_message_ids': [42]})
-
-    def test_add_assistant_stores_telegram_message_ids_in_custom(self):
-        conversation = Conversation()
-        message = conversation.add_assistant('hi', telegram_message_ids=[99])
-        self.assertEqual(message['custom'], {'telegram_message_ids': [99]})
-
-    def test_add_user_accepts_a_single_id_as_well_as_a_list(self):
-        conversation = Conversation()
-        message = conversation.add_user('hello', telegram_message_ids=42)
-        self.assertEqual(message['custom'], {'telegram_message_ids': [42]})
+        user = conversation.add_user('hello', telegram_message_ids=[42])
+        # A single id is stored as a list, just like a list of them.
+        assistant = conversation.add_assistant('hi', telegram_message_ids=99)
+        self.assertEqual(user['custom'], {'telegram_message_ids': [42]})
+        self.assertEqual(assistant['custom'], {'telegram_message_ids': [99]})
 
     def test_no_telegram_message_id_leaves_no_custom_key(self):
         conversation = Conversation()
-        message = conversation.add_user('hello')
+        self.assertNotIn('custom', conversation.add_user('hello'))
+        message = conversation.add_assistant('hi')
+        message.add_telegram_message_id(None)
         self.assertNotIn('custom', message)
 
     def test_add_telegram_message_id_collects_every_chunk(self):
@@ -53,12 +48,6 @@ class TestTelegramIds(unittest.TestCase):
         message.add_telegram_message_id(8)
         self.assertEqual(message['custom'],
                          {'telegram_message_ids': [7, 8]})
-
-    def test_add_telegram_message_id_ignores_none(self):
-        conversation = Conversation()
-        message = conversation.add_assistant('hi')
-        message.add_telegram_message_id(None)
-        self.assertNotIn('custom', message)
 
     def test_to_openai_strips_custom_metadata(self):
         conversation = Conversation()
@@ -95,13 +84,11 @@ class TestConversationHelpers(unittest.TestCase):
         self.assertEqual(conversation.messages,
                          [{'role': 'system', 'content': 'prompt'},
                           {'role': 'user', 'content': 'hi'}])
-
-    def test_set_system_head_replaces_existing_head(self):
-        conversation = Conversation()
-        conversation.set_system_head('old')
-        conversation.set_system_head('new')
+        # Calling it again replaces the head in place rather than stacking.
+        conversation.set_system_head('newer')
         self.assertEqual(conversation.messages,
-                         [{'role': 'system', 'content': 'new'}])
+                         [{'role': 'system', 'content': 'newer'},
+                          {'role': 'user', 'content': 'hi'}])
 
     def test_head_is_system(self):
         conversation = Conversation()

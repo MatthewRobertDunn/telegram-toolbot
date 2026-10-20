@@ -92,20 +92,6 @@ class TestRegenerate(unittest.TestCase):
                          'fresh reply')
         self.assertEqual(bot.deleted, [])
 
-    def test_busy_generation_is_refused(self):
-        bot = _Bot()
-        conversation = Conversation([{'role': 'user', 'content': 'hi'}])
-        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
-        # A live generation task blocks regeneration. Plain stub: only
-        # done() is consulted.
-        ctx.generation_task = SimpleNamespace(  # type: ignore[assignment]
-            done=lambda: False)
-        asyncio.run(regenerate_command(ctx))
-        self.assertEqual(len(_roles(ctx.conversation)), 1)
-        self.assertEqual(bot.deleted, [])
-        self.assertEqual(bot.sent, ["A response is currently being "
-                                    "generated; use /stop first."])
-
     def test_empty_conversation_says_nothing_to_regenerate(self):
         bot = _Bot()
         ctx = mock_ctx(user_id=5, bot=bot, conversation=[])
@@ -144,6 +130,28 @@ class TestRegenerate(unittest.TestCase):
         self.assertEqual(bot.deleted, [])
         self.assertEqual(ctx.conversation.messages[-1]['content'],
                          'fresh reply')
+
+
+class TestBusyGenerationIsRefused(unittest.TestCase):
+    # All three conversation commands refuse to run while a response (or
+    # compaction) is in flight, so the user is told to /stop first.
+
+    def test_commands_refuse_while_generating(self):
+        for command in (regenerate_command, undo_command, retry_command):
+            with self.subTest(command=command.__name__):
+                bot = _Bot()
+                ctx = mock_ctx(user_id=5, bot=bot,
+                               conversation=[{'role': 'user', 'content': 'hi'}])
+                # A live generation task blocks the command. Plain stub:
+                # only done() is consulted.
+                ctx.generation_task = SimpleNamespace(  # type: ignore[assignment]
+                    done=lambda: False)
+                asyncio.run(command(ctx))
+                self.assertEqual(len(_roles(ctx.conversation)), 1)
+                self.assertEqual(bot.deleted, [])
+                self.assertEqual(bot.sent,
+                                 ["A response is currently being "
+                                  "generated; use /stop first."])
 
 
 class TestUndo(unittest.TestCase):
@@ -240,7 +248,8 @@ class TestUndo(unittest.TestCase):
 
     def test_undo_of_unanswered_tool_call_just_pops_it(self):
         # Generation stopped mid-call: no results follow, so there is
-        # nothing else in the round to remove.
+        # nothing else in the round to remove. The preview still names the
+        # tool that was called.
         bot = _Bot()
         conversation = Conversation([
             {'role': 'user', 'content': 'go'},
@@ -251,18 +260,7 @@ class TestUndo(unittest.TestCase):
         ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
         asyncio.run(undo_command(ctx))
         self.assertEqual(_roles(ctx.conversation), [])
-
-    def test_busy_generation_is_refused(self):
-        bot = _Bot()
-        ctx = mock_ctx(user_id=5, bot=bot,
-                       conversation=[{'role': 'user', 'content': 'hi'}])
-        ctx.generation_task = SimpleNamespace(  # type: ignore[assignment]
-            done=lambda: False)
-        asyncio.run(undo_command(ctx))
-        self.assertEqual(len(_roles(ctx.conversation)), 1)
-        self.assertEqual(bot.deleted, [])
-        self.assertEqual(bot.sent, ["A response is currently being "
-                                    "generated; use /stop first."])
+        self.assertIn('a {}', bot.sent[0])
 
     def test_undo_removes_everything_from_the_last_user_prompt_inclusively(self):
         # /undo now walks the conversation back to and including the last
@@ -335,17 +333,6 @@ class TestRetry(unittest.TestCase):
         # The handler middleware inserts a system head, so the untouched
         # user turn sits one from the end, before the fresh reply.
         self.assertEqual(ctx.conversation.messages[-2]['content'], 'hello')
-
-    def test_busy_generation_is_refused(self):
-        bot = _Bot()
-        ctx = mock_ctx(user_id=5, bot=bot,
-                       conversation=[{'role': 'user', 'content': 'hi'}])
-        ctx.generation_task = SimpleNamespace(  # type: ignore[assignment]
-            done=lambda: False)
-        asyncio.run(retry_command(ctx))
-        self.assertEqual(len(_roles(ctx.conversation)), 1)
-        self.assertEqual(bot.sent, ["A response is currently being "
-                                    "generated; use /stop first."])
 
     def test_only_system_head_has_nothing_to_retry(self):
         conversation = Conversation()

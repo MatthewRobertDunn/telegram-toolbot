@@ -21,11 +21,22 @@ from handlers.command_handlers import (
     user_profile_command,
     user_profile_reset_command,
 )
+from user_settings import UserSettings
 
 
 class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
     # Each test uses a distinct user_id so they don't collide on the
     # shared test database (wiped + recreated once per test run).
+
+    # The two numeric settings are driven by identical command code, so
+    # they are exercised together rather than copy-pasted per setting:
+    # (command, command name, default, value to set, out-of-range value,
+    #  substring the bare-query reply starts with).
+    NUMERIC_SETTINGS = (
+        (temperature_command, "temperature", 1.0, "0.7", "5.0",
+         "Current temperature"),
+        (top_p_command, "top_p", 0.95, "0.5", "-0.1", "Current top"),
+    )
 
     # -- start_restart_command -------------------------------------------
 
@@ -38,34 +49,29 @@ class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
 
     # -- model_command ---------------------------------------------------
 
-    async def test_model_set(self):
+    async def test_model_set_and_query(self):
+        uid = _uid()
         ctx = create_mock_context(
-            user_id=_uid(), command_text="my-org/my-model", command_name="model")
+            user_id=uid, command_text="my-org/my-model", command_name="model")
         await model_command(ctx)
         self.assertEqual(len(ctx.sent), 1)
         self.assertIn("my-org/my-model", ctx.sent[0]["text"])
         self.assertEqual(ctx.settings.model, "my-org/my-model")
 
-    async def test_model_query_without_arg(self):
+        # Called bare it reports the stored value...
+        ctx = create_mock_context(user_id=uid, command_name="model")
+        await model_command(ctx)
+        self.assertEqual(len(ctx.sent), 1)
+        self.assertIn("Current model", ctx.sent[0]["text"])
+        self.assertIn("my-org/my-model", ctx.sent[0]["text"])
+
+        # ...and the default model for a user who never set one.
         ctx = create_mock_context(user_id=_uid(), command_name="model")
         await model_command(ctx)
         self.assertEqual(len(ctx.sent), 1)
         self.assertIn("Current model", ctx.sent[0]["text"])
-        # The default model should appear in the query response
         self.assertIn(os.environ.get("LLM_MODEL", "minimaxai/minimax-m2.7"),
                       ctx.sent[0]["text"])
-
-    async def test_model_reset(self):
-        uid = _uid()
-        ctx_set = create_mock_context(
-            user_id=uid, command_text="my-org/my-model", command_name="model")
-        await model_command(ctx_set)
-        ctx_reset = create_mock_context(user_id=uid, command_name="model_reset")
-        await model_reset_command(ctx_reset)
-        self.assertEqual(len(ctx_reset.sent), 1)
-        self.assertIn("reset", ctx_reset.sent[0]["text"])
-        self.assertEqual(ctx_reset.settings.model,
-                         os.environ.get("LLM_MODEL", "minimaxai/minimax-m2.7"))
 
     # -- subagent_model_command ------------------------------------------
 
@@ -107,93 +113,73 @@ class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
             ctx_reset.settings.subagent_model,
             os.environ.get("SUBAGENT_MODEL") or "my-org/my-model")
 
-    # -- temperature_command ---------------------------------------------
+    # -- temperature_command / top_p_command -----------------------------
 
-    async def test_temperature_set(self):
-        ctx = create_mock_context(
-            user_id=_uid(), command_text="0.7", command_name="temperature")
-        await temperature_command(ctx)
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertEqual(ctx.settings.temperature, 0.7)
+    async def test_numeric_setting_set_and_query(self):
+        for command, name, _, value, _, needle in self.NUMERIC_SETTINGS:
+            with self.subTest(setting=name):
+                ctx = create_mock_context(
+                    user_id=_uid(), command_text=value, command_name=name)
+                await command(ctx)
+                self.assertEqual(len(ctx.sent), 1)
+                self.assertAlmostEqual(
+                    getattr(ctx.settings, name), float(value))
 
-    async def test_temperature_query_without_arg(self):
-        ctx = create_mock_context(user_id=_uid(), command_name="temperature")
-        await temperature_command(ctx)
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertIn("Current temperature", ctx.sent[0]["text"])
+                ctx = create_mock_context(user_id=_uid(), command_name=name)
+                await command(ctx)
+                self.assertEqual(len(ctx.sent), 1)
+                self.assertIn(needle, ctx.sent[0]["text"])
 
-    async def test_temperature_invalid(self):
-        ctx = create_mock_context(
-            user_id=_uid(), command_text="abc", command_name="temperature")
-        await temperature_command(ctx)
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertIn("convert", ctx.sent[0]["text"])
-        # Setting should not have changed from default
-        self.assertAlmostEqual(ctx.settings.temperature, 1.0)
+    async def test_numeric_setting_rejects_bad_values(self):
+        for command, name, default, _, out_of_range, _ in self.NUMERIC_SETTINGS:
+            with self.subTest(setting=name):
+                for text, needle in (("abc", "convert"),
+                                     (out_of_range, "must be between")):
+                    ctx = create_mock_context(
+                        user_id=_uid(), command_text=text, command_name=name)
+                    await command(ctx)
+                    self.assertEqual(len(ctx.sent), 1)
+                    self.assertIn(needle, ctx.sent[0]["text"])
+                    # The rejected value leaves the setting at its default.
+                    self.assertAlmostEqual(
+                        getattr(ctx.settings, name), default)
 
-    async def test_temperature_out_of_range(self):
-        ctx = create_mock_context(
-            user_id=_uid(), command_text="5.0", command_name="temperature")
-        await temperature_command(ctx)
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertIn("must be between", ctx.sent[0]["text"])
-        # Setting should not have changed from default
-        self.assertAlmostEqual(ctx.settings.temperature, 1.0)
+    # -- the per-setting reset commands ----------------------------------
 
-    async def test_temperature_reset(self):
-        uid = _uid()
-        ctx_set = create_mock_context(
-            user_id=uid, command_text="0.5", command_name="temperature")
-        await temperature_command(ctx_set)
-        ctx_reset = create_mock_context(user_id=uid, command_name="temperature_reset")
-        await temperature_reset_command(ctx_reset)
-        self.assertEqual(len(ctx_reset.sent), 1)
-        self.assertIn("reset", ctx_reset.sent[0]["text"])
-        self.assertAlmostEqual(ctx_reset.settings.temperature, 1.0)
+    async def test_setting_resets_restore_the_defaults(self):
+        defaults = UserSettings.default()
+        # (set command, set name, value, echo, reset command, reset name,
+        #  settings attribute)
+        cases = (
+            (model_command, "model", "my-org/my-model", "my-org/my-model",
+             model_reset_command, "model_reset", "model"),
+            (temperature_command, "temperature", "0.5", "0.5",
+             temperature_reset_command, "temperature_reset", "temperature"),
+            (top_p_command, "top_p", "0.3", "0.3",
+             top_p_reset_command, "top_p_reset", "top_p"),
+            (systemprompt_command, "systemprompt", "Custom", "updated",
+             systemprompt_reset_command, "systemprompt_reset", "system_prompt"),
+            (user_profile_command, "user_profile", "Something", "updated",
+             user_profile_reset_command, "user_profile_reset", "user_profile"),
+        )
+        for setter, set_name, value, echo, reset, reset_name, attr in cases:
+            with self.subTest(setting=attr):
+                uid = _uid()
+                ctx_set = create_mock_context(
+                    user_id=uid, command_text=value, command_name=set_name)
+                await setter(ctx_set)
+                self.assertEqual(len(ctx_set.sent), 1)
+                self.assertIn(echo, ctx_set.sent[0]["text"])
+                self.assertNotEqual(getattr(ctx_set.settings, attr),
+                                    getattr(defaults, attr))
 
-    # -- top_p_command ---------------------------------------------------
-
-    async def test_top_p_set(self):
-        ctx = create_mock_context(
-            user_id=_uid(), command_text="0.5", command_name="top_p")
-        await top_p_command(ctx)
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertEqual(ctx.settings.top_p, 0.5)
-
-    async def test_top_p_query_without_arg(self):
-        ctx = create_mock_context(user_id=_uid(), command_name="top_p")
-        await top_p_command(ctx)
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertIn("Current top", ctx.sent[0]["text"])
-
-    async def test_top_p_invalid(self):
-        ctx = create_mock_context(
-            user_id=_uid(), command_text="abc", command_name="top_p")
-        await top_p_command(ctx)
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertIn("convert", ctx.sent[0]["text"])
-        # Setting should not have changed from default
-        self.assertAlmostEqual(ctx.settings.top_p, 0.95)
-
-    async def test_top_p_out_of_range(self):
-        ctx = create_mock_context(
-            user_id=_uid(), command_text="-0.1", command_name="top_p")
-        await top_p_command(ctx)
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertIn("must be between", ctx.sent[0]["text"])
-        # Setting should not have changed from default
-        self.assertAlmostEqual(ctx.settings.top_p, 0.95)
-
-    async def test_top_p_reset(self):
-        uid = _uid()
-        ctx_set = create_mock_context(
-            user_id=uid, command_text="0.3", command_name="top_p")
-        await top_p_command(ctx_set)
-        ctx_reset = create_mock_context(user_id=uid, command_name="top_p_reset")
-        await top_p_reset_command(ctx_reset)
-        self.assertEqual(len(ctx_reset.sent), 1)
-        self.assertIn("reset", ctx_reset.sent[0]["text"])
-        self.assertAlmostEqual(ctx_reset.settings.top_p, 0.95)
+                ctx_reset = create_mock_context(
+                    user_id=uid, command_name=reset_name)
+                await reset(ctx_reset)
+                self.assertEqual(len(ctx_reset.sent), 1)
+                self.assertIn("reset", ctx_reset.sent[0]["text"])
+                self.assertEqual(getattr(ctx_reset.settings, attr),
+                                 getattr(defaults, attr))
 
     # -- systemprompt_command --------------------------------------------
 
@@ -218,39 +204,22 @@ class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
         # The second message is the preformatted prompt content
         self.assertEqual(ctx_query.sent[1]["text"], "<pre>Custom prompt</pre>")
 
-    async def test_systemprompt_reset(self):
-        uid = _uid()
-        ctx_set = create_mock_context(
-            user_id=uid, command_text="Custom", command_name="systemprompt")
-        await systemprompt_command(ctx_set)
-        ctx_reset = create_mock_context(user_id=uid, command_name="systemprompt_reset")
-        await systemprompt_reset_command(ctx_reset)
-        self.assertEqual(len(ctx_reset.sent), 1)
-        self.assertIn("reset", ctx_reset.sent[0]["text"])
-        # After reset, system_prompt should fall back to the default
-        from user_settings import DEFAULT_SYSTEM_PROMPT
-        self.assertEqual(ctx_reset.settings.system_prompt, DEFAULT_SYSTEM_PROMPT)
-
     # -- tool_output_command ---------------------------------------------
 
-    async def test_tool_output_toggle_on(self):
+    async def test_tool_output_toggle(self):
         uid = _uid()
-        # Default is True; first toggle turns it off
+        # Default is True; the first toggle turns it off...
         ctx_off = create_mock_context(user_id=uid, command_name="tool_output")
         await tool_output_command(ctx_off)
-        # Second toggle turns it back on
+        self.assertEqual(len(ctx_off.sent), 1)
+        self.assertIn("off", ctx_off.sent[0]["text"])
+        self.assertFalse(ctx_off.settings.show_tool_output)
+        # ...and the second turns it back on.
         ctx_on = create_mock_context(user_id=uid, command_name="tool_output")
         await tool_output_command(ctx_on)
         self.assertEqual(len(ctx_on.sent), 1)
         self.assertIn("on", ctx_on.sent[0]["text"])
         self.assertTrue(ctx_on.settings.show_tool_output)
-
-    async def test_tool_output_toggle_off(self):
-        ctx = create_mock_context(user_id=_uid(), command_name="tool_output")
-        await tool_output_command(ctx)
-        self.assertEqual(len(ctx.sent), 1)
-        self.assertIn("off", ctx.sent[0]["text"])
-        self.assertFalse(ctx.settings.show_tool_output)
 
     # -- settings_reset_command ------------------------------------------
 
@@ -279,42 +248,27 @@ class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
 
     # -- user_profile_command --------------------------------------------
 
-    async def test_user_profile_set(self):
+    async def test_user_profile_set_and_query(self):
+        uid = _uid()
         ctx = create_mock_context(
-            user_id=_uid(), command_text="I like cats.", command_name="user_profile")
+            user_id=uid, command_text="My profile text", command_name="user_profile")
         await user_profile_command(ctx)
         self.assertEqual(len(ctx.sent), 1)
         self.assertIn("updated", ctx.sent[0]["text"])
-        self.assertEqual(ctx.settings.user_profile, "I like cats.")
+        self.assertEqual(ctx.settings.user_profile, "My profile text")
 
-    async def test_user_profile_query_when_set(self):
-        uid = _uid()
-        ctx_set = create_mock_context(
-            user_id=uid, command_text="My profile text", command_name="user_profile")
-        await user_profile_command(ctx_set)
-        ctx_query = create_mock_context(user_id=uid, command_name="user_profile")
-        await user_profile_command(ctx_query)
-        self.assertEqual(len(ctx_query.sent), 1)
-        self.assertIn("current profile", ctx_query.sent[0]["text"])
-        # The actual profile text should appear in the message
-        self.assertIn("My profile text", ctx_query.sent[0]["text"])
+        # A bare query echoes the stored profile...
+        ctx = create_mock_context(user_id=uid, command_name="user_profile")
+        await user_profile_command(ctx)
+        self.assertEqual(len(ctx.sent), 1)
+        self.assertIn("current profile", ctx.sent[0]["text"])
+        self.assertIn("My profile text", ctx.sent[0]["text"])
 
-    async def test_user_profile_query_when_unset(self):
+        # ...and says so when none is set.
         ctx = create_mock_context(user_id=_uid(), command_name="user_profile")
         await user_profile_command(ctx)
         self.assertEqual(len(ctx.sent), 1)
         self.assertIn("No profile set", ctx.sent[0]["text"])
-
-    async def test_user_profile_reset(self):
-        uid = _uid()
-        ctx_set = create_mock_context(
-            user_id=uid, command_text="Something", command_name="user_profile")
-        await user_profile_command(ctx_set)
-        ctx_reset = create_mock_context(user_id=uid, command_name="user_profile_reset")
-        await user_profile_reset_command(ctx_reset)
-        self.assertEqual(len(ctx_reset.sent), 1)
-        self.assertIn("reset", ctx_reset.sent[0]["text"])
-        self.assertIsNone(ctx_reset.settings.user_profile)
 
 
 if __name__ == "__main__":
