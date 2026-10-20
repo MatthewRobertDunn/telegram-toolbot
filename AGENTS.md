@@ -8,6 +8,7 @@ pake unittest          # unit tests (pure logic, no network)
 pake integration_test  # integration tests (requires OPENAI_API_KEY in integration_tests/.env)
 pake publish              # scp src/ to matty@derg.top:/home/matty/tbot, restart tbot user service
 pake publish_env          # copy the local .env to the deployment server, if one exists
+pake publish_requirements # copy requirements.txt to the deployment server and pip install it into the tbot venv
 pake update_sandbox_image  # docker pull the latest sandbox image on the deployment server
 ```
 

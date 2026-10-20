@@ -117,6 +117,22 @@ def publish_env(ctx):
 
 
 @pk.task
+def publish_requirements(ctx):
+    """Copy requirements.txt to the server and install it into the venv."""
+
+    # The tbot service runs the venv rooted at REMOTE_DIR
+    # (REMOTE_DIR/bin/python), so install into that environment.
+    requirements = os.path.join(ROOT, "requirements.txt")
+    remote_requirements = f"{REMOTE_DIR}/requirements.txt"
+
+    ctx.call("scp", requirements, f"{DEPLOY_HOST}:{remote_requirements}")
+    ctx.call("ssh", DEPLOY_HOST,
+             f"{REMOTE_DIR}/bin/python -m pip install -r {remote_requirements}")
+
+    print("Restart the tbot service (pake publish) to pick up the change.")
+
+
+@pk.task
 def update_sandbox_image(ctx):
     """Pull the latest sandbox image on the deployment server."""
 
