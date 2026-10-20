@@ -17,6 +17,9 @@ from dataclasses import dataclass, field
 TOKENS_PER_CHAR = 0.25
 # What an inline image is assumed to cost before it is dropped.
 IMAGE_TOKEN_ESTIMATE = 1_500
+# Where local-only metadata (e.g. Telegram ids) lives on a raw message
+# dict; never sent to the endpoint (see `to_openai()`).
+CUSTOM = 'custom'
 # Text left behind where an image was pruned.
 IMAGE_PLACEHOLDER = '[image omitted]'
 # How many of the most recent images a conversation holds onto.
@@ -53,6 +56,11 @@ def estimate_message_tokens(message: dict) -> int:
     return total
 
 
+def _telegram_custom(message_id: int) -> dict:
+    """Value stored under `CUSTOM`: links a stored message to its Telegram message."""
+    return {'telegram_message_id': message_id}
+
+
 @dataclass(eq=False)
 class Conversation:
     """A model conversation: the message list plus a stable identity.
@@ -72,17 +80,29 @@ class Conversation:
     # shrink it (tests do) without touching the constructor.
     max_images = MAX_IMAGES
 
-    def add(self, role: str, content, **fields) -> dict:
-        """Append a message and return it; extra kwargs become message keys."""
+    def add(self, role: str, content, custom: dict | None = None, **fields) -> dict:
+        """Append a message and return it; extra kwargs become message keys.
+
+        `custom` carries local-only metadata (e.g. Telegram ids) which is
+        never sent to the endpoint.
+        """
         message = {'role': role, 'content': content, **fields}
+        if custom:
+            message[CUSTOM] = custom
         self.messages.append(message)
         return message
 
-    def add_user(self, content, **fields) -> dict:
-        return self.add('user', content, **fields)
+    def add_user(self, content, telegram_message_id: int | None = None,
+                 **fields) -> dict:
+        custom = (_telegram_custom(telegram_message_id)
+                  if telegram_message_id is not None else None)
+        return self.add('user', content, custom=custom, **fields)
 
-    def add_assistant(self, content, **fields) -> dict:
-        return self.add('assistant', content, **fields)
+    def add_assistant(self, content, telegram_message_id: int | None = None,
+                      **fields) -> dict:
+        custom = (_telegram_custom(telegram_message_id)
+                  if telegram_message_id is not None else None)
+        return self.add('assistant', content, custom=custom, **fields)
 
     def add_tool(self, content, tool_call_id: str) -> dict:
         """A tool result message answering the tool call with that id."""
@@ -129,6 +149,13 @@ class Conversation:
             else:
                 message['content'][index] = {'type': 'text',
                                              'text': IMAGE_PLACEHOLDER}
+
+    def to_openai(self) -> list:
+        """The message list as the endpoint should see it: `custom` local
+        metadata (e.g. Telegram ids) removed, everything else passed through."""
+        return [{key: value for key, value in message.items()
+                 if key != CUSTOM}
+                for message in self.messages]
 
     def set_system_head(self, prompt: str) -> dict:
         """Put this system prompt at position 0, creating the head if needed.

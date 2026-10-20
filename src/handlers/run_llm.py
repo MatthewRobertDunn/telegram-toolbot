@@ -81,7 +81,7 @@ async def run_llm(ctx: ChatUpdateContext,
                 streamer.new_round()
                 create_kwargs: dict = dict(
                     model=effective_model,
-                    messages=conversation.messages,
+                    messages=conversation.to_openai(),
                     n=1,
                     temperature=settings.temperature,
                     top_p=settings.top_p,

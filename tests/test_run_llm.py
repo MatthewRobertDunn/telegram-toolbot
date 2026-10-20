@@ -114,7 +114,10 @@ class TestRunLlmSessionHeader(unittest.IsolatedAsyncioTestCase):
             await run_llm_mod.run_llm(ctx, conversation=conversation)
         parent = captured['extra_headers']['x-opencode-session']
         self.assertNotEqual(parent, ctx.conversation.id)
-        self.assertIs(captured['messages'], conversation.messages)
+        # to_openai() builds a fresh sanitized list, but it still reflects
+        # the conversation's content at call time.
+        self.assertEqual(captured['messages'], conversation.to_openai())
+        self.assertEqual(captured['messages'][0]['content'], 'parent')
         self.assertEqual(
             captured['extra_headers']['x-opencode-session'], conversation.id)
         with unittest.mock.patch.object(

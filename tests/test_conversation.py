@@ -24,14 +24,43 @@ class TestConversationIdentity(unittest.TestCase):
         self.assertEqual(conversation.id, original_id)
 
 
+class TestTelegramIds(unittest.TestCase):
+
+    def test_add_user_stores_telegram_message_id_in_custom(self):
+        conversation = Conversation()
+        message = conversation.add_user('hello', telegram_message_id=42)
+        self.assertEqual(message['custom'], {'telegram_message_id': 42})
+
+    def test_add_assistant_stores_telegram_message_id_in_custom(self):
+        conversation = Conversation()
+        message = conversation.add_assistant('hi', telegram_message_id=99)
+        self.assertEqual(message['custom'], {'telegram_message_id': 99})
+
+    def test_no_telegram_message_id_leaves_no_custom_key(self):
+        conversation = Conversation()
+        message = conversation.add_user('hello')
+        self.assertNotIn('custom', message)
+
+    def test_to_openai_strips_custom_metadata(self):
+        conversation = Conversation()
+        conversation.add_user('hello', telegram_message_id=42)
+        conversation.add_assistant('hi', telegram_message_id=99)
+        self.assertEqual(conversation.to_openai(),
+                         [{'role': 'user', 'content': 'hello'},
+                          {'role': 'assistant', 'content': 'hi'}])
+        # The stored messages keep their metadata.
+        self.assertEqual(conversation.messages[0]['custom'],
+                         {'telegram_message_id': 42})
+
+
 class TestConversationHelpers(unittest.TestCase):
 
     def test_add_returns_the_message(self):
         conversation = Conversation()
-        message = conversation.add('user', 'hi', custom=1)
+        message = conversation.add('user', 'hi', custom={'foo': 1})
         self.assertEqual(conversation.messages, [message])
         self.assertEqual(message, {'role': 'user', 'content': 'hi',
-                                   'custom': 1})
+                                   'custom': {'foo': 1}})
 
     def test_add_tool_carries_the_tool_call_id(self):
         conversation = Conversation()
