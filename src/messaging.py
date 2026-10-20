@@ -52,15 +52,15 @@ def _split_at_linebreak(text: str, limit: int) -> list[str]:
     return chunks
 
 
-async def send_message(ctx: ChatUpdateContext, text: str, parse_mode='Markdown', disable_web_page_preview=True):
-    """Send text, chunking if needed. Returns the message_id of the last
-    posted message, or None if it could not be determined."""
-    message_id = None
+async def send_message(ctx: ChatUpdateContext, text: str, parse_mode='Markdown', disable_web_page_preview=True) -> list:
+    """Send text, chunking if needed. Returns the message_ids of all
+    posted chunks, so callers can link them back to the conversation."""
+    message_ids = []
     if parse_mode == 'LLM':
         for chunk in _split_at_linebreak(text, MAX_RICH_MSG_LEN):
             result = await send_rich_message(ctx, chunk)
-            if isinstance(result, dict):
-                message_id = result.get("message_id")
+            if isinstance(result, dict) and result.get('message_id') is not None:
+                message_ids.append(result['message_id'])
     else:
         for chunk in _split_at_linebreak(text, MAX_MSG_LEN):
             message = await _send_chunk_maybe_fallback(
@@ -69,8 +69,9 @@ async def send_message(ctx: ChatUpdateContext, text: str, parse_mode='Markdown',
                 parse_mode,
                 disable_web_page_preview,
             )
-            message_id = getattr(message, "message_id", None)
-    return message_id
+            if getattr(message, 'message_id', None) is not None:
+                message_ids.append(message.message_id)
+    return message_ids
 
 
 async def send_preformatted_message(ctx: ChatUpdateContext, text: str):

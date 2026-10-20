@@ -148,7 +148,10 @@ async def run_llm(ctx: ChatUpdateContext,
             args = tc.function.arguments
             logger.info("tool call: %s(%s)", name, args)
             if ctx.settings.show_tool_output:
-                await send_message(ctx, f"Tool call: `{name}`\n```json\n{args[:1024]}\n```")
+                for message_id in await send_message(
+                        ctx,
+                        f"Tool call: `{name}`\n```json\n{args[:1024]}\n```"):
+                    assistant_message.add_telegram_message_id(message_id)
             result = await execute_tool_call(ctx, tc)
             if isinstance(result, ToolCallResult):
                 logger.info("tool result (%s): image attached", name)

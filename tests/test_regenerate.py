@@ -67,7 +67,7 @@ class TestRegenerate(unittest.TestCase):
         conversation = Conversation([
             {'role': 'user', 'content': 'hello'},
         ])
-        conversation.add_assistant('old reply', telegram_message_id=77)
+        conversation.add_assistant('old reply', telegram_message_ids=[77])
         ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
         asyncio.run(_run_regenerate(ctx))
         # The stale assistant turn is gone; a fresh one was generated.
@@ -77,7 +77,7 @@ class TestRegenerate(unittest.TestCase):
         # The old reply's telegram message was deleted...
         self.assertEqual(bot.deleted, [(5, 77)])
         # ...and the fresh reply was recorded with its new id.
-        self.assertEqual(messages[-1][CUSTOM]['telegram_message_id'], 555)
+        self.assertEqual(messages[-1][CUSTOM]['telegram_message_ids'], [555])
 
     def test_last_user_turns_into_a_reply_without_appending(self):
         bot = _Bot()
@@ -151,7 +151,7 @@ class TestUndo(unittest.TestCase):
     def test_undoes_last_message_and_deletes_it_from_telegram(self):
         bot = _Bot()
         conversation = Conversation()
-        conversation.add_user('hello', telegram_message_id=42)
+        conversation.add_user('hello', telegram_message_ids=[42])
         ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
         asyncio.run(undo_command(ctx))
         self.assertEqual(_roles(ctx.conversation), [])
@@ -277,8 +277,8 @@ class TestRetry(unittest.TestCase):
     def test_retry_appends_a_reply_without_touching_the_history(self):
         bot = _Bot()
         conversation = Conversation()
-        conversation.add_user('hello', telegram_message_id=42)
-        conversation.add_assistant('first reply', telegram_message_id=43)
+        conversation.add_user('hello', telegram_message_ids=[42])
+        conversation.add_assistant('first reply', telegram_message_ids=[43])
         ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
         asyncio.run(_run_retry(ctx))
         self.assertEqual(_roles(ctx.conversation),
@@ -290,12 +290,13 @@ class TestRetry(unittest.TestCase):
         # hands back message id 555).
         self.assertEqual(bot.deleted, [])
         self.assertEqual(
-            ctx.conversation.messages[-1][CUSTOM]['telegram_message_id'], 555)
+            ctx.conversation.messages[-1][CUSTOM]['telegram_message_ids'],
+            [555])
 
     def test_retry_answers_an_unanswered_user_turn(self):
         bot = _Bot()
         conversation = Conversation()
-        conversation.add_user('hello', telegram_message_id=42)
+        conversation.add_user('hello', telegram_message_ids=[42])
         ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
         asyncio.run(_run_retry(ctx))
         self.assertEqual(_roles(ctx.conversation), ['user', 'assistant'])

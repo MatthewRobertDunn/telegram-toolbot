@@ -56,7 +56,7 @@ class TestSubmitTask(unittest.TestCase):
         self.assertEqual(roles, ['user', 'assistant'])
         self.assertEqual(ctx.conversation.messages[-1]['content'], 'answer')
         self.assertEqual(ctx.conversation.messages[-1][CUSTOM],
-                         {'telegram_message_id': 9})
+                         {'telegram_message_ids': [9]})
         self.assertIsNone(ctx.generation_task)
 
 

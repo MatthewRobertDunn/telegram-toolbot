@@ -26,22 +26,19 @@ async def refuse_while_generating(ctx: ChatUpdateContext) -> bool:
     return False
 
 
-async def delete_from_telegram(ctx: ChatUpdateContext, message_id) -> None:
-    """Delete the Telegram message with that id, logging failures. Note
-    that chunked replies only store their last chunk, so earlier chunks
-    would be left behind."""
-    if message_id is None:
-        return
-    try:
-        await ctx.bot.delete_message(ctx.chat_id, message_id)
-    except Exception as e:
-        logger.warning("Could not delete telegram message %s: %s",
-                       message_id, e)
+async def delete_from_telegram(ctx: ChatUpdateContext, message_ids) -> None:
+    """Delete the Telegram messages with those ids, logging failures."""
+    for message_id in message_ids or []:
+        try:
+            await ctx.bot.delete_message(ctx.chat_id, message_id)
+        except Exception as e:
+            logger.warning("Could not delete telegram message %s: %s",
+                           message_id, e)
 
 
-def stored_message_id(message: dict):
-    """The Telegram message id recorded in a message's custom metadata."""
-    return (message.get(CUSTOM) or {}).get('telegram_message_id')
+def stored_message_ids(message: dict) -> list:
+    """The Telegram message ids recorded in a message's custom metadata."""
+    return (message.get(CUSTOM) or {}).get('telegram_message_ids') or []
 
 
 def _tool_call_name(call_id, context: list | None) -> str:
@@ -107,11 +104,11 @@ async def undo_command(ctx: ChatUpdateContext):
         return
 
     last = messages.pop()
-    await delete_from_telegram(ctx, stored_message_id(last))
+    await delete_from_telegram(ctx, stored_message_ids(last))
 
     removed = ctx.conversation.remove_tool_calls(last)
     for message in removed:
-        await delete_from_telegram(ctx, stored_message_id(message))
+        await delete_from_telegram(ctx, stored_message_ids(message))
 
     role = str(last.get('role') or 'message').capitalize()
     await send_message(
@@ -140,7 +137,7 @@ async def regenerate_command(ctx: ChatUpdateContext):
     last = messages[-1]
     if last.get('role') == 'assistant':
         messages.pop()
-        await delete_from_telegram(ctx, stored_message_id(last))
+        await delete_from_telegram(ctx, stored_message_ids(last))
 
     # content=None: the queued item runs the model without appending a
     # user turn - after the pop the history ends on the original prompt,
@@ -187,13 +184,15 @@ async def run_compaction(ctx: ChatUpdateContext, keep_tokens: int) -> None:
     """One unit of work: compact the conversation, reporting progress and
     the token savings. The task is tracked in ctx.generation_task, so
     /stop cancels it just like a reply generation."""
+    async def on_start() -> None:
+        await send_message(ctx, 'Starting Compaction...')
+
     ctx.generation_task = inner = asyncio.create_task(
         run_with_typing(
             ctx,
-            compact_context(
-                ctx,
-                keep_tokens=keep_tokens,
-                on_start=lambda: send_message(ctx, 'Starting Compaction...'))))
+            compact_context(ctx,
+                            keep_tokens=keep_tokens,
+                            on_start=on_start)))
     try:
         result = await inner
     except asyncio.CancelledError:

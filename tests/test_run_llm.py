@@ -181,5 +181,32 @@ class TestReasoningContentPassback(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('reasoning_content', assistant)
 
 
+class TestToolCallAnnouncements(unittest.IsolatedAsyncioTestCase):
+    # The "Tool call:" announcements posted to Telegram must end up
+    # linked to the assistant message, or /undo can't clean them up.
+
+    async def test_announcement_ids_attach_to_the_assistant_message(self):
+        ctx = mock_ctx(settings=SimpleNamespace(
+            show_tool_output=True, model='m', temperature=1.0, top_p=0.95),
+            conversation=[])
+        send = unittest.mock.AsyncMock(return_value=[101, 102])
+        with unittest.mock.patch.object(
+                run_llm_mod, 'client',
+                _fake_client_calls([], [
+                    [_tool_chunk('web_search', '{"query": "cheese"}')],
+                    [_chunk('done')],
+                ])):
+            with unittest.mock.patch.object(
+                    run_llm_mod, 'send_message', send):
+                await run_llm_mod.run_llm(ctx)
+        assistant = next(m for m in ctx.conversation.messages
+                         if m.get('tool_calls'))
+        self.assertEqual(assistant['custom'],
+                         {'telegram_message_ids': [101, 102]})
+        call = send.await_args
+        assert call is not None
+        self.assertIn('Tool call: `web_search`', call.args[1])
+
+
 if __name__ == '__main__':
     unittest.main()

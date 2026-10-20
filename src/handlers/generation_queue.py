@@ -84,7 +84,7 @@ async def generate_response(ctx: ChatUpdateContext, content: str | None = None,
     ctx.generation_task, so /stop always acts on whatever is running."""
     if content is not None:
         ctx.conversation.add_user(
-            content, telegram_message_id=telegram_message_id)
+            content, telegram_message_ids=telegram_message_id)
 
     ctx.generation_task = inner = asyncio.create_task(
         run_with_typing(ctx, run_llm(ctx)))
@@ -99,9 +99,9 @@ async def generate_response(ctx: ChatUpdateContext, content: str | None = None,
         # /stop cancelled just the generation task; leave nothing behind
         # (the user can /regenerate or simply talk again).
     else:
-        message_id = await send_message(ctx, gpt_response, parse_mode='LLM')
-        ctx.conversation.add_assistant(
-            gpt_response, telegram_message_id=message_id)
+        message_ids = await send_message(ctx, gpt_response, parse_mode='LLM')
+        ctx.conversation.add_assistant(gpt_response,
+                                       telegram_message_ids=message_ids)
     finally:
         ctx.generation_task = None
 

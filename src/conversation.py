@@ -65,9 +65,24 @@ def estimate_message_tokens(message: dict) -> int:
     return total
 
 
-def _telegram_custom(message_id: int) -> dict:
-    """Value stored under `CUSTOM`: links a stored message to its Telegram message."""
-    return {'telegram_message_id': message_id}
+class ConversationMessage(dict):
+    """A conversation message: the OpenAI-style dict the endpoint sees,
+    plus a helper for the local-only Telegram linkage. Plain dicts stay
+    valid wherever a message is only read; `ConversationMessage` is what
+    the add_ helpers hand back so callers can attach ids as replies are
+    sent."""
+
+    def add_telegram_message_id(self,
+                                message_ids: int | list[int] | None) -> None:
+        """Link Telegram messages to this conversation message: a single
+        id or a list of them (reply chunks, tool call announcements).
+        Nothing is linked for no ids; everything is stored as a list."""
+        if not message_ids:
+            return
+        if isinstance(message_ids, int):
+            message_ids = [message_ids]
+        self.setdefault(CUSTOM, {}).setdefault(
+            'telegram_message_ids', []).extend(message_ids)
 
 
 @dataclass(eq=False)
@@ -89,29 +104,25 @@ class Conversation:
     # shrink it (tests do) without touching the constructor.
     max_images = MAX_IMAGES
 
-    def add(self, role: str, content, custom: dict | None = None, **fields) -> dict:
-        """Append a message and return it; extra kwargs become message keys.
-
-        `custom` carries local-only metadata (e.g. Telegram ids) which is
-        never sent to the endpoint.
-        """
-        message = {'role': role, 'content': content, **fields}
-        if custom:
-            message[CUSTOM] = custom
+    def add(self, role: str, content, **fields) -> ConversationMessage:
+        """Append a message and return it; extra kwargs become message keys."""
+        message = ConversationMessage({'role': role, 'content': content, **fields})
         self.messages.append(message)
         return message
 
-    def add_user(self, content, telegram_message_id: int | None = None,
-                 **fields) -> dict:
-        custom = (_telegram_custom(telegram_message_id)
-                  if telegram_message_id is not None else None)
-        return self.add('user', content, custom=custom, **fields)
+    def add_user(self, content,
+                 telegram_message_ids: int | list[int] | None = None,
+                 **fields) -> ConversationMessage:
+        message = self.add('user', content, **fields)
+        message.add_telegram_message_id(telegram_message_ids)
+        return message
 
-    def add_assistant(self, content, telegram_message_id: int | None = None,
-                      **fields) -> dict:
-        custom = (_telegram_custom(telegram_message_id)
-                  if telegram_message_id is not None else None)
-        return self.add('assistant', content, custom=custom, **fields)
+    def add_assistant(self, content,
+                      telegram_message_ids: int | list[int] | None = None,
+                      **fields) -> ConversationMessage:
+        message = self.add('assistant', content, **fields)
+        message.add_telegram_message_id(telegram_message_ids)
+        return message
 
     def add_tool(self, content, tool_call_id: str) -> dict:
         """A tool result message answering the tool call with that id."""
