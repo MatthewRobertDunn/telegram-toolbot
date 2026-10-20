@@ -8,6 +8,7 @@ from chat_update_context import ChatUpdateContext, context_tool
 from sandbox import manager
 from .sandbox_tool_definitions import TOOL_DEFINITIONS, WORKSPACE_ROOT
 from tool_result import ImageAttachment, ToolCallResult
+from upload_cache import was_recently_uploaded
 
 logger = logging.getLogger(__name__)
 
@@ -306,14 +307,21 @@ async def read_image(ctx: ChatUpdateContext, filePath: str,
         return "Error: could not read the image contents."
 
     # send_to_chat lets the model decide whether the image is sent to the chat.
-    shown = send_to_chat
+    # A recently uploaded file is already visible in the chat window from the
+    # user's own send, so displaying it again would be redundant.
+    recently_uploaded = was_recently_uploaded(ctx.user_id, path)
+    shown = send_to_chat and not recently_uploaded
     if shown:
         try:
             await ctx.bot.send_photo(ctx.chat_id, photo=data)
         except Exception as e:
             logger.warning("Could not send image to chat: %s", e)
 
-    label = "Image shown in the chat" if shown else "Image read"
+    if recently_uploaded and send_to_chat:
+        label = ("Image read (not re-displayed in the chat; the user "
+                 "recently uploaded this file there)")
+    else:
+        label = "Image shown in the chat" if shown else "Image read"
     return ToolCallResult(
         text=(f"{label}: {path} ({len(data):,} bytes). "
               "The image is attached to this result."),

@@ -9,6 +9,7 @@ from handlers.generation_queue import submit_generation
 from messaging import send_message
 from sandbox import manager
 from tools.sandbox_tool import IMAGE_MIME_TYPES
+from upload_cache import record_upload
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +54,12 @@ async def upload_handler(ctx: ChatUpdateContext):
     if error is not None:
         await send_message(ctx, error)
         return
+    assert path is not None  # store_file returns exactly one of the two
     logger.info("Stored upload %s (%d bytes) for user %d",
                 path, len(data), ctx.user_id)
+    # Remember the actual stored name so read_image can skip re-displaying
+    # an image the chat window already shows.
+    record_upload(ctx.user_id, path)
 
     if os.path.splitext(name)[1].lower() in IMAGE_MIME_TYPES:
         hint = "the read_image tool"

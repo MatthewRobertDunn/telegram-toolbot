@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
+import cachetools
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -23,6 +24,7 @@ from mock_context import mock_ctx
 from tools import sandbox_tool
 from sandbox import SandboxManager, _unique_name
 from tool_result import ImageAttachment, ToolCallResult
+import upload_cache
 
 
 class _FakeBot:
@@ -343,6 +345,41 @@ class TestUploadNaming(unittest.TestCase):
         self.assertRegex(name, r"^voice_\d+$")
 
 
+class TestUploadCache(unittest.TestCase):
+
+    def setUp(self):
+        self._original_cache = upload_cache._recent_uploads
+
+    def tearDown(self):
+        upload_cache._recent_uploads = self._original_cache
+
+    def _swap_cache(self, ttl):
+        """Replace the cache with one over a controllable timer at t=1000."""
+        now = [1000.0]
+        upload_cache._recent_uploads = cachetools.TTLCache(
+            maxsize=8, ttl=ttl, timer=lambda: now[0])
+        return now
+
+    def test_matches_by_user_and_filename(self):
+        self._swap_cache(60)
+        upload_cache.record_upload(1, '/workspace/uploads/pic.png')
+        self.assertTrue(
+            upload_cache.was_recently_uploaded(1, '/workspace/uploads/pic.png'))
+        # Matching is on the filename alone, so relative paths hit too.
+        self.assertTrue(upload_cache.was_recently_uploaded(1, 'uploads/pic.png'))
+        self.assertFalse(
+            upload_cache.was_recently_uploaded(2, '/workspace/uploads/pic.png'))
+        self.assertFalse(
+            upload_cache.was_recently_uploaded(1, '/workspace/uploads/other.png'))
+
+    def test_entries_expire_after_ttl(self):
+        now = self._swap_cache(60)
+        upload_cache.record_upload(1, '/workspace/uploads/pic.png')
+        now[0] += 60  # exactly at expiry
+        self.assertFalse(
+            upload_cache.was_recently_uploaded(1, '/workspace/uploads/pic.png'))
+
+
 class TestSandboxToolHelpers(unittest.TestCase):
 
     def test_resolve_path(self):
@@ -618,6 +655,15 @@ class TestSendFile(unittest.IsolatedAsyncioTestCase):
 
 class TestReadImage(unittest.IsolatedAsyncioTestCase):
 
+    def setUp(self):
+        # A fresh cache per test keeps upload records from leaking between
+        # tests; restored afterwards for the other test classes.
+        self._original_cache = upload_cache._recent_uploads
+        upload_cache._recent_uploads = cachetools.TTLCache(maxsize=8, ttl=3600)
+
+    def tearDown(self):
+        upload_cache._recent_uploads = self._original_cache
+
     def _canned(self, exec_responses):
         return SandboxManager(docker=CannedDocker(exec_responses))
 
@@ -664,6 +710,43 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.sent_photos, [])
         self.assertNotIn('shown in the chat', result.text)
         self.assertIn('Image read', result.text)
+
+    async def test_recently_uploaded_not_resent_to_chat(self):
+        # An image the user just uploaded is already visible in the chat
+        # window; read_image attaches it for the model without re-sending it.
+        payload = b'img-bytes'
+        encoded = base64.b64encode(payload).decode()
+        manager = self._canned([
+            ('stat', 0, f'{len(payload)}\n', ''),
+            ('base64', 0, encoded, ''),
+        ])
+        bot = _FakeBot()
+        upload_cache.record_upload(1, '/workspace/uploads/pic.png')
+        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
+            ctx = mock_ctx(bot=bot)  # user_id defaults to 1
+            result = await sandbox_tool.read_image(ctx, 'uploads/pic.png')
+        assert isinstance(result, ToolCallResult)
+        assert result.image is not None
+        self.assertEqual(result.image.data, payload)
+        self.assertEqual(bot.sent_photos, [])
+        self.assertIn('recently uploaded', result.text)
+        self.assertIn('attached to this result', result.text)
+
+    async def test_upload_by_other_user_still_shows(self):
+        payload = b'img-bytes'
+        encoded = base64.b64encode(payload).decode()
+        manager = self._canned([
+            ('stat', 0, f'{len(payload)}\n', ''),
+            ('base64', 0, encoded, ''),
+        ])
+        bot = _FakeBot()
+        upload_cache.record_upload(2, '/workspace/uploads/pic.png')
+        with unittest.mock.patch.object(sandbox_tool, 'manager', manager):
+            ctx = mock_ctx(bot=bot)  # user 1; the upload was user 2's
+            result = await sandbox_tool.read_image(ctx, 'uploads/pic.png')
+        assert isinstance(result, ToolCallResult)
+        self.assertEqual(bot.sent_photos, [payload])
+        self.assertIn('Image shown in the chat', result.text)
 
     async def test_send_photo_failure_still_attaches(self):
         payload = b'img-bytes'
