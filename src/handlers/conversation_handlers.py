@@ -311,7 +311,7 @@ async def impersonate_turn(ctx: ChatUpdateContext) -> None:
     # "## User" heading is only presentation for Telegram. The posted
     # message ids are attached to it, so /undo and /regenerate can
     # delete it from the chat too.
-    message_ids = await send_message(ctx, f'## User\n{response}',
+    message_ids = await send_message(ctx, f'{response}',
                                      parse_mode='LLM')
     ctx.conversation.add_user(response, telegram_message_ids=message_ids)
 
