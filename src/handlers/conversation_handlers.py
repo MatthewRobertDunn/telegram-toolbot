@@ -280,11 +280,7 @@ async def impersonate_command(ctx: ChatUpdateContext):
         return
 
     await submit_task(ctx, run_impersonation(ctx))
-    # The command message itself goes away shortly after; the generated
-    # user turn is real content and stays.
-    asyncio.create_task(_schedule_command_clear(
-        ctx, [_command_message_id(ctx)]))
-
+    #We don't clear the impersonate command because it helps the user know the text below is the impersonated text and not the original user text
 
 async def run_impersonation(ctx: ChatUpdateContext) -> None:
     """One unit of work: clone the conversation, impersonate the user
