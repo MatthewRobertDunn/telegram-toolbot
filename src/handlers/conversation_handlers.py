@@ -1,14 +1,18 @@
 """Commands operating on the conversation itself: regenerating the last
-turn and compacting the history."""
+turn, impersonating the user, and compacting the history."""
 
 import asyncio
+import copy
 import logging
 
 from chat_update_context import ChatUpdateContext
 from compaction import (DEFAULT_KEEP_TOKENS, CompactionError, compact_context)
-from conversation import CUSTOM
+from conversation import CUSTOM, Conversation
 from handlers.middleware import handler
 from handlers.generation_queue import submit_generation, submit_task
+from handlers.impersonate_prompt import IMPERSONATE_PROMPT
+from handlers.run_llm import (NO_CONTENT_MESSAGE, NO_RESPONSE_MESSAGE,
+                              run_llm)
 from messaging import send_message, run_with_typing
 
 logger = logging.getLogger(__name__)
@@ -238,6 +242,78 @@ async def retry_command(ctx: ChatUpdateContext):
     # user turn - the history is left alone, and the model answers it
     # again wherever it currently ends.
     await submit_generation(ctx, None)
+
+
+@handler
+async def impersonate_command(ctx: ChatUpdateContext):
+    """Fake a user turn: a clone of the whole conversation (system head
+    with the user profile, full history) is shown to the model, which
+    impersonates the user to write their next message. The response is
+    added to the real conversation as a user message and posted as a
+    user-labelled reply.
+
+    Runs as a queued unit of work like /compact, with the task tracked
+    in ctx.generation_task, so /stop stops it like any other work."""
+    if await refuse_while_generating(ctx):
+        return
+
+    messages = ctx.conversation.messages
+    if not any(message.get('role') != 'system' for message in messages):
+        message_ids = await send_message(ctx, "Nothing to impersonate yet.")
+        asyncio.create_task(_schedule_command_clear(
+            ctx, [_command_message_id(ctx), *message_ids]))
+        return
+
+    await submit_task(ctx, run_impersonation(ctx))
+    # The command message itself goes away shortly after; the generated
+    # user turn is real content and stays.
+    asyncio.create_task(_schedule_command_clear(
+        ctx, [_command_message_id(ctx)]))
+
+
+async def run_impersonation(ctx: ChatUpdateContext) -> None:
+    """One unit of work: clone the conversation, impersonate the user
+    against the clone, then add the response to the real conversation as
+    a user message and post it. The task is tracked in
+    ctx.generation_task, so /stop cancels it just like a reply
+    generation."""
+    ctx.generation_task = inner = asyncio.create_task(
+        run_with_typing(ctx, impersonate_turn(ctx)))
+    try:
+        await inner
+    except asyncio.CancelledError:
+        if not inner.cancelled():
+            # This job itself was cancelled (bot shutdown).
+            inner.cancel()
+            raise
+        await send_message(ctx, 'Impersonation stopped.')
+    finally:
+        ctx.generation_task = None
+
+
+async def impersonate_turn(ctx: ChatUpdateContext) -> None:
+    """The impersonation itself, runs as its own task."""
+    # Deep-copy the whole conversation, custom Telegram ids included:
+    # the clone must not share message dicts with the real history (and
+    # to_openai() strips the custom keys on the way out anyway).
+    clone = Conversation([
+        copy.deepcopy(message) for message in ctx.conversation.messages])
+    clone.add_user(IMPERSONATE_PROMPT)
+
+    response = (await run_llm(ctx, conversation=clone, allow_tools=False)
+                or '').strip()
+    if not response or response in (NO_RESPONSE_MESSAGE, NO_CONTENT_MESSAGE):
+        await send_message(
+            ctx, 'Impersonation failed: the model produced nothing usable.')
+        return
+
+    # The real conversation gets the bare text as a user turn - the
+    # "## User" heading is only presentation for Telegram. The posted
+    # message ids are attached to it, so /undo and /regenerate can
+    # delete it from the chat too.
+    message_ids = await send_message(ctx, f'## User\n{response}',
+                                     parse_mode='LLM')
+    ctx.conversation.add_user(response, telegram_message_ids=message_ids)
 
 
 @handler

@@ -11,6 +11,7 @@ from file_ops import read_file
 from handlers.message_handlers import text_message_handler
 from handlers.conversation_handlers import (
     compact_command,
+    impersonate_command,
     regenerate_command,
     retry_command,
     undo_command,
@@ -77,6 +78,7 @@ async def post_init(application: Application):
             BotCommand("regenerate", "Regenerate the last response"),
             BotCommand("retry", "Retry the conversation"),
             BotCommand("undo", "Undo the last message"),
+            BotCommand("impersonate", "Impersonate your next message"),
             BotCommand("compact", "Compact the conversation context"),
             BotCommand("systemprompt", "Set a custom system prompt"),
             BotCommand("systemprompt_reset", "Reset system prompt to default"),
@@ -136,6 +138,7 @@ def main():
     application.add_handler(CommandHandler('regenerate', callback_adapter(regenerate_command)))
     application.add_handler(CommandHandler('retry', callback_adapter(retry_command)))
     application.add_handler(CommandHandler('undo', callback_adapter(undo_command)))
+    application.add_handler(CommandHandler('impersonate', callback_adapter(impersonate_command)))
     application.add_handler(CommandHandler('compact', callback_adapter(compact_command)))
     application.add_handler(CommandHandler('systemprompt', callback_adapter(systemprompt_command)))
     application.add_handler(CommandHandler('systemprompt_reset', callback_adapter(systemprompt_reset_command)))
