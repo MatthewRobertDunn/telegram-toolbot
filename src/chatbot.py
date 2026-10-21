@@ -77,6 +77,7 @@ async def post_init(application: Application):
             BotCommand("stop", "Stop the current AI response"),
             BotCommand("regenerate", "Regenerate the last response"),
             BotCommand("retry", "Retry the conversation"),
+            BotCommand("continue", "Continues the conversation"),
             BotCommand("undo", "Undo the last message"),
             BotCommand("impersonate", "Impersonate your next message"),
             BotCommand("compact", "Compact the conversation context"),
@@ -137,6 +138,8 @@ def main():
     application.add_handler(CommandHandler('stop', callback_adapter(stop_command)))
     application.add_handler(CommandHandler('regenerate', callback_adapter(regenerate_command)))
     application.add_handler(CommandHandler('retry', callback_adapter(retry_command)))
+    # Alias of /retry with its own help text.
+    application.add_handler(CommandHandler('continue', callback_adapter(retry_command)))
     application.add_handler(CommandHandler('undo', callback_adapter(undo_command)))
     application.add_handler(CommandHandler('impersonate', callback_adapter(impersonate_command)))
     application.add_handler(CommandHandler('compact', callback_adapter(compact_command)))
