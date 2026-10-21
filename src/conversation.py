@@ -10,7 +10,9 @@ The class also owns the small behaviors the message list needs everywhere
 """
 
 import base64
+import enum
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 # Rough token estimate: about a quarter token per character.
@@ -24,6 +26,14 @@ CUSTOM = 'custom'
 IMAGE_PLACEHOLDER = '[image omitted]'
 # How many of the most recent images a conversation holds onto.
 MAX_IMAGES = 8
+
+
+class ConversationMessageType(enum.Enum):
+    """What produced a message, recorded in its custom metadata so
+    commands can re-run the right flow over it (e.g. /regenerate redoing
+    a /impersonation turn instead of answering as usual). Stripped by
+    to_openai() like the rest of the metadata."""
+    IMPERSONATION = 'impersonation'
 
 
 def _tool_call_ids(message: dict) -> set:
@@ -84,8 +94,26 @@ class ConversationMessage(dict):
         self.setdefault(CUSTOM, {}).setdefault(
             'telegram_message_ids', []).extend(message_ids)
 
+    @property
+    def message_type(self) -> ConversationMessageType | None:
+        """What produced this message (see ConversationMessageType), or
+        None when untagged."""
+        raw = (self.get(CUSTOM) or {}).get('message_type')
+        return ConversationMessageType(raw) if raw else None
 
-@dataclass(eq=False)
+    @message_type.setter
+    def message_type(self, value: ConversationMessageType | None) -> None:
+        if value is None:
+            custom = self.get(CUSTOM)
+            if custom is not None:
+                custom.pop('message_type', None)
+                if not custom:
+                    del self[CUSTOM]
+            return
+        self.setdefault(CUSTOM, {})['message_type'] = value.value
+
+
+@dataclass(eq=False, init=False)
 class Conversation:
     """A model conversation: the message list plus a stable identity.
 
@@ -95,14 +123,34 @@ class Conversation:
     Compares equal to a plain list of the same messages so the old
     list-based call sites and tests keep working against `.messages` and
     against the object itself.
+
+    The constructor takes raw OpenAI-style dicts freely: they are wrapped
+    into ConversationMessage on the way in, so every stored message has
+    the type/metadata affordances.
     """
 
-    messages: list = field(default_factory=list)
+    messages: list[ConversationMessage] = field(default_factory=list)
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     # Cap on retained inline images. Unannotated, so it stays a plain
     # class attribute rather than a dataclass field: instances may
     # shrink it (tests do) without touching the constructor.
     max_images = MAX_IMAGES
+
+    def __init__(self,
+                 messages: Iterable[dict | ConversationMessage] | None = None,
+                 id: str | None = None) -> None:
+        self.messages = [message if isinstance(message, ConversationMessage)
+                         else ConversationMessage(message)
+                         for message in (messages or [])]
+        self.id = id or uuid.uuid4().hex
+
+    def set_messages(self,
+                     messages: Iterable[dict | ConversationMessage]) -> None:
+        """Replace the whole message list, wrapping plain dicts like the
+        constructor does (for in-place rebuilds that keep the id)."""
+        self.messages = [message if isinstance(message, ConversationMessage)
+                         else ConversationMessage(message)
+                         for message in messages]
 
     def add(self, role: str, content, **fields) -> ConversationMessage:
         """Append a message and return it; extra kwargs become message keys."""
@@ -112,15 +160,17 @@ class Conversation:
 
     def add_user(self, content,
                  telegram_message_ids: int | list[int] | None = None,
-                 **fields) -> ConversationMessage:
-        message = self.add('user', content, **fields)
+                 message_type: ConversationMessageType | None = None
+                 ) -> ConversationMessage:
+        message = self.add('user', content)
         message.add_telegram_message_id(telegram_message_ids)
+        message.message_type = message_type
         return message
 
     def add_assistant(self, content,
-                      telegram_message_ids: int | list[int] | None = None,
-                      **fields) -> ConversationMessage:
-        message = self.add('assistant', content, **fields)
+                      telegram_message_ids: int | list[int] | None = None
+                      ) -> ConversationMessage:
+        message = self.add('assistant', content)
         message.add_telegram_message_id(telegram_message_ids)
         return message
 
@@ -203,16 +253,18 @@ class Conversation:
                  if key != CUSTOM}
                 for message in self.messages]
 
-    def set_system_head(self, prompt: str) -> dict:
+    def set_system_head(self, prompt: str) -> ConversationMessage:
         """Put this system prompt at position 0, creating the head if needed.
 
         Call in place every turn, so the conversation keeps its identity
         while its system prompt stays in sync with the current settings.
         """
         if not self.messages or self.messages[0].get('role') != 'system':
-            self.messages.insert(0, {'role': 'system', 'content': prompt})
+            self.messages.insert(
+                0, ConversationMessage({'role': 'system', 'content': prompt}))
         else:
-            self.messages[0] = {'role': 'system', 'content': prompt}
+            self.messages[0] = ConversationMessage(
+                {'role': 'system', 'content': prompt})
         return self.messages[0]
 
     @property

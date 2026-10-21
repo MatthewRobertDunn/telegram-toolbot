@@ -7,7 +7,7 @@ import logging
 
 from chat_update_context import ChatUpdateContext
 from compaction import (DEFAULT_KEEP_TOKENS, CompactionError, compact_context)
-from conversation import CUSTOM, Conversation
+from conversation import CUSTOM, Conversation, ConversationMessageType
 from handlers.middleware import handler
 from handlers.generation_queue import submit_generation, submit_task
 from handlers.impersonate_prompt import IMPERSONATE_PROMPT
@@ -194,6 +194,9 @@ async def regenerate_command(ctx: ChatUpdateContext):
     again, or - if the history ends on the user's turn - just answer it
     without re-adding it.
 
+    When the last user turn is an impersonation, that turn is removed and
+    the impersonation flow runs again instead.
+
     The /regenerate command message is deleted a short while later, so
     the chat is left tidy: the queued generation replies on its own and
     is not touched."""
@@ -215,6 +218,18 @@ async def regenerate_command(ctx: ChatUpdateContext):
     if last.get('role') == 'assistant':
         messages.pop()
         await delete_from_telegram(ctx, stored_message_ids(last))
+
+    if (last.get('role') == 'user'
+            and last.message_type == ConversationMessageType.IMPERSONATION):
+        # The last turn was an impersonation: remove it (like any other
+        # user turn here) and run the impersonation flow again instead of
+        # answering the conversation as it stands.
+        messages.pop()
+        await delete_from_telegram(ctx, stored_message_ids(last))
+        await submit_task(ctx, run_impersonation(ctx))
+        asyncio.create_task(_schedule_command_clear(
+            ctx, [_command_message_id(ctx)]))
+        return
 
     # content=None: the queued item runs the model without appending a
     # user turn - after the pop the history ends on the original prompt,
@@ -307,13 +322,14 @@ async def impersonate_turn(ctx: ChatUpdateContext) -> None:
             ctx, 'Impersonation failed: the model produced nothing usable.')
         return
 
-    # The real conversation gets the bare text as a user turn - the
-    # "## User" heading is only presentation for Telegram. The posted
-    # message ids are attached to it, so /undo and /regenerate can
-    # delete it from the chat too.
-    message_ids = await send_message(ctx, f'{response}',
-                                     parse_mode='LLM')
-    ctx.conversation.add_user(response, telegram_message_ids=message_ids)
+    # The real conversation gets the bare text as a user turn, tagged as
+    # an impersonation so /regenerate can redo this flow. The posted
+    # message ids are attached, so /undo and /regenerate can delete it
+    # from the chat too.
+    message_ids = await send_message(ctx, response, parse_mode='LLM')
+    ctx.conversation.add_user(
+        response, telegram_message_ids=message_ids,
+        message_type=ConversationMessageType.IMPERSONATION)
 
 
 @handler

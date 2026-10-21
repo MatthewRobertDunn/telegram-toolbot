@@ -267,7 +267,8 @@ async def _run_compaction(
             else {'role': 'system', 'content': ''})
     # Mutate in place: the compacted conversation is the same conversation,
     # so its session id survives compaction.
-    ctx.conversation.messages = [head, {'role': 'user', 'content': checkpoint}]
+    ctx.conversation.set_messages(
+        [head, {'role': 'user', 'content': checkpoint}])
 
     return CompactionResult(
         summary=summary,

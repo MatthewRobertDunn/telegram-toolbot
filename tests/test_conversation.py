@@ -6,7 +6,31 @@ import unittest
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from conversation import Conversation, IMAGE_PLACEHOLDER
+from conversation import (Conversation, ConversationMessage,
+                          ConversationMessageType, CUSTOM, IMAGE_PLACEHOLDER)
+
+
+class TestMessageNormalization(unittest.TestCase):
+    """The constructor takes plain dicts freely and wraps them, so every
+    stored message is a ConversationMessage instance."""
+
+    def test_constructor_wraps_plain_dicts(self):
+        raw = {'role': 'user', 'content': 'hi'}
+        conversation = Conversation([raw])
+        self.assertEqual(len(conversation.messages), 1)
+        self.assertIsInstance(conversation.messages[0], ConversationMessage)
+        # The content is unchanged.
+        self.assertEqual(conversation.messages[0], raw)
+
+    def test_wrapping_keeps_your_messages(self):
+        message = ConversationMessage({'role': 'user', 'content': 'hi'})
+        conversation = Conversation([message])
+        self.assertIs(conversation.messages[0], message)
+
+    def test_set_messages_wraps_plain_dicts_too(self):
+        conversation = Conversation()
+        conversation.set_messages([{'role': 'user', 'content': 'hi'}])
+        self.assertIsInstance(conversation.messages[0], ConversationMessage)
 
 
 def _user(text):
@@ -97,6 +121,38 @@ class TestConversationHelpers(unittest.TestCase):
         self.assertFalse(conversation.head_is_system)
         conversation.set_system_head('prompt')
         self.assertTrue(conversation.head_is_system)
+
+
+class TestMessageType(unittest.TestCase):
+    """The message_type property: get/set over the custom metadata."""
+
+    def test_default_is_none(self):
+        message = ConversationMessage({'role': 'user', 'content': 'hi'})
+        self.assertIsNone(message.message_type)
+
+    def test_roundtrip_sets_the_tag(self):
+        message = ConversationMessage({'role': 'user', 'content': 'hi'})
+        message.message_type = ConversationMessageType.IMPERSONATION
+        self.assertEqual(message.message_type,
+                         ConversationMessageType.IMPERSONATION)
+        self.assertEqual(message[CUSTOM], {'message_type': 'impersonation'})
+
+    def test_setting_none_clears_the_tag(self):
+        message = ConversationMessage({
+            'role': 'user', 'content': 'hi', CUSTOM: {'message_type': 'imp'}})
+        message.message_type = None
+        self.assertIsNone(message.message_type)
+        # The metadata leaves no empty container behind.
+        self.assertNotIn(CUSTOM, message)
+
+    def test_add_user_accepts_a_message_type(self):
+        conversation = Conversation()
+        message = conversation.add_user(
+            'hi', message_type=ConversationMessageType.IMPERSONATION)
+        self.assertEqual(message.message_type,
+                         ConversationMessageType.IMPERSONATION)
+        self.assertEqual(conversation.to_openai(),
+                         [{'role': 'user', 'content': 'hi'}])
 
 
 class TestConversationAddImage(unittest.TestCase):
