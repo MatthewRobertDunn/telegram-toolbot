@@ -20,7 +20,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "write, edit, grep and glob tools for file work; use bash "
                 "for everything else (git, npm, running code, etc.). All "
                 "state is permanently lost when the sandbox is destroyed, which "
-                "happens one hour after the last command executed on it. "
+                "happens 24 hours after the last command executed on it. "
                 "Long output is truncated."
             ),
             "parameters": {
