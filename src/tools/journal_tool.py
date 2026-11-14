@@ -136,30 +136,40 @@ async def journal_delete(ctx: ChatUpdateContext, id: int | float | str) -> str:
 
 
 @context_tool
-async def journal_replace(ctx: ChatUpdateContext, id: int | float | str,
-                          existing: str, replace: str) -> str:
+async def journal_edit(ctx: ChatUpdateContext, id: int | float | str,
+                       oldString: str, newString: str,
+                       replaceAll: bool | None = None) -> str:
     try:
         entry_id = _coerce_id(id)
     except ValueError as e:
         return str(e)
-    if not isinstance(existing, str) or not existing:
-        return "Error: Existing text cannot be empty"
-    if not isinstance(replace, str):
+    if not isinstance(oldString, str) or not oldString:
+        return "Error: oldString cannot be empty."
+    if not isinstance(newString, str):
         return "Error: Invalid replacement text"
+    if oldString == newString:
+        return ("Error: No changes to apply: "
+                "oldString and newString are identical.")
     try:
         async with create_journal_store() as store:
             outcome = await store.replace_in_entry(
                 user_id=ctx.user_id, entry_id=entry_id,
-                existing=existing, replacement=replace)
+                old_string=oldString, new_string=newString,
+                replace_all=bool(replaceAll))
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
-        logger.warning("journal_replace failed: %s", e)
+        logger.warning("journal_edit failed: %s", e)
         return f"Error: Could not update journal entry: {e}"
     if outcome is ReplaceOutcome.NOT_FOUND:
         return f"Journal entry {entry_id} not found"
     if outcome is ReplaceOutcome.TEXT_NOT_FOUND:
         return f"Text not found in journal entry {entry_id}"
+    if outcome is ReplaceOutcome.MULTIPLE_MATCHES:
+        return (f"Error: Found multiple matches for oldString in journal "
+                f"entry {entry_id}. Provide more surrounding context to "
+                f"make the match unique, or use replaceAll to replace all "
+                f"occurrences.")
     return f"Journal entry {entry_id} updated"
 
 
@@ -216,7 +226,7 @@ async def journal_list_topics(ctx: ChatUpdateContext) -> str:
 JOURNAL_ADD = "journal_add"
 JOURNAL_GET = "journal_get"
 JOURNAL_DELETE = "journal_delete"
-JOURNAL_REPLACE = "journal_replace"
+JOURNAL_EDIT = "journal_edit"
 JOURNAL_SEARCH = "journal_search"
 JOURNAL_LIST_TOPICS = "journal_list_topics"
 
@@ -299,15 +309,19 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": JOURNAL_REPLACE,
+            "name": JOURNAL_EDIT,
             "strict": False,
             "description": (
-                "Replaces a specific section of text within a journal entry. "
+                "Performs exact string replacements in a journal entry. "
                 "Retrieve the entry with journal_get first if you do not already have its "
-                "current contents. Matching is exact and case-sensitive; "
-                "only the first occurrence is replaced. The original "
-                "creation timestamp is preserved. Allows an empty "
-                "replacement to delete a section of text."),
+                "current contents. Matching is exact and case-sensitive. "
+                "The edit will FAIL if `oldString` is not found in the "
+                "entry. The edit will FAIL if `oldString` is found multiple "
+                "times in the entry: either provide a larger string with "
+                "more surrounding context to make it unique or use "
+                "`replaceAll` to change every instance. The original "
+                "creation timestamp is preserved. Use an empty `newString` "
+                "to delete a section of text."),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -315,16 +329,20 @@ TOOL_DEFINITIONS: list[dict] = [
                         "type": "integer",
                         "description": "ID of the entry to modify."
                     },
-                    "existing": {
+                    "oldString": {
                         "type": "string",
-                        "description": "Exact text to locate."
+                        "description": "The text to replace"
                     },
-                    "replace": {
+                    "newString": {
                         "type": "string",
-                        "description": "Replacement text (may be empty)."
+                        "description": "The text to replace it with (must be different from oldString)"
+                    },
+                    "replaceAll": {
+                        "type": "boolean",
+                        "description": "Replace all occurrences of oldString (default false)"
                     }
                 },
-                "required": ["id", "existing", "replace"],
+                "required": ["id", "oldString", "newString"],
                 "additionalProperties": False
             }
         }
@@ -400,6 +418,6 @@ def register(tools_list: list[dict], tool_map: dict):
     tool_map[JOURNAL_ADD] = journal_add
     tool_map[JOURNAL_GET] = journal_get
     tool_map[JOURNAL_DELETE] = journal_delete
-    tool_map[JOURNAL_REPLACE] = journal_replace
+    tool_map[JOURNAL_EDIT] = journal_edit
     tool_map[JOURNAL_SEARCH] = journal_search
     tool_map[JOURNAL_LIST_TOPICS] = journal_list_topics

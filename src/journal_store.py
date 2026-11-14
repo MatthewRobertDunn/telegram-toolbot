@@ -42,6 +42,7 @@ class ReplaceOutcome(Enum):
     UPDATED = "updated"
     NOT_FOUND = "not_found"
     TEXT_NOT_FOUND = "text_not_found"
+    MULTIPLE_MATCHES = "multiple_matches"
 
 
 MAX_TOPIC_LENGTH = 128
@@ -181,10 +182,14 @@ class JournalStore:
         return cursor.rowcount > 0
 
     async def replace_in_entry(self, *, user_id: int, entry_id: int,
-                               existing: str,
-                               replacement: str) -> ReplaceOutcome:
-        if not existing:
+                               old_string: str,
+                               new_string: str,
+                               replace_all: bool = False) -> ReplaceOutcome:
+        if not old_string:
             raise ValueError("Existing text cannot be empty")
+        if old_string == new_string:
+            raise ValueError(
+                "No changes to apply: oldString and newString are identical.")
         db = await self._ready()
         cursor = await db.execute(
             "SELECT entry FROM journal_entries "
@@ -194,10 +199,17 @@ class JournalStore:
         if row is None:
             return ReplaceOutcome.NOT_FOUND
         current: str = row["entry"]
-        index = current.find(existing)
-        if index < 0:
+        occurrences = current.count(old_string)
+        if occurrences == 0:
             return ReplaceOutcome.TEXT_NOT_FOUND
-        updated = current[:index] + replacement + current[index + len(existing):]
+        if occurrences > 1 and not replace_all:
+            return ReplaceOutcome.MULTIPLE_MATCHES
+        if replace_all:
+            updated = current.replace(old_string, new_string)
+        else:
+            index = current.find(old_string)
+            updated = (current[:index] + new_string
+                       + current[index + len(old_string):])
         await db.execute(
             "UPDATE journal_entries SET entry = ? "
             "WHERE id = ? AND user_id = ?",

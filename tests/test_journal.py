@@ -107,7 +107,7 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await self.store.replace_in_entry(
                 user_id=2, entry_id=record.id,
-                existing="one", replacement="two"),
+                old_string="one", new_string="two"),
             ReplaceOutcome.NOT_FOUND)
         self.assertEqual(
             await self.store.search_entries(
@@ -126,22 +126,22 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             created=created, created_epoch_ms=epoch)
         with self.assertRaises(ValueError):
             await self.store.replace_in_entry(
-                user_id=1, entry_id=record.id, existing="",
-                replacement="x")
+                user_id=1, entry_id=record.id, old_string="",
+                new_string="x")
         self.assertEqual(
             await self.store.replace_in_entry(
-                user_id=1, entry_id=999, existing="x",
-                replacement="y"),
+                user_id=1, entry_id=999, old_string="x",
+                new_string="y"),
             ReplaceOutcome.NOT_FOUND)
         self.assertEqual(
             await self.store.replace_in_entry(
-                user_id=1, entry_id=record.id, existing="elated",
-                replacement="okay"),
+                user_id=1, entry_id=record.id, old_string="elated",
+                new_string="okay"),
             ReplaceOutcome.TEXT_NOT_FOUND)
         self.assertEqual(
             await self.store.replace_in_entry(
-                user_id=1, entry_id=record.id, existing="anxious",
-                replacement="calm"),
+                user_id=1, entry_id=record.id, old_string="anxious",
+                new_string="calm"),
             ReplaceOutcome.UPDATED)
         fetched = await self.store.get_entry(
             user_id=1, entry_id=record.id)
@@ -159,16 +159,53 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r.id for r in found], [record.id])
         # First occurrence only.
         await self.store.replace_in_entry(
-            user_id=1, entry_id=record.id, existing="and",
-            replacement="AND")
+            user_id=1, entry_id=record.id, old_string="and",
+            new_string="AND")
         await self.store.replace_in_entry(
-            user_id=1, entry_id=record.id, existing="AND",
-            replacement="")
+            user_id=1, entry_id=record.id, old_string="AND",
+            new_string="")
         fetched = await self.store.get_entry(
             user_id=1, entry_id=record.id)
         assert fetched is not None
         self.assertEqual(fetched.entry, "Felt calm  tired.")
         self.assertNotIn("AND", fetched.entry)
+
+    async def test_replace_identical_rejected(self):
+        created = "2026-11-14T16:34:00+00:00"
+        epoch = _ms(created)
+        record = await self.store.add_entry(
+            user_id=1, topic="Mood", entry="Same text.",
+            created=created, created_epoch_ms=epoch)
+        with self.assertRaises(ValueError):
+            await self.store.replace_in_entry(
+                user_id=1, entry_id=record.id, old_string="Same",
+                new_string="Same")
+
+    async def test_replace_multiple_matches(self):
+        created = "2026-11-14T16:34:00+00:00"
+        epoch = _ms(created)
+        record = await self.store.add_entry(
+            user_id=1, topic="Log", entry="ha ha ha",
+            created=created, created_epoch_ms=epoch)
+        self.assertEqual(
+            await self.store.replace_in_entry(
+                user_id=1, entry_id=record.id, old_string="ha",
+                new_string="he"),
+            ReplaceOutcome.MULTIPLE_MATCHES)
+        # Entry unchanged after ambiguous edit.
+        fetched = await self.store.get_entry(
+            user_id=1, entry_id=record.id)
+        assert fetched is not None
+        self.assertEqual(fetched.entry, "ha ha ha")
+        self.assertEqual(
+            await self.store.replace_in_entry(
+                user_id=1, entry_id=record.id, old_string="ha",
+                new_string="he", replace_all=True),
+            ReplaceOutcome.UPDATED)
+        fetched = await self.store.get_entry(
+            user_id=1, entry_id=record.id)
+        assert fetched is not None
+        self.assertEqual(fetched.entry, "he he he")
 
     async def test_search_text_semantics(self):
         created = "2026-11-14T16:34:00+00:00"
@@ -333,7 +370,7 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         ctx = self._ctx(timezone_name="Australia/Sydney")
         result = await journal_tool.journal_add(
             ctx, topic="Mood", entry="Testing timezones.")
-        self.assertEqual(result, "Created journal entry 1")
+        self.assertTrue(result.startswith("Created journal entry id:1 "))
         record = await self.store.get_entry(
             user_id=1, entry_id=1)
         assert record is not None
@@ -349,7 +386,7 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         ctx = mock_ctx(user_id=1, conversation=[])
         result = await journal_tool.journal_add(
             ctx, topic="Mood", entry="No settings loaded.")
-        self.assertEqual(result, "Created journal entry 1")
+        self.assertTrue(result.startswith("Created journal entry id:1 "))
         record = await self.store.get_entry(
             user_id=1, entry_id=1)
         assert record is not None
@@ -394,8 +431,8 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await journal_tool.journal_delete(other, id=1),
                          "Journal entry 1 not found")
         self.assertEqual(
-            await journal_tool.journal_replace(
-                other, id=1, existing="private", replace="x"),
+            await journal_tool.journal_edit(
+                other, id=1, oldString="private", newString="x"),
             "Journal entry 1 not found")
         self.assertEqual(await journal_tool.journal_search(other, query="private"),
                          "No journal entries found.")
@@ -406,22 +443,42 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         ctx = self._ctx()
         await journal_tool.journal_add(ctx, topic="Mood", entry="Felt bad.")
         self.assertEqual(
-            await journal_tool.journal_replace(
-                ctx, id=1, existing="", replace="x"),
-            "Error: Existing text cannot be empty")
+            await journal_tool.journal_edit(
+                ctx, id=1, oldString="", newString="x"),
+            "Error: oldString cannot be empty.")
         self.assertEqual(
-            await journal_tool.journal_replace(
-                ctx, id=999, existing="a", replace="b"),
+            await journal_tool.journal_edit(
+                ctx, id=1, oldString="bad", newString="bad"),
+            "Error: No changes to apply: "
+            "oldString and newString are identical.")
+        self.assertEqual(
+            await journal_tool.journal_edit(
+                ctx, id=999, oldString="a", newString="b"),
             "Journal entry 999 not found")
         self.assertEqual(
-            await journal_tool.journal_replace(
-                ctx, id=1, existing="great", replace="okay"),
+            await journal_tool.journal_edit(
+                ctx, id=1, oldString="great", newString="okay"),
             "Text not found in journal entry 1")
         self.assertEqual(
-            await journal_tool.journal_replace(
-                ctx, id=1, existing="bad", replace="okay"),
+            await journal_tool.journal_edit(
+                ctx, id=1, oldString="bad", newString="okay"),
             "Journal entry 1 updated")
         self.assertIn("Entry: Felt okay.",
+                      await journal_tool.journal_get(ctx, id=1))
+
+    async def test_edit_tool_multiple_matches(self):
+        ctx = self._ctx()
+        await journal_tool.journal_add(
+            ctx, topic="Log", entry="ha ha ha")
+        out = await journal_tool.journal_edit(
+            ctx, id=1, oldString="ha", newString="he")
+        self.assertTrue(out.startswith("Error: Found multiple matches"))
+        self.assertEqual(
+            await journal_tool.journal_edit(
+                ctx, id=1, oldString="ha", newString="he",
+                replaceAll=True),
+            "Journal entry 1 updated")
+        self.assertIn("Entry: he he he",
                       await journal_tool.journal_get(ctx, id=1))
 
     async def test_search_tool_validation_and_format(self):
@@ -477,7 +534,7 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         journal_tool.register(definitions, tool_map)
         names = [d["function"]["name"] for d in definitions]
         self.assertEqual(names, ["journal_add", "journal_get",
-                                 "journal_delete", "journal_replace",
+                                 "journal_delete", "journal_edit",
                                  "journal_search", "journal_list_topics"])
         for name in names:
             self.assertIn(name, tool_map)
