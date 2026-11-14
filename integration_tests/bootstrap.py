@@ -38,7 +38,7 @@ def _reset_test_db():
         return
     _db_reset_done = True
 
-    db_path = os.environ.get("MEMORY_DB_PATH", os.environ.get("STORE_DB_PATH", "store.db"))
+    db_path = os.environ.get("STORE_DB_PATH", "store.db")
     try:
         os.remove(db_path)
     except FileNotFoundError:
