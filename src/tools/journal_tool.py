@@ -96,7 +96,7 @@ async def journal_add(ctx: ChatUpdateContext, topic: str, entry: str) -> str:
     except Exception as e:
         logger.warning("journal_add failed: %s", e)
         return f"Error: Could not save journal entry: {e}"
-    return f"Created journal entry {record.id}"
+    return f"Created journal entry id:{record.id} created:{record.created} topic:{record.topic}"
 
 
 @context_tool
@@ -282,11 +282,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "name": JOURNAL_DELETE,
             "strict": False,
             "description": (
-                "Permanently deletes a journal entry. Use only when the user "
-                "explicitly requests deletion or has otherwise clearly "
-                "authorised it. Never delete entries just because they seem "
-                "outdated or unimportant. Only entries belonging to the "
-                "authenticated user can be deleted."),
+                "Permanently deletes a journal entry."),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -307,13 +303,11 @@ TOOL_DEFINITIONS: list[dict] = [
             "strict": False,
             "description": (
                 "Replaces a specific section of text within a journal entry. "
-                "Use for corrections the user requested. Retrieve the entry "
-                "with journal_get first if you do not already have its "
+                "Retrieve the entry with journal_get first if you do not already have its "
                 "current contents. Matching is exact and case-sensitive; "
                 "only the first occurrence is replaced. The original "
                 "creation timestamp is preserved. Allows an empty "
-                "replacement to delete a section of text. Only entries "
-                "belonging to the authenticated user can be modified."),
+                "replacement to delete a section of text."),
             "parameters": {
                 "type": "object",
                 "properties": {
