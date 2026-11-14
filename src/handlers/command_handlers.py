@@ -8,6 +8,7 @@ from handlers.middleware import handler, settings
 from handlers.generation_queue import generation_queue
 from handlers.message_handlers import stop_generation
 from messaging import send_preformatted_message, send_message
+from settings_store import save_conversation
 from config import OPENAI_KEY, OPENAI_BASE_URL
 
 
@@ -17,6 +18,7 @@ async def start_restart_command(ctx: ChatUpdateContext):
     stop_generation(ctx)
     await send_message(ctx, f"Starting conversation with model `{ctx.model}`")
     ctx.conversation = Conversation()
+    await save_conversation(ctx.user_id, ctx.conversation)
 
 
 @handler

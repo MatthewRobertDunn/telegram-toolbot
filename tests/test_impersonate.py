@@ -10,9 +10,25 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from conversation import CUSTOM, Conversation, ConversationMessageType
 from handlers import conversation_handlers
+from handlers import generation_queue as generation_queue_mod
 from handlers.conversation_handlers import (impersonate_command,
                                             regenerate_command)
 from mock_context import mock_ctx
+
+
+def setUpModule():
+    # The worker persists every queued job; keep unit tests hermetic by
+    # stubbing the save (persistence itself is covered in
+    # test_conversation_persistence.py).
+    patcher = mock.patch.object(generation_queue_mod, 'save_conversation',
+                                mock.AsyncMock())
+    patcher.start()
+    global _save_patcher
+    _save_patcher = patcher
+
+
+def tearDownModule():
+    _save_patcher.stop()
 
 
 def _roles(conversation):

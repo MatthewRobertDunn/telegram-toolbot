@@ -23,6 +23,7 @@ from collections.abc import Awaitable
 from dataclasses import dataclass, field
 
 from chat_update_context import ChatUpdateContext
+from settings_store import save_conversation
 from .run_llm import run_llm
 from messaging import run_with_typing, send_message
 
@@ -120,6 +121,16 @@ async def _generation_worker(submitter: ChatUpdateContext) -> None:
             await item.job
         except Exception:
             logger.exception('Queued work failed')
+        # Single persistence point: every queued mutation (replies,
+        # /undo, /regenerate, /retry, /impersonate, /compact) lands here,
+        # so a save here covers them all. Never let a DB failure kill the
+        # worker loop.
+        try:
+            await save_conversation(item.ctx.user_id,
+                                    item.ctx.conversation)
+        except Exception:
+            logger.warning('Could not persist conversation for user %d',
+                           item.ctx.user_id, exc_info=True)
         finally:
             item.done.set()
 

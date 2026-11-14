@@ -2,7 +2,7 @@ import functools
 import logging
 
 from chat_update_context import ChatUpdateContext
-from settings_store import load_settings, save_settings
+from settings_store import load_conversation, load_settings, save_settings
 from conversation import Conversation
 
 logger = logging.getLogger(__name__)
@@ -37,5 +37,5 @@ async def init_conversation(ctx: ChatUpdateContext):
         ctx.settings = await load_settings(ctx.user_id)
     if 'conversation' not in ctx.user_data:
         logger.info('Initializing conversation for user %d', ctx.user_id)
-        ctx.conversation = Conversation()
+        ctx.conversation = await load_conversation(ctx.user_id) or Conversation()
     ctx.conversation.set_system_head(ctx.system_prompt)

@@ -13,6 +13,21 @@ from handlers import generation_queue as gq
 from mock_context import mock_ctx
 
 
+def setUpModule():
+    # The worker persists every queued job; keep unit tests hermetic by
+    # stubbing the save (persistence itself is covered in
+    # test_conversation_persistence.py).
+    patcher = mock.patch.object(gq, 'save_conversation',
+                                mock.AsyncMock())
+    patcher.start()
+    global _save_patcher
+    _save_patcher = patcher
+
+
+def tearDownModule():
+    _save_patcher.stop()
+
+
 class _Bot:
     def __init__(self):
         self.sent: list = []

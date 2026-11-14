@@ -3,6 +3,7 @@ from telegram.constants import ChatType
 from chat_update_context import ChatUpdateContext
 from handlers.middleware import handler
 from handlers.generation_queue import submit_generation
+from settings_store import save_conversation
 
 
 def stop_generation(ctx: ChatUpdateContext) -> bool:
@@ -26,8 +27,9 @@ async def group_text_message_handler(ctx: ChatUpdateContext):
     if not should_respond:
         # Record the ambient chatter without answering it (the reply to a
         # later mention will see it in the history). No queue involved:
-        # nothing is being submitted to the model.
+        # nothing is being submitted to the model, so persist directly.
         ctx.conversation.add_user(f"{name}: {text}")
+        await save_conversation(ctx.user_id, ctx.conversation)
         return
 
     await submit_generation(ctx, f"{name}: {text}",
