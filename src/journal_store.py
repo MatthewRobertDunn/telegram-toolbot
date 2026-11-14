@@ -1,8 +1,13 @@
 """SQLite-backed persistent journal storage.
 
-Strongly typed persistence layer: functions take and return dataclasses and
+Strongly typed persistence layer: methods take and return dataclasses and
 plain values, never pre-formatted strings. LLM-facing formatting lives in
 tools/journal_tool.py.
+
+Usage mirrors context_store.AsyncSQLiteStore: the schema is created once at
+startup (chatbot.post_init) via ``async with create_journal_store() as
+store: await store.create_schema()``. Operations additionally ensure the
+schema themselves, so ad-hoc and test use works without a startup step.
 
 Every operation is scoped to a single ``user_id`` supplied by the caller (the
 authenticated application context). There is no way to operate on another
@@ -78,49 +83,73 @@ CREATE TRIGGER IF NOT EXISTS journal_entries_au
 """
 
 
-def _db_path(db_path: str | None) -> str:
-    # Read off config at call time so tests can point at a scratch database
-    # by patching config.store_db_path.
-    return db_path or config.store_db_path
+class JournalStore:
+    def __init__(self, db_path: str | None = None) -> None:
+        self._explicit_path = db_path
+        self._conn: aiosqlite.Connection | None = None
 
+    @property
+    def db_path(self) -> str:
+        # Resolved at call time so tests can point at a scratch database by
+        # patching config.store_db_path.
+        return self._explicit_path or config.store_db_path
 
-async def _connect(db_path: str | None = None) -> aiosqlite.Connection:
-    db = await aiosqlite.connect(_db_path(db_path))
-    db.row_factory = aiosqlite.Row
-    await db.executescript(_SCHEMA_SQL)
-    await db.commit()
-    cursor = await db.execute("PRAGMA compile_options")
-    options = {row[0] for row in await cursor.fetchall()}
-    if "ENABLE_FTS5" not in options:
-        await db.close()
-        raise RuntimeError("SQLite build does not support FTS5")
-    return db
+    async def _get_conn(self) -> aiosqlite.Connection:
+        if self._conn is None:
+            db = await aiosqlite.connect(self.db_path)
+            db.row_factory = aiosqlite.Row
+            self._conn = db
+        return self._conn
 
+    async def __aenter__(self) -> JournalStore:
+        return self
 
-def _row_to_entry(row: aiosqlite.Row) -> JournalEntry:
-    return JournalEntry(
-        id=row["id"],
-        user_id=row["user_id"],
-        created=row["created"],
-        created_epoch_ms=row["created_epoch_ms"],
-        topic=row["topic"],
-        entry=row["entry"],
-    )
+    async def __aexit__(self, *args: object) -> None:
+        await self.close()
 
+    async def close(self) -> None:
+        if self._conn is not None:
+            await self._conn.close()
+            self._conn = None
 
-async def add_entry(*, user_id: int, topic: str, entry: str,
-                    created: str, created_epoch_ms: int,
-                    db_path: str | None = None) -> JournalEntry:
-    clean_topic = topic.strip()
-    if not clean_topic:
-        raise ValueError("Topic cannot be empty")
-    if len(clean_topic) > MAX_TOPIC_LENGTH:
-        raise ValueError(
-            f"Topic must be at most {MAX_TOPIC_LENGTH} characters")
-    if not entry.strip():
-        raise ValueError("Entry cannot be empty")
-    db = await _connect(db_path)
-    try:
+    async def create_schema(self) -> None:
+        """Create tables, indexes, FTS5 index and triggers (idempotent)."""
+        db = await self._get_conn()
+        await db.executescript(_SCHEMA_SQL)
+        await db.commit()
+        cursor = await db.execute("PRAGMA compile_options")
+        options = {row[0] for row in await cursor.fetchall()}
+        if "ENABLE_FTS5" not in options:
+            raise RuntimeError("SQLite build does not support FTS5")
+
+    async def _ready(self) -> aiosqlite.Connection:
+        db = await self._get_conn()
+        await db.executescript(_SCHEMA_SQL)
+        await db.commit()
+        return db
+
+    @staticmethod
+    def _row_to_entry(row: aiosqlite.Row) -> JournalEntry:
+        return JournalEntry(
+            id=row["id"],
+            user_id=row["user_id"],
+            created=row["created"],
+            created_epoch_ms=row["created_epoch_ms"],
+            topic=row["topic"],
+            entry=row["entry"],
+        )
+
+    async def add_entry(self, *, user_id: int, topic: str, entry: str,
+                        created: str, created_epoch_ms: int) -> JournalEntry:
+        clean_topic = topic.strip()
+        if not clean_topic:
+            raise ValueError("Topic cannot be empty")
+        if len(clean_topic) > MAX_TOPIC_LENGTH:
+            raise ValueError(
+                f"Topic must be at most {MAX_TOPIC_LENGTH} characters")
+        if not entry.strip():
+            raise ValueError("Entry cannot be empty")
+        db = await self._ready()
         cursor = await db.execute(
             "INSERT INTO journal_entries "
             "(user_id, created, created_epoch_ms, topic, entry) "
@@ -132,44 +161,31 @@ async def add_entry(*, user_id: int, topic: str, entry: str,
         return JournalEntry(id=entry_id, user_id=user_id, created=created,
                             created_epoch_ms=created_epoch_ms,
                             topic=clean_topic, entry=entry)
-    finally:
-        await db.close()
 
-
-async def get_entry(*, user_id: int, entry_id: int,
-                    db_path: str | None = None) -> JournalEntry | None:
-    db = await _connect(db_path)
-    try:
+    async def get_entry(self, *, user_id: int,
+                        entry_id: int) -> JournalEntry | None:
+        db = await self._ready()
         cursor = await db.execute(
             "SELECT id, user_id, created, created_epoch_ms, topic, entry "
             "FROM journal_entries WHERE id = ? AND user_id = ?",
             (entry_id, user_id))
         row = await cursor.fetchone()
-        return _row_to_entry(row) if row is not None else None
-    finally:
-        await db.close()
+        return self._row_to_entry(row) if row is not None else None
 
-
-async def delete_entry(*, user_id: int, entry_id: int,
-                       db_path: str | None = None) -> bool:
-    db = await _connect(db_path)
-    try:
+    async def delete_entry(self, *, user_id: int, entry_id: int) -> bool:
+        db = await self._ready()
         cursor = await db.execute(
             "DELETE FROM journal_entries WHERE id = ? AND user_id = ?",
             (entry_id, user_id))
         await db.commit()
         return cursor.rowcount > 0
-    finally:
-        await db.close()
 
-
-async def replace_in_entry(*, user_id: int, entry_id: int, existing: str,
-                           replacement: str,
-                           db_path: str | None = None) -> ReplaceOutcome:
-    if not existing:
-        raise ValueError("Existing text cannot be empty")
-    db = await _connect(db_path)
-    try:
+    async def replace_in_entry(self, *, user_id: int, entry_id: int,
+                               existing: str,
+                               replacement: str) -> ReplaceOutcome:
+        if not existing:
+            raise ValueError("Existing text cannot be empty")
+        db = await self._ready()
         cursor = await db.execute(
             "SELECT entry FROM journal_entries "
             "WHERE id = ? AND user_id = ?",
@@ -188,8 +204,57 @@ async def replace_in_entry(*, user_id: int, entry_id: int, existing: str,
             (updated, entry_id, user_id))
         await db.commit()
         return ReplaceOutcome.UPDATED
-    finally:
-        await db.close()
+
+    async def search_entries(self, *, user_id: int,
+                             start_ms: int | None = None,
+                             end_ms: int | None = None,
+                             query: str | None = None,
+                             topic: str | None = None,
+                             limit: int = SEARCH_LIMIT) -> list[JournalEntry]:
+        if start_ms is not None and end_ms is not None and start_ms >= end_ms:
+            raise ValueError("Start timestamp must be earlier than end timestamp")
+        conditions = ["user_id = ?"]
+        params: list[object] = [user_id]
+        if start_ms is not None:
+            conditions.append("created_epoch_ms >= ?")
+            params.append(start_ms)
+        if end_ms is not None:
+            conditions.append("created_epoch_ms < ?")
+            params.append(end_ms)
+        clean_topic = topic.strip() if isinstance(topic, str) else ""
+        if clean_topic:
+            conditions.append("topic = ? COLLATE NOCASE")
+            params.append(clean_topic)
+        fts: str | None = None
+        if query is not None and query.strip():
+            fts = build_fts_match(query)
+        sql = ("SELECT id, user_id, created, created_epoch_ms, topic, entry "
+               "FROM journal_entries WHERE " + " AND ".join(conditions))
+        if fts is not None:
+            sql += (" AND id IN (SELECT rowid FROM journal_entries_fts "
+                    "WHERE journal_entries_fts MATCH ?)")
+            params.append(fts)
+        sql += " ORDER BY created_epoch_ms DESC LIMIT ?"
+        params.append(limit)
+        db = await self._ready()
+        cursor = await db.execute(sql, tuple(params))
+        return [self._row_to_entry(row) for row in await cursor.fetchall()]
+
+    async def list_topics(self, *, user_id: int) -> list[str]:
+        db = await self._ready()
+        cursor = await db.execute(
+            "SELECT DISTINCT topic FROM journal_entries "
+            "WHERE user_id = ? ORDER BY topic COLLATE NOCASE",
+            (user_id,))
+        seen: set[str] = set()
+        topics: list[str] = []
+        for row in await cursor.fetchall():
+            name: str = row["topic"]
+            key = name.casefold()
+            if key not in seen:
+                seen.add(key)
+                topics.append(name)
+        return topics
 
 
 _TOKEN_RE = re.compile(r'"([^"]*)"|(\S+)')
@@ -218,62 +283,5 @@ def build_fts_match(query: str) -> str:
     return " AND ".join(parts)
 
 
-async def search_entries(*, user_id: int,
-                         start_ms: int | None = None,
-                         end_ms: int | None = None,
-                         query: str | None = None,
-                         topic: str | None = None,
-                         limit: int = SEARCH_LIMIT,
-                         db_path: str | None = None) -> list[JournalEntry]:
-    if start_ms is not None and end_ms is not None and start_ms >= end_ms:
-        raise ValueError("Start timestamp must be earlier than end timestamp")
-    conditions = ["user_id = ?"]
-    params: list[object] = [user_id]
-    if start_ms is not None:
-        conditions.append("created_epoch_ms >= ?")
-        params.append(start_ms)
-    if end_ms is not None:
-        conditions.append("created_epoch_ms < ?")
-        params.append(end_ms)
-    clean_topic = topic.strip() if isinstance(topic, str) else ""
-    if clean_topic:
-        conditions.append("topic = ? COLLATE NOCASE")
-        params.append(clean_topic)
-    fts: str | None = None
-    if query is not None and query.strip():
-        fts = build_fts_match(query)
-    sql = ("SELECT id, user_id, created, created_epoch_ms, topic, entry "
-           "FROM journal_entries WHERE " + " AND ".join(conditions))
-    if fts is not None:
-        sql += (" AND id IN (SELECT rowid FROM journal_entries_fts "
-                "WHERE journal_entries_fts MATCH ?)")
-        params.append(fts)
-    sql += " ORDER BY created_epoch_ms DESC LIMIT ?"
-    params.append(limit)
-    db = await _connect(db_path)
-    try:
-        cursor = await db.execute(sql, tuple(params))
-        return [_row_to_entry(row) for row in await cursor.fetchall()]
-    finally:
-        await db.close()
-
-
-async def list_topics(*, user_id: int,
-                      db_path: str | None = None) -> list[str]:
-    db = await _connect(db_path)
-    try:
-        cursor = await db.execute(
-            "SELECT DISTINCT topic FROM journal_entries "
-            "WHERE user_id = ? ORDER BY topic COLLATE NOCASE",
-            (user_id,))
-        seen: set[str] = set()
-        topics: list[str] = []
-        for row in await cursor.fetchall():
-            name: str = row["topic"]
-            key = name.casefold()
-            if key not in seen:
-                seen.add(key)
-                topics.append(name)
-        return topics
-    finally:
-        await db.close()
+def create_journal_store(db_path: str | None = None) -> JournalStore:
+    return JournalStore(db_path)

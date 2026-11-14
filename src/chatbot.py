@@ -7,6 +7,7 @@ from telegram import BotCommand
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, filters
 from chat_update_context import callback_adapter
 from context_store import create_store, create_settings_store
+from journal_store import create_journal_store
 from file_ops import read_file
 from handlers.message_handlers import text_message_handler
 from handlers.conversation_handlers import (
@@ -66,6 +67,8 @@ async def post_init(application: Application):
     async with create_store() as store:
         await store.create_schema()
     async with create_settings_store() as store:
+        await store.create_schema()
+    async with create_journal_store() as store:
         await store.create_schema()
     try:
         await manager.recover_leftover_sandboxes()

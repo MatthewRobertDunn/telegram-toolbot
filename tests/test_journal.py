@@ -25,19 +25,21 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self._tmp.name, "journal.db")
+        self.store = journal_store.create_journal_store(self.db)
+        await self.store.create_schema()
 
-    def tearDown(self):
+    async def asyncTearDown(self):
+        await self.store.close()
         self._tmp.cleanup()
 
     async def test_add_and_get_round_trip(self):
         created = "2026-11-14T16:34:00+10:30"
-        record = await journal_store.add_entry(
+        record = await self.store.add_entry(
             user_id=1, topic="Mood", entry="Felt okay today.",
-            created=created, created_epoch_ms=_ms(created),
-            db_path=self.db)
+            created=created, created_epoch_ms=_ms(created))
         self.assertEqual(record.id, 1)
-        fetched = await journal_store.get_entry(
-            user_id=1, entry_id=1, db_path=self.db)
+        fetched = await self.store.get_entry(
+            user_id=1, entry_id=1)
         self.assertIsNotNone(fetched)
         assert fetched is not None
         self.assertEqual(fetched.id, 1)
@@ -46,10 +48,9 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetched.created_epoch_ms, _ms(created))
         self.assertEqual(fetched.topic, "Mood")
         self.assertEqual(fetched.entry, "Felt okay today.")
-        second = await journal_store.add_entry(
+        second = await self.store.add_entry(
             user_id=1, topic="Sleep", entry="Slept well.",
-            created=created, created_epoch_ms=_ms(created),
-            db_path=self.db)
+            created=created, created_epoch_ms=_ms(created))
         self.assertEqual(second.id, 2)
 
     async def test_add_rejects_empty_and_long(self):
@@ -57,95 +58,93 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         epoch = _ms(created)
         for bad_topic in ("", "   "):
             with self.assertRaises(ValueError):
-                await journal_store.add_entry(
+                await self.store.add_entry(
                     user_id=1, topic=bad_topic, entry="x",
-                    created=created, created_epoch_ms=epoch,
-                    db_path=self.db)
+                    created=created, created_epoch_ms=epoch)
         for bad_entry in ("", "  \n "):
             with self.assertRaises(ValueError):
-                await journal_store.add_entry(
+                await self.store.add_entry(
                     user_id=1, topic="Mood", entry=bad_entry,
-                    created=created, created_epoch_ms=epoch,
-                    db_path=self.db)
+                    created=created, created_epoch_ms=epoch)
         with self.assertRaises(ValueError):
-            await journal_store.add_entry(
+            await self.store.add_entry(
                 user_id=1, topic="t" * 129, entry="x",
-                created=created, created_epoch_ms=epoch, db_path=self.db)
-        record = await journal_store.add_entry(
+                created=created, created_epoch_ms=epoch)
+        record = await self.store.add_entry(
             user_id=1, topic="t" * 128, entry="x",
-            created=created, created_epoch_ms=epoch, db_path=self.db)
+            created=created, created_epoch_ms=epoch)
         self.assertEqual(len(record.topic), 128)
         self.assertEqual(
-            await journal_store.get_entry(
-                user_id=1, entry_id=999, db_path=self.db), None)
+            await self.store.get_entry(
+                user_id=1, entry_id=999), None)
 
     async def test_ids_never_reused(self):
         created = "2026-11-14T16:34:00+00:00"
         epoch = _ms(created)
-        await journal_store.add_entry(
+        await self.store.add_entry(
             user_id=1, topic="A", entry="one",
-            created=created, created_epoch_ms=epoch, db_path=self.db)
-        await journal_store.add_entry(
+            created=created, created_epoch_ms=epoch)
+        await self.store.add_entry(
             user_id=1, topic="A", entry="two",
-            created=created, created_epoch_ms=epoch, db_path=self.db)
-        self.assertTrue(await journal_store.delete_entry(
-            user_id=1, entry_id=1, db_path=self.db))
-        third = await journal_store.add_entry(
+            created=created, created_epoch_ms=epoch)
+        self.assertTrue(await self.store.delete_entry(
+            user_id=1, entry_id=1))
+        third = await self.store.add_entry(
             user_id=1, topic="A", entry="three",
-            created=created, created_epoch_ms=epoch, db_path=self.db)
+            created=created, created_epoch_ms=epoch)
         self.assertEqual(third.id, 3)
 
     async def test_user_isolation(self):
         created = "2026-11-14T16:34:00+00:00"
         epoch = _ms(created)
-        record = await journal_store.add_entry(
+        record = await self.store.add_entry(
             user_id=1, topic="Mood", entry="user one entry",
-            created=created, created_epoch_ms=epoch, db_path=self.db)
-        self.assertIsNone(await journal_store.get_entry(
-            user_id=2, entry_id=record.id, db_path=self.db))
-        self.assertFalse(await journal_store.delete_entry(
-            user_id=2, entry_id=record.id, db_path=self.db))
+            created=created, created_epoch_ms=epoch)
+        self.assertIsNone(await self.store.get_entry(
+            user_id=2, entry_id=record.id))
+        self.assertFalse(await self.store.delete_entry(
+            user_id=2, entry_id=record.id))
         self.assertEqual(
-            await journal_store.replace_in_entry(
+            await self.store.replace_in_entry(
                 user_id=2, entry_id=record.id,
-                existing="one", replacement="two", db_path=self.db),
+                existing="one", replacement="two"),
             ReplaceOutcome.NOT_FOUND)
         self.assertEqual(
-            await journal_store.search_entries(
-                user_id=2, query="one", db_path=self.db), [])
+            await self.store.search_entries(
+                user_id=2, query="one"), [])
         self.assertEqual(
-            await journal_store.list_topics(user_id=2, db_path=self.db), [])
+            await self.store.list_topics(user_id=2), [])
         # Owner still sees everything.
-        self.assertIsNotNone(await journal_store.get_entry(
-            user_id=1, entry_id=record.id, db_path=self.db))
+        self.assertIsNotNone(await self.store.get_entry(
+            user_id=1, entry_id=record.id))
 
     async def test_replace(self):
         created = "2026-11-14T16:34:00+00:00"
         epoch = _ms(created)
-        record = await journal_store.add_entry(
+        record = await self.store.add_entry(
             user_id=1, topic="Mood", entry="Felt anxious and tired.",
-            created=created, created_epoch_ms=epoch, db_path=self.db)
+            created=created, created_epoch_ms=epoch)
         with self.assertRaises(ValueError):
-            await journal_store.replace_in_entry(
+            await self.store.replace_in_entry(
                 user_id=1, entry_id=record.id, existing="",
-                replacement="x", db_path=self.db)
+                replacement="x")
         self.assertEqual(
-            await journal_store.replace_in_entry(
+            await self.store.replace_in_entry(
                 user_id=1, entry_id=999, existing="x",
-                replacement="y", db_path=self.db),
+                replacement="y"),
             ReplaceOutcome.NOT_FOUND)
         self.assertEqual(
-            await journal_store.replace_in_entry(
+            await self.store.replace_in_entry(
                 user_id=1, entry_id=record.id, existing="elated",
-                replacement="okay", db_path=self.db),
+                replacement="okay"),
             ReplaceOutcome.TEXT_NOT_FOUND)
         self.assertEqual(
-            await journal_store.replace_in_entry(
+            await self.store.replace_in_entry(
                 user_id=1, entry_id=record.id, existing="anxious",
-                replacement="calm", db_path=self.db),
+                replacement="calm"),
             ReplaceOutcome.UPDATED)
-        fetched = await journal_store.get_entry(
-            user_id=1, entry_id=record.id, db_path=self.db)
+        fetched = await self.store.get_entry(
+            user_id=1, entry_id=record.id)
         assert fetched is not None
         self.assertEqual(fetched.entry, "Felt calm and tired.")
         # Creation timestamp is untouched.
@@ -153,20 +152,20 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetched.created_epoch_ms, epoch)
         # FTS index followed the edit.
         self.assertEqual(
-            await journal_store.search_entries(
-                user_id=1, query="anxious", db_path=self.db), [])
-        found = await journal_store.search_entries(
-            user_id=1, query="calm", db_path=self.db)
+            await self.store.search_entries(
+                user_id=1, query="anxious"), [])
+        found = await self.store.search_entries(
+            user_id=1, query="calm")
         self.assertEqual([r.id for r in found], [record.id])
         # First occurrence only.
-        await journal_store.replace_in_entry(
+        await self.store.replace_in_entry(
             user_id=1, entry_id=record.id, existing="and",
-            replacement="AND", db_path=self.db)
-        await journal_store.replace_in_entry(
+            replacement="AND")
+        await self.store.replace_in_entry(
             user_id=1, entry_id=record.id, existing="AND",
-            replacement="", db_path=self.db)
-        fetched = await journal_store.get_entry(
-            user_id=1, entry_id=record.id, db_path=self.db)
+            replacement="")
+        fetched = await self.store.get_entry(
+            user_id=1, entry_id=record.id)
         assert fetched is not None
         self.assertEqual(fetched.entry, "Felt calm  tired.")
         self.assertNotIn("AND", fetched.entry)
@@ -174,51 +173,51 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
     async def test_search_text_semantics(self):
         created = "2026-11-14T16:34:00+00:00"
         epoch = _ms(created)
-        await journal_store.add_entry(
+        await self.store.add_entry(
             user_id=1, topic="Mood", entry="Felt anxious all afternoon.",
-            created=created, created_epoch_ms=epoch, db_path=self.db)
-        await journal_store.add_entry(
+            created=created, created_epoch_ms=epoch)
+        await self.store.add_entry(
             user_id=1, topic="Sleep", entry="Slept badly, anxious dreams.",
-            created=created, created_epoch_ms=epoch, db_path=self.db)
-        await journal_store.add_entry(
+            created=created, created_epoch_ms=epoch)
+        await self.store.add_entry(
             user_id=1, topic="Mood", entry="Calm morning walk.",
-            created=created, created_epoch_ms=epoch, db_path=self.db)
-        both = await journal_store.search_entries(
-            user_id=1, query="anxious", db_path=self.db)
+            created=created, created_epoch_ms=epoch)
+        both = await self.store.search_entries(
+            user_id=1, query="anxious")
         self.assertEqual(len(both), 2)
         # Multiple terms require all to match.
-        narrow = await journal_store.search_entries(
-            user_id=1, query="anxious dreams", db_path=self.db)
+        narrow = await self.store.search_entries(
+            user_id=1, query="anxious dreams")
         self.assertEqual(len(narrow), 1)
         self.assertEqual(narrow[0].topic, "Sleep")
         # Quoted phrase.
-        phrase = await journal_store.search_entries(
-            user_id=1, query='"anxious dreams"', db_path=self.db)
+        phrase = await self.store.search_entries(
+            user_id=1, query='"anxious dreams"')
         self.assertEqual(len(phrase), 1)
         # Prefix search.
-        prefix = await journal_store.search_entries(
-            user_id=1, query="anx", db_path=self.db)
+        prefix = await self.store.search_entries(
+            user_id=1, query="anx")
         self.assertEqual(len(prefix), 2)
         # Case-insensitive.
-        upper = await journal_store.search_entries(
-            user_id=1, query="ANXIOUS", db_path=self.db)
+        upper = await self.store.search_entries(
+            user_id=1, query="ANXIOUS")
         self.assertEqual(len(upper), 2)
         # Gibberish operators cannot break the query builder.
         with self.assertRaises(ValueError):
-            await journal_store.search_entries(
-                user_id=1, query="***", db_path=self.db)
+            await self.store.search_entries(
+                user_id=1, query="***")
 
     async def test_search_topic_filter_case_insensitive(self):
         created = "2026-11-14T16:34:00+00:00"
         epoch = _ms(created)
-        await journal_store.add_entry(
+        await self.store.add_entry(
             user_id=1, topic="Mood", entry="one",
-            created=created, created_epoch_ms=epoch, db_path=self.db)
-        await journal_store.add_entry(
+            created=created, created_epoch_ms=epoch)
+        await self.store.add_entry(
             user_id=1, topic="Sleep", entry="two",
-            created=created, created_epoch_ms=epoch, db_path=self.db)
-        found = await journal_store.search_entries(
-            user_id=1, topic="mood", db_path=self.db)
+            created=created, created_epoch_ms=epoch)
+        found = await self.store.search_entries(
+            user_id=1, topic="mood")
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0].entry, "one")
 
@@ -229,27 +228,24 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             "2026-11-14T09:00:00+00:00",
         ]
         for i, stamp in enumerate(stamps):
-            await journal_store.add_entry(
+            await self.store.add_entry(
                 user_id=1, topic="Log", entry=f"entry {i}",
-                created=stamp, created_epoch_ms=_ms(stamp),
-                db_path=self.db)
-        window = await journal_store.search_entries(
+                created=stamp, created_epoch_ms=_ms(stamp))
+        window = await self.store.search_entries(
             user_id=1, start_ms=_ms("2026-11-11T00:00:00+00:00"),
-            end_ms=_ms("2026-11-15T00:00:00+00:00"), db_path=self.db)
+            end_ms=_ms("2026-11-15T00:00:00+00:00"))
         # Newest first.
         self.assertEqual([r.entry for r in window], ["entry 2", "entry 1"])
         # Start inclusive, end exclusive.
-        self.assertEqual(len(await journal_store.search_entries(
-            user_id=1, start_ms=_ms("2026-11-12T09:00:00+00:00"),
-            db_path=self.db)), 2)
-        self.assertEqual(len(await journal_store.search_entries(
-            user_id=1, end_ms=_ms("2026-11-12T09:00:00+00:00"),
-            db_path=self.db)), 1)
+        self.assertEqual(len(await self.store.search_entries(
+            user_id=1, start_ms=_ms("2026-11-12T09:00:00+00:00"))), 2)
+        self.assertEqual(len(await self.store.search_entries(
+            user_id=1, end_ms=_ms("2026-11-12T09:00:00+00:00"))), 1)
         with self.assertRaises(ValueError):
-            await journal_store.search_entries(
-                user_id=1, start_ms=10, end_ms=10, db_path=self.db)
-        limited = await journal_store.search_entries(
-            user_id=1, limit=1, db_path=self.db)
+            await self.store.search_entries(
+                user_id=1, start_ms=10, end_ms=10)
+        limited = await self.store.search_entries(
+            user_id=1, limit=1)
         self.assertEqual(len(limited), 1)
         self.assertEqual(limited[0].entry, "entry 2")
 
@@ -260,55 +256,54 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         early = "2026-11-14T16:00:00+00:00"
         late = "2026-11-14T16:30:00+11:00"
         self.assertLess(early, late)  # lexical order disagrees with time
-        await journal_store.add_entry(
+        await self.store.add_entry(
             user_id=1, topic="Log", entry="utc entry",
-            created=early, created_epoch_ms=_ms(early), db_path=self.db)
-        await journal_store.add_entry(
+            created=early, created_epoch_ms=_ms(early))
+        await self.store.add_entry(
             user_id=1, topic="Log", entry="sydney entry",
-            created=late, created_epoch_ms=_ms(late), db_path=self.db)
-        found = await journal_store.search_entries(
-            user_id=1, db_path=self.db)
+            created=late, created_epoch_ms=_ms(late))
+        found = await self.store.search_entries(
+            user_id=1)
         self.assertEqual([r.entry for r in found],
                          ["utc entry", "sydney entry"])
 
     async def test_delete_removes_fts_record(self):
         created = "2026-11-14T16:34:00+00:00"
-        record = await journal_store.add_entry(
+        record = await self.store.add_entry(
             user_id=1, topic="Mood", entry="uniquewordxyz",
-            created=created, created_epoch_ms=_ms(created),
-            db_path=self.db)
-        self.assertEqual(len(await journal_store.search_entries(
-            user_id=1, query="uniquewordxyz", db_path=self.db)), 1)
-        self.assertTrue(await journal_store.delete_entry(
-            user_id=1, entry_id=record.id, db_path=self.db))
-        self.assertFalse(await journal_store.delete_entry(
-            user_id=1, entry_id=record.id, db_path=self.db))
-        self.assertEqual(await journal_store.search_entries(
-            user_id=1, query="uniquewordxyz", db_path=self.db), [])
+            created=created, created_epoch_ms=_ms(created))
+        self.assertEqual(len(await self.store.search_entries(
+            user_id=1, query="uniquewordxyz")), 1)
+        self.assertTrue(await self.store.delete_entry(
+            user_id=1, entry_id=record.id))
+        self.assertFalse(await self.store.delete_entry(
+            user_id=1, entry_id=record.id))
+        self.assertEqual(await self.store.search_entries(
+            user_id=1, query="uniquewordxyz"), [])
 
     async def test_list_topics(self):
         self.assertEqual(
-            await journal_store.list_topics(user_id=1, db_path=self.db), [])
+            await self.store.list_topics(user_id=1), [])
         created = "2026-11-14T16:34:00+00:00"
         epoch = _ms(created)
-        await journal_store.add_entry(
+        await self.store.add_entry(
             user_id=1, topic="Sleep", entry="a",
-            created=created, created_epoch_ms=epoch, db_path=self.db)
-        first = await journal_store.add_entry(
+            created=created, created_epoch_ms=epoch)
+        first = await self.store.add_entry(
             user_id=1, topic="Mood", entry="b",
-            created=created, created_epoch_ms=epoch, db_path=self.db)
-        await journal_store.add_entry(
+            created=created, created_epoch_ms=epoch)
+        await self.store.add_entry(
             user_id=1, topic="mood", entry="c",
-            created=created, created_epoch_ms=epoch, db_path=self.db)
+            created=created, created_epoch_ms=epoch)
         # Case-insensitive uniqueness, alphabetical.
         self.assertEqual(
-            await journal_store.list_topics(user_id=1, db_path=self.db),
+            await self.store.list_topics(user_id=1),
             ["Mood", "Sleep"])
         # Topics vanish once unused.
-        await journal_store.delete_entry(
-            user_id=1, entry_id=first.id, db_path=self.db)
+        await self.store.delete_entry(
+            user_id=1, entry_id=first.id)
         self.assertEqual(
-            await journal_store.list_topics(user_id=1, db_path=self.db),
+            await self.store.list_topics(user_id=1),
             ["mood", "Sleep"])
 
 
@@ -322,6 +317,10 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(self._tmp.cleanup)
+        self.store = journal_store.create_journal_store(self.db)
+
+    async def asyncTearDown(self):
+        await self.store.close()
 
     def _ctx(self, user_id=1, timezone_name=None):
         settings = UserSettings.default()
@@ -335,8 +334,8 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         result = await journal_tool.journal_add(
             ctx, topic="Mood", entry="Testing timezones.")
         self.assertEqual(result, "Created journal entry 1")
-        record = await journal_store.get_entry(
-            user_id=1, entry_id=1, db_path=self.db)
+        record = await self.store.get_entry(
+            user_id=1, entry_id=1)
         assert record is not None
         expected_offset = datetime.now(
             ZoneInfo("Australia/Sydney")).strftime("%z")
@@ -351,8 +350,8 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         result = await journal_tool.journal_add(
             ctx, topic="Mood", entry="No settings loaded.")
         self.assertEqual(result, "Created journal entry 1")
-        record = await journal_store.get_entry(
-            user_id=1, entry_id=1, db_path=self.db)
+        record = await self.store.get_entry(
+            user_id=1, entry_id=1)
         assert record is not None
         self.assertTrue(record.created.endswith("+00:00"))
 
@@ -451,8 +450,8 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
     async def test_search_tool_date_filter_with_offsets(self):
         ctx = self._ctx(timezone_name="Australia/Adelaide")
         await journal_tool.journal_add(ctx, topic="Log", entry="sydney entry")
-        record = await journal_store.get_entry(
-            user_id=1, entry_id=1, db_path=self.db)
+        record = await self.store.get_entry(
+            user_id=1, entry_id=1)
         assert record is not None
         day = record.created[:10]
         inside = await journal_tool.journal_search(

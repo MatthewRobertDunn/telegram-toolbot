@@ -1,7 +1,7 @@
 """Journal tools: persistent per-user journal for health, mood and notes.
 
-All tools operate on the authenticated user's journal automatically; the
-model must never supply a ``user_id``. Creation timestamps use the timezone
+All tools operate on the authenticated user's journal automatically.
+Creation timestamps use the timezone
 set with /set_timezone (UTC when never set).
 """
 import logging
@@ -10,8 +10,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from chat_update_context import ChatUpdateContext, context_tool
 
-import journal_store
-from journal_store import JournalEntry, ReplaceOutcome
+from journal_store import (
+    JournalEntry,
+    ReplaceOutcome,
+    MAX_TOPIC_LENGTH,
+    create_journal_store,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,14 +82,15 @@ async def journal_add(ctx: ChatUpdateContext, topic: str, entry: str) -> str:
         return "Error: Topic cannot be empty"
     if not isinstance(entry, str) or not entry.strip():
         return "Error: Entry cannot be empty"
-    if len(topic.strip()) > journal_store.MAX_TOPIC_LENGTH:
+    if len(topic.strip()) > MAX_TOPIC_LENGTH:
         return (f"Error: Topic must be at most "
-                f"{journal_store.MAX_TOPIC_LENGTH} characters")
+                f"{MAX_TOPIC_LENGTH} characters")
     created, created_epoch_ms = _now_in_user_timezone(ctx)
     try:
-        record = await journal_store.add_entry(
-            user_id=ctx.user_id, topic=topic, entry=entry,
-            created=created, created_epoch_ms=created_epoch_ms)
+        async with create_journal_store() as store:
+            record = await store.add_entry(
+                user_id=ctx.user_id, topic=topic, entry=entry,
+                created=created, created_epoch_ms=created_epoch_ms)
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
@@ -101,8 +106,9 @@ async def journal_get(ctx: ChatUpdateContext, id: int | float | str) -> str:
     except ValueError as e:
         return str(e)
     try:
-        record = await journal_store.get_entry(
-            user_id=ctx.user_id, entry_id=entry_id)
+        async with create_journal_store() as store:
+            record = await store.get_entry(
+                user_id=ctx.user_id, entry_id=entry_id)
     except Exception as e:
         logger.warning("journal_get failed: %s", e)
         return f"Error: Could not retrieve journal entry: {e}"
@@ -118,8 +124,9 @@ async def journal_delete(ctx: ChatUpdateContext, id: int | float | str) -> str:
     except ValueError as e:
         return str(e)
     try:
-        deleted = await journal_store.delete_entry(
-            user_id=ctx.user_id, entry_id=entry_id)
+        async with create_journal_store() as store:
+            deleted = await store.delete_entry(
+                user_id=ctx.user_id, entry_id=entry_id)
     except Exception as e:
         logger.warning("journal_delete failed: %s", e)
         return f"Error: Could not delete journal entry: {e}"
@@ -140,9 +147,10 @@ async def journal_replace(ctx: ChatUpdateContext, id: int | float | str,
     if not isinstance(replace, str):
         return "Error: Invalid replacement text"
     try:
-        outcome = await journal_store.replace_in_entry(
-            user_id=ctx.user_id, entry_id=entry_id,
-            existing=existing, replacement=replace)
+        async with create_journal_store() as store:
+            outcome = await store.replace_in_entry(
+                user_id=ctx.user_id, entry_id=entry_id,
+                existing=existing, replacement=replace)
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
@@ -171,14 +179,15 @@ async def journal_search(ctx: ChatUpdateContext,
     if start_dt is not None and end_dt is not None and start_dt >= end_dt:
         return "Error: Start timestamp must be earlier than end timestamp"
     try:
-        records = await journal_store.search_entries(
-            user_id=ctx.user_id,
-            start_ms=(int(start_dt.timestamp() * 1000)
-                      if start_dt is not None else None),
-            end_ms=(int(end_dt.timestamp() * 1000)
-                    if end_dt is not None else None),
-            query=query if isinstance(query, str) and query.strip() else None,
-            topic=topic if isinstance(topic, str) and topic.strip() else None)
+        async with create_journal_store() as store:
+            records = await store.search_entries(
+                user_id=ctx.user_id,
+                start_ms=(int(start_dt.timestamp() * 1000)
+                          if start_dt is not None else None),
+                end_ms=(int(end_dt.timestamp() * 1000)
+                        if end_dt is not None else None),
+                query=query if isinstance(query, str) and query.strip() else None,
+                topic=topic if isinstance(topic, str) and topic.strip() else None)
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
@@ -194,7 +203,8 @@ async def journal_search(ctx: ChatUpdateContext,
 @context_tool
 async def journal_list_topics(ctx: ChatUpdateContext) -> str:
     try:
-        topics = await journal_store.list_topics(user_id=ctx.user_id)
+        async with create_journal_store() as store:
+            topics = await store.list_topics(user_id=ctx.user_id)
     except Exception as e:
         logger.warning("journal_list_topics failed: %s", e)
         return f"Error: Could not list journal topics: {e}"
@@ -225,8 +235,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "variations of existing topics. Preserve the user's meaning "
                 "and relevant details; do not invent information. The "
                 "creation timestamp is generated automatically in the user's "
-                "timezone. Never supply a user_id; entries are always filed "
-                "under the current user."),
+                "timezone."),
             "parameters": {
                 "type": "object",
                 "properties": {
