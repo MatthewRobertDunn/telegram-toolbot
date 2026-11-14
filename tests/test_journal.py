@@ -225,6 +225,50 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         assert fetched is not None
         self.assertEqual(fetched.entry, "he he he")
 
+    async def test_update_entry_topic(self):
+        created = "2026-11-14T16:34:00+00:00"
+        epoch = _ms(created)
+        record = await self.store.add_entry(
+            user_id=1, topic="Mood", entry="x",
+            created=created, created_epoch_ms=epoch)
+        self.assertEqual(
+            await self.store.update_entry_topic(
+                user_id=1, entry_id=999,
+                old_topic="Mood", new_topic="Sleep"),
+            ReplaceOutcome.NOT_FOUND)
+        self.assertEqual(
+            await self.store.update_entry_topic(
+                user_id=1, entry_id=record.id,
+                old_topic="Wrong", new_topic="Sleep"),
+            ReplaceOutcome.TEXT_NOT_FOUND)
+        with self.assertRaises(ValueError):
+            await self.store.update_entry_topic(
+                user_id=1, entry_id=record.id,
+                old_topic="Mood", new_topic="Mood")
+        with self.assertRaises(ValueError):
+            await self.store.update_entry_topic(
+                user_id=1, entry_id=record.id,
+                old_topic="Mood", new_topic="  ")
+        with self.assertRaises(ValueError):
+            await self.store.update_entry_topic(
+                user_id=1, entry_id=record.id,
+                old_topic="Mood", new_topic="t" * 129)
+        self.assertEqual(
+            await self.store.update_entry_topic(
+                user_id=1, entry_id=record.id,
+                old_topic="Mood", new_topic="Sleep"),
+            ReplaceOutcome.UPDATED)
+        fetched = await self.store.get_entry(
+            user_id=1, entry_id=record.id)
+        assert fetched is not None
+        self.assertEqual(fetched.topic, "Sleep")
+        # Other users see nothing.
+        self.assertEqual(
+            await self.store.update_entry_topic(
+                user_id=2, entry_id=record.id,
+                old_topic="Sleep", new_topic="Mood"),
+            ReplaceOutcome.NOT_FOUND)
+
     async def test_search_text_semantics(self):
         created = "2026-11-14T16:34:00+00:00"
         epoch = _ms(created)
@@ -598,6 +642,52 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Entry: he he he",
                       await journal_tool.journal_get(ctx, ids=[1]))
 
+    async def test_topic_edit_tool(self):
+        ctx = self._ctx()
+        await journal_tool.journal_add(
+            ctx, topic="Mood", entry="Feeling okay.")
+        self.assertEqual(
+            await journal_tool.journal_topic_edit(
+                ctx, id=1, oldTopic="", newTopic="Sleep"),
+            "Error: oldTopic cannot be empty.")
+        self.assertEqual(
+            await journal_tool.journal_topic_edit(
+                ctx, id=1, oldTopic="Mood", newTopic="  "),
+            "Error: newTopic cannot be empty.")
+        self.assertEqual(
+            await journal_tool.journal_topic_edit(
+                ctx, id=1, oldTopic="Mood", newTopic="Mood"),
+            "Error: No changes to apply: "
+            "oldTopic and newTopic are identical.")
+        self.assertEqual(
+            await journal_tool.journal_topic_edit(
+                ctx, id=1, oldTopic="Mood", newTopic="t" * 129),
+            "Error: Topic must be at most 128 characters")
+        self.assertEqual(
+            await journal_tool.journal_topic_edit(
+                ctx, id=999, oldTopic="Mood", newTopic="Sleep"),
+            "Journal entry 999 not found")
+        self.assertEqual(
+            await journal_tool.journal_topic_edit(
+                ctx, id=1, oldTopic="Wrong", newTopic="Sleep"),
+            "Topic does not match journal entry 1")
+        self.assertEqual(
+            await journal_tool.journal_topic_edit(
+                ctx, id="nope", oldTopic="Mood", newTopic="Sleep"),
+            "Error: Invalid journal entry id.")
+        self.assertEqual(
+            await journal_tool.journal_topic_edit(
+                ctx, id=1, oldTopic="Mood", newTopic="Sleep"),
+            "Journal entry 1 topic updated")
+        out = await journal_tool.journal_get(ctx, ids=[1])
+        self.assertIn("Topic: Sleep", out)
+        # Cross-user isolation.
+        other = self._ctx(user_id=2)
+        self.assertEqual(
+            await journal_tool.journal_topic_edit(
+                other, id=1, oldTopic="Sleep", newTopic="Mood"),
+            "Journal entry 1 not found")
+
     async def test_search_tool_validation_and_format(self):
         ctx = self._ctx()
         await journal_tool.journal_add(ctx, topic="Mood", entry="Calm day.")
@@ -708,13 +798,14 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await journal_tool.journal_list_topics(ctx),
                          "Mood\nSleep")
 
-    async def test_register_all_six_tools(self):
+    async def test_register_all_seven_tools(self):
         definitions: list[dict] = []
         tool_map: dict = {}
         journal_tool.register(definitions, tool_map)
         names = [d["function"]["name"] for d in definitions]
         self.assertEqual(names, ["journal_add", "journal_get",
                                  "journal_delete", "journal_edit",
+                                 "journal_topic_edit",
                                  "journal_query", "journal_list_topics"])
         for name in names:
             self.assertIn(name, tool_map)

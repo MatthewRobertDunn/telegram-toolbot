@@ -242,6 +242,39 @@ class JournalStore:
         await db.commit()
         return ReplaceOutcome.UPDATED
 
+    async def update_entry_topic(self, *, user_id: int, entry_id: int,
+                                 old_topic: str,
+                                 new_topic: str) -> ReplaceOutcome:
+        clean_old = old_topic.strip()
+        clean_new = new_topic.strip()
+        if not clean_old:
+            raise ValueError("Existing topic cannot be empty")
+        if not clean_new:
+            raise ValueError("New topic cannot be empty")
+        if len(clean_new) > MAX_TOPIC_LENGTH:
+            raise ValueError(
+                f"Topic must be at most {MAX_TOPIC_LENGTH} characters")
+        if clean_old == clean_new:
+            raise ValueError(
+                "No changes to apply: oldTopic and newTopic are identical.")
+        db = await self._ready()
+        cursor = await db.execute(
+            "SELECT topic FROM journal_entries "
+            "WHERE id = ? AND user_id = ?",
+            (entry_id, user_id))
+        row = await cursor.fetchone()
+        if row is None:
+            return ReplaceOutcome.NOT_FOUND
+        current: str = row["topic"]
+        if current != clean_old:
+            return ReplaceOutcome.TEXT_NOT_FOUND
+        await db.execute(
+            "UPDATE journal_entries SET topic = ? "
+            "WHERE id = ? AND user_id = ?",
+            (clean_new, entry_id, user_id))
+        await db.commit()
+        return ReplaceOutcome.UPDATED
+
     @staticmethod
     def _search_filter_clauses(*, user_id: int,
                                query: str | None,

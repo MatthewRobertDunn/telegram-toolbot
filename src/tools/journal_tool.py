@@ -221,6 +221,40 @@ async def journal_edit(ctx: ChatUpdateContext, id: int | float | str,
 
 
 @context_tool
+async def journal_topic_edit(ctx: ChatUpdateContext, id: int | float | str,
+                              oldTopic: str, newTopic: str) -> str:
+    try:
+        entry_id = _coerce_id(id)
+    except ValueError as e:
+        return str(e)
+    if not isinstance(oldTopic, str) or not oldTopic.strip():
+        return "Error: oldTopic cannot be empty."
+    if not isinstance(newTopic, str) or not newTopic.strip():
+        return "Error: newTopic cannot be empty."
+    if len(newTopic.strip()) > MAX_TOPIC_LENGTH:
+        return (f"Error: Topic must be at most "
+                f"{MAX_TOPIC_LENGTH} characters")
+    if oldTopic.strip() == newTopic.strip():
+        return ("Error: No changes to apply: "
+                "oldTopic and newTopic are identical.")
+    try:
+        async with create_journal_store() as store:
+            outcome = await store.update_entry_topic(
+                user_id=ctx.user_id, entry_id=entry_id,
+                old_topic=oldTopic, new_topic=newTopic)
+    except ValueError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.warning("journal_topic_edit failed: %s", e)
+        return f"Error: Could not update journal entry topic: {e}"
+    if outcome is ReplaceOutcome.NOT_FOUND:
+        return f"Journal entry {entry_id} not found"
+    if outcome is ReplaceOutcome.TEXT_NOT_FOUND:
+        return f"Topic does not match journal entry {entry_id}"
+    return f"Journal entry {entry_id} topic updated"
+
+
+@context_tool
 async def journal_query(ctx: ChatUpdateContext,
                          cursor: str | None = None,
                          query: str | None = None,
@@ -294,6 +328,7 @@ JOURNAL_ADD = "journal_add"
 JOURNAL_GET = "journal_get"
 JOURNAL_DELETE = "journal_delete"
 JOURNAL_EDIT = "journal_edit"
+JOURNAL_TOPIC_EDIT = "journal_topic_edit"
 JOURNAL_QUERY = "journal_query"
 JOURNAL_LIST_TOPICS = "journal_list_topics"
 
@@ -418,6 +453,39 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": JOURNAL_TOPIC_EDIT,
+            "strict": False,
+            "description": (
+                "Changes the topic of a journal entry. "
+                "Retrieve the entry with journal_get first if you do not "
+                "already know its current topic. oldTopic must match the "
+                "entry's current topic exactly; the edit fails otherwise. "
+                "Prefer an existing topic from journal_list_topics; do not "
+                "create unnecessary variations of existing topics."),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "ID of the entry to modify."
+                    },
+                    "oldTopic": {
+                        "type": "string",
+                        "description": "The current topic (must match exactly)"
+                    },
+                    "newTopic": {
+                        "type": "string",
+                        "description": "The new topic (must be different from oldTopic, max 128 characters)"
+                    }
+                },
+                "required": ["id", "oldTopic", "newTopic"],
+                "additionalProperties": False
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": JOURNAL_QUERY,
             "strict": False,
             "description": (
@@ -495,5 +563,6 @@ def register(tools_list: list[dict], tool_map: dict):
     tool_map[JOURNAL_GET] = journal_get
     tool_map[JOURNAL_DELETE] = journal_delete
     tool_map[JOURNAL_EDIT] = journal_edit
+    tool_map[JOURNAL_TOPIC_EDIT] = journal_topic_edit
     tool_map[JOURNAL_QUERY] = journal_query
     tool_map[JOURNAL_LIST_TOPICS] = journal_list_topics
