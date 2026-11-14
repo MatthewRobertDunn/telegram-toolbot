@@ -97,6 +97,8 @@ SUMMARY_PROMPT = "\n\n".join([
     "summary that will be given to another assistant to resume the work.",
     "Summarize only what the user and the assistant said and did. Leave out "
     "instructions and setup the assistant was given rather than told by the "
+    "if the conversation trnacript contains a compaction summary, build the new summary on top of it "
+    "carrying forward only what is still relevant.",
     "user, such as system prompt text and environment details.",
     SUMMARY_TEMPLATE,
     SUMMARY_RULES,
