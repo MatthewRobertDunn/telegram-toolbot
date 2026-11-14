@@ -9,16 +9,17 @@ from chat_update_context import ChatUpdateContext
 from compaction import (DEFAULT_KEEP_TOKENS, CompactionError, compact_context)
 from conversation import CUSTOM, Conversation, ConversationMessageType
 from handlers.middleware import handler
-from handlers.generation_queue import submit_generation, submit_task
+from handlers.generation_queue import (
+    generate_response,
+    submit_generation,
+    submit_task,
+)
 from handlers.impersonate_prompt import IMPERSONATE_PROMPT
 from handlers.run_llm import (NO_CONTENT_MESSAGE, NO_RESPONSE_MESSAGE,
                               run_llm)
 from messaging import send_message, run_with_typing
 
 logger = logging.getLogger(__name__)
-
-BUSY_RESPONSE = ("A response is currently being generated; "
-                 "use /stop first.")
 
 # Seconds before a command's own message and its status replies are
 # deleted, so the chat is left tidy without leaving debris behind.
@@ -38,15 +39,6 @@ async def _schedule_command_clear(ctx: ChatUpdateContext,
 def _command_message_id(ctx: ChatUpdateContext) -> int | None:
     """The Telegram message id of the command itself, if known."""
     return getattr(ctx.message, 'message_id', None)
-
-
-async def refuse_while_generating(ctx: ChatUpdateContext) -> bool:
-    """True if a response or compaction is in flight; the caller should
-    stop and the user was told to /stop first."""
-    if ctx.is_busy:
-        await send_message(ctx, BUSY_RESPONSE)
-        return True
-    return False
 
 
 async def delete_from_telegram(ctx: ChatUpdateContext, message_ids) -> None:
@@ -120,11 +112,33 @@ async def undo_command(ctx: ChatUpdateContext):
     ids, every message sharing those ids is stripped too - a call left
     without its results (or vice versa) can't be replayed.
 
+    Runs as a queued unit of work like /compact, with the task tracked
+    in ctx.generation_task, so /stop stops it like any other work.
+
     The /undo command message and the status replies it sends are deleted
     a short while later, so the chat is left tidy."""
-    if await refuse_while_generating(ctx):
-        return
+    await submit_task(ctx, run_undo(ctx))
 
+
+async def run_undo(ctx: ChatUpdateContext) -> None:
+    """One unit of work: remove the last exchange. The task is tracked in
+    ctx.generation_task, so /stop cancels it just like a reply
+    generation."""
+    ctx.generation_task = inner = asyncio.create_task(undo_turn(ctx))
+    try:
+        await inner
+    except asyncio.CancelledError:
+        if not inner.cancelled():
+            # This job itself was cancelled (bot shutdown).
+            inner.cancel()
+            raise
+        await send_message(ctx, 'Undo stopped.')
+    finally:
+        ctx.generation_task = None
+
+
+async def undo_turn(ctx: ChatUpdateContext) -> None:
+    """The undo itself, runs as its own task."""
     messages = ctx.conversation.messages
     if not messages or messages[-1].get('role') == 'system':
         message_ids = await send_message(ctx, "Nothing to undo.")
@@ -197,12 +211,36 @@ async def regenerate_command(ctx: ChatUpdateContext):
     When the last user turn is an impersonation, that turn is removed and
     the impersonation flow runs again instead.
 
+    Runs as a queued unit of work like /compact, with the task tracked
+    in ctx.generation_task, so /stop stops it like any other work.
+
     The /regenerate command message is deleted a short while later, so
     the chat is left tidy: the queued generation replies on its own and
     is not touched."""
-    if await refuse_while_generating(ctx):
-        return
+    await submit_task(ctx, run_regeneration(ctx))
 
+
+async def run_regeneration(ctx: ChatUpdateContext) -> None:
+    """One unit of work: pop the last turn and generate again. The task
+    is tracked in ctx.generation_task, so /stop cancels it just like a
+    reply generation. The generation phase itself is tracked by
+    generate_response / impersonate_turn, which overwrite the tracking;
+    the finally here is then idempotent."""
+    ctx.generation_task = inner = asyncio.create_task(regeneration_turn(ctx))
+    try:
+        await inner
+    except asyncio.CancelledError:
+        if not inner.cancelled():
+            # This job itself was cancelled (bot shutdown).
+            inner.cancel()
+            raise
+        await send_message(ctx, 'Regeneration stopped.')
+    finally:
+        ctx.generation_task = None
+
+
+async def regeneration_turn(ctx: ChatUpdateContext) -> None:
+    """The regeneration itself, runs as its own task."""
     messages = ctx.conversation.messages
     # An unfinished assistant turn leaves its tool results trailing; skip
     # past them so the real last speaker is what decides the branch.
@@ -226,15 +264,19 @@ async def regenerate_command(ctx: ChatUpdateContext):
         # answering the conversation as it stands.
         messages.pop()
         await delete_from_telegram(ctx, stored_message_ids(last))
-        await submit_task(ctx, run_impersonation(ctx))
+        # Already inside the worker: run the flow directly instead of
+        # submitting a second queued item (which would deadlock waiting
+        # for itself).
+        await run_impersonation(ctx)
         asyncio.create_task(_schedule_command_clear(
             ctx, [_command_message_id(ctx)]))
         return
 
-    # content=None: the queued item runs the model without appending a
-    # user turn - after the pop the history ends on the original prompt,
-    # unchanged, and the model answers it again.
-    await submit_generation(ctx, None)
+    # content=None: run the model without appending a user turn - after
+    # the pop the history ends on the original prompt, unchanged, and the
+    # model answers it again. Already inside the worker: call directly
+    # instead of submitting a second queued item.
+    await generate_response(ctx, None)
     # The command message itself goes away shortly after; the queued
     # generation replies on its own and is left alone.
     asyncio.create_task(_schedule_command_clear(
@@ -244,10 +286,10 @@ async def regenerate_command(ctx: ChatUpdateContext):
 @handler
 async def retry_command(ctx: ChatUpdateContext):
     """Answer the conversation again exactly as it stands: nothing is
-    popped or deleted, a fresh reply is appended after the history."""
-    if await refuse_while_generating(ctx):
-        return
+    popped or deleted, a fresh reply is appended after the history.
 
+    Runs as a queued unit of work like /compact, so it waits for any
+    in-flight work instead of refusing."""
     messages = ctx.conversation.messages
     if not any(message.get('role') != 'system' for message in messages):
         await send_message(ctx, "Nothing to retry yet.")
@@ -269,9 +311,6 @@ async def impersonate_command(ctx: ChatUpdateContext):
 
     Runs as a queued unit of work like /compact, with the task tracked
     in ctx.generation_task, so /stop stops it like any other work."""
-    if await refuse_while_generating(ctx):
-        return
-
     messages = ctx.conversation.messages
     if not any(message.get('role') != 'system' for message in messages):
         message_ids = await send_message(ctx, "Nothing to impersonate yet.")

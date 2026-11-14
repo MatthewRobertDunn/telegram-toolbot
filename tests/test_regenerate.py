@@ -132,28 +132,6 @@ class TestRegenerate(unittest.TestCase):
                          'fresh reply')
 
 
-class TestBusyGenerationIsRefused(unittest.TestCase):
-    # All three conversation commands refuse to run while a response (or
-    # compaction) is in flight, so the user is told to /stop first.
-
-    def test_commands_refuse_while_generating(self):
-        for command in (regenerate_command, undo_command, retry_command):
-            with self.subTest(command=command.__name__):
-                bot = _Bot()
-                ctx = mock_ctx(user_id=5, bot=bot,
-                               conversation=[{'role': 'user', 'content': 'hi'}])
-                # A live generation task blocks the command. Plain stub:
-                # only done() is consulted.
-                ctx.generation_task = SimpleNamespace(  # type: ignore[assignment]
-                    done=lambda: False)
-                asyncio.run(command(ctx))
-                self.assertEqual(len(_roles(ctx.conversation)), 1)
-                self.assertEqual(bot.deleted, [])
-                self.assertEqual(bot.sent,
-                                 ["A response is currently being "
-                                  "generated; use /stop first."])
-
-
 class TestUndo(unittest.TestCase):
 
     def test_undoes_last_message_and_deletes_it_from_telegram(self):

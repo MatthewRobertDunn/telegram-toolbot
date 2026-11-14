@@ -179,22 +179,6 @@ class TestImpersonate(unittest.TestCase):
                           'nothing usable.'])
         self.assertEqual(_roles(ctx.conversation), ['user'])
 
-    def test_unbusy_check_reruns_nothing_when_busy(self):
-        bot = _Bot()
-        conversation = Conversation([
-            {'role': 'user', 'content': 'hello'},
-        ])
-        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
-        # A live generation task blocks the command. Plain stub: only
-        # done() is consulted.
-        ctx.generation_task = SimpleNamespace(  # type: ignore[assignment]
-            done=lambda: False)
-        asyncio.run(_run_command(ctx))
-        self.assertEqual(bot.sent,
-                         ['A response is currently being generated; use '
-                          '/stop first.'])
-        self.assertEqual(_roles(ctx.conversation), ['user'])
-
 
 if __name__ == '__main__':
     unittest.main()
