@@ -74,7 +74,11 @@ def publish(ctx):
              "--exclude", "__pycache__", "--exclude", ".env",
              "-cf", tar_path, "src")
     ctx.call("scp", tar_path, f"{DEPLOY_HOST}:/tmp/")
-    ctx.call("ssh", DEPLOY_HOST, f"tar -C {REMOTE_DIR} -xf /tmp/tbot_src.tar")
+    # Ignore archived modes: bsdtar maps Windows attributes (e.g. OneDrive's
+    # read-only flag on dirs) into the tarball, which once left the server
+    # tree read-only and broke later deploys. Fresh dirs/files from umask.
+    ctx.call("ssh", DEPLOY_HOST,
+             f"tar --no-same-permissions -C {REMOTE_DIR} -xf /tmp/tbot_src.tar")
     ctx.call("ssh", DEPLOY_HOST, "rm -f /tmp/tbot_src.tar")
 
 
