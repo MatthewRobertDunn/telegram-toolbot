@@ -27,7 +27,7 @@ load_dotenv(os.path.join(_HERE, '.env'))
 logging.disable(logging.CRITICAL)
 
 # ------------------------------------------------------------------ database
-from context_store import create_store, create_settings_store
+from context_store import create_memory_store, create_settings_store
 
 _db_reset_done = False
 
@@ -38,17 +38,17 @@ def _reset_test_db():
         return
     _db_reset_done = True
 
-    db_path = os.environ.get("STORE_DB_PATH", "store.db")
+    db_path = os.environ.get("MEMORY_DB_PATH", os.environ.get("STORE_DB_PATH", "store.db"))
     try:
         os.remove(db_path)
     except FileNotFoundError:
         pass
 
     async def _create():
-        async with create_store() as store:
-            await store.create_schema()
-        async with create_settings_store() as store:
-            await store.create_schema()
+        async with create_memory_store() as memory:
+            await memory.create_schema()
+        async with create_settings_store() as settings_store:
+            await settings_store.create_schema()
 
     asyncio.run(_create())
 

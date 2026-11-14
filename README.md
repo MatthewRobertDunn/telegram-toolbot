@@ -24,7 +24,7 @@ The default configuration points at `https://integrate.api.nvidia.com/v1`, but y
 - **Rich command set** — 16+ slash commands for controlling model, parameters, profile, and persistent storage
 - **Tool calling** — the bot can search the web, run code, fetch pages, generate images, and more using OpenAI-compatible function calling
 - **Subagent** — the primary model can delegate research and multi-step tasks to a subagent via the `subagent` tool, keeping bulky tool output and intermediate work out of the main conversation
-- **Persistent key-value store** — both users (via commands) and the AI (via tools) can store and retrieve data across conversations
+- **Agent memory** — both users (via `/memory` commands) and the AI (via memory tools) can remember and recall facts across conversations
 - **Per-user sandboxes** — the AI gets a personal ephemeral Ubuntu container per user with a full coding environment (bash, read, write, edit, grep, glob, patch), where it can run commands, install software, and work with files. Sandboxes are stopped one hour after the last command but their files are kept for 24 hours, after which the sandbox is removed and all changes are lost
 - **File uploads** — files users send to the bot (any file type) are placed in the sandbox at `/workspace/uploads/`, and the AI is notified so it can inspect them with the `read` tool
 
@@ -175,10 +175,10 @@ python -m unittest discover -s integration_tests -p "test_*.py" -v
 | `/tool_output` | Toggle visibility of tool calls in chat |
 | `/user_profile <text>` | Set a personal profile the AI can reference |
 | `/user_profile_reset` | Clear your profile |
-| `/store <key> [value]` | Get or set a stored value |
-| `/store_list` | List all your stored keys |
-| `/store_delete <key>` | Delete a stored key |
-| `/store_delete_all` | Delete all stored keys |
+| `/memory <key> [value]` | Recall or remember a memory |
+| `/memory_list` | List everything I remember about you |
+| `/memory_delete <key>` | Forget a remembered key |
+| `/memory_delete_all` | Forget everything I remember |
 | `/settings_reset` | Reset all settings to defaults |
 | `/sandbox_reset` | Destroy your sandbox and all its files |
 
@@ -202,7 +202,7 @@ The bot uses OpenAI-compatible function calling. These tools are available to th
 | `glob` | Find sandbox files by glob pattern, sorted by modification time |
 | `patch` | Apply Codex-style patch blocks (add/update/delete/move files) in the sandbox |
 | `send_file` | Send a file from the sandbox to the user as a Telegram document |
-| `store_list` / `store_get` / `store_set` / `store_delete` | Persistent per-user key-value storage |
+| `memory_list` / `memory_get` / `memory_set` / `memory_delete` | The agent's persistent per-user memory |
 | `display_status` | Send a progress message to the chat |
 | `subagent` | Spawn a subagent in a fresh conversation to work on a task (with the same tools and sandbox) and report back |
 | `generate_image` | Generate an image using NVIDIA Flux |

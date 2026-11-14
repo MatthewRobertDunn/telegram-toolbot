@@ -3,7 +3,7 @@ import logging
 from tools.web import register as register_web
 from tools.datetime_tool import register as register_datetime
 from tools.python_runner import register as register_python_runner
-from tools.store_tool import register as register_store
+from tools.memory_tool import register as register_memory
 from tools.journal_tool import register as register_journal
 from tools.status_tool import register as register_status
 from tools.subagent import register as register_subagent
@@ -19,7 +19,7 @@ def register_tools():
     register_web(TOOL_DEFINITIONS, TOOL_MAP)
     register_datetime(TOOL_DEFINITIONS, TOOL_MAP)
     register_python_runner(TOOL_DEFINITIONS, TOOL_MAP)
-    register_store(TOOL_DEFINITIONS, TOOL_MAP)
+    register_memory(TOOL_DEFINITIONS, TOOL_MAP)
     register_journal(TOOL_DEFINITIONS, TOOL_MAP)
     register_subagent(TOOL_DEFINITIONS, TOOL_MAP)
     # This tool doesn't seem that useful for now, so we don't register it. It can be added back in later if needed.

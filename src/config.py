@@ -36,7 +36,12 @@ ALLOWED_IDS_STR = os.environ.get("ALLOWED_IDS", "")
 
 ALLOWED_IDS = [int(x.strip()) for x in ALLOWED_IDS_STR.split(",") if x.strip()]
 
-store_db_path = os.environ.get("STORE_DB_PATH", os.path.join(os.path.dirname(os.path.realpath(__file__)), '../store.db'))
+# SQLite database shared by the agent's memory, user settings, and journal.
+# STORE_DB_PATH is honored as a legacy fallback so existing deployments keep
+# working without a config change.
+memory_db_path = os.environ.get(
+    "MEMORY_DB_PATH",
+    os.environ.get("STORE_DB_PATH", os.path.join(os.path.dirname(os.path.realpath(__file__)), '../store.db')))
 
 SANDBOX_IMAGE = os.environ.get("SANDBOX_IMAGE", "elpechos/toolbot-sandbox:latest")
 # Seconds of inactivity after which a sandbox is stopped. Stopping keeps the

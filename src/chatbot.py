@@ -6,7 +6,7 @@ import config
 from telegram import BotCommand
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, filters
 from chat_update_context import callback_adapter
-from context_store import create_store, create_settings_store
+from context_store import create_memory_store, create_settings_store
 from journal_store import create_journal_store
 from file_ops import read_file
 from handlers.message_handlers import text_message_handler
@@ -39,11 +39,11 @@ from handlers.command_handlers import (
 )
 from handlers.upload_handler import upload_handler
 from handlers.sandbox_handlers import sandbox_reset_command
-from handlers.store_handlers import (
-    store_command,
-    store_list_command,
-    store_delete_command,
-    store_delete_all_command,
+from handlers.memory_handlers import (
+    memory_command,
+    memory_list_command,
+    memory_delete_command,
+    memory_delete_all_command,
 )
 from tool_registration import register_tools
 from sandbox import manager, start_reaper, stop_reaper
@@ -64,12 +64,12 @@ def configure_logging():
 
 async def post_init(application: Application):
     register_tools()
-    async with create_store() as store:
-        await store.create_schema()
-    async with create_settings_store() as store:
-        await store.create_schema()
-    async with create_journal_store() as store:
-        await store.create_schema()
+    async with create_memory_store() as memory:
+        await memory.create_schema()
+    async with create_settings_store() as settings_store:
+        await settings_store.create_schema()
+    async with create_journal_store() as journal_store:
+        await journal_store.create_schema()
     try:
         await manager.recover_leftover_sandboxes()
     except Exception as e:
@@ -97,10 +97,10 @@ async def post_init(application: Application):
             BotCommand("temperature", "Set temperature parameter"),
             BotCommand("temperature_reset", "Reset temperature to default"),
             BotCommand("set_timezone", "Set your timezone (e.g. Australia/Sydney)"),
-            BotCommand("store", "Get or set a stored value"),
-            BotCommand("store_list", "List all stored keys"),
-            BotCommand("store_delete", "Delete a stored key"),
-            BotCommand("store_delete_all", "Delete all stored keys"),
+            BotCommand("memory", "Get or remember a memory"),
+            BotCommand("memory_list", "List everything I remember"),
+            BotCommand("memory_delete", "Forget a remembered key"),
+            BotCommand("memory_delete_all", "Forget everything I remember"),
             BotCommand("tool_output", "Toggle tool call output on/off"),
             BotCommand("settings_reset", "Reset all user settings to default"),
             BotCommand("sandbox_reset", "Destroy your sandbox and all its files"),
@@ -160,10 +160,10 @@ def main():
     application.add_handler(CommandHandler('temperature', callback_adapter(temperature_command)))
     application.add_handler(CommandHandler('temperature_reset', callback_adapter(temperature_reset_command)))
     application.add_handler(CommandHandler('set_timezone', callback_adapter(set_timezone_command)))
-    application.add_handler(CommandHandler('store_list', callback_adapter(store_list_command)))
-    application.add_handler(CommandHandler('store', callback_adapter(store_command)))
-    application.add_handler(CommandHandler('store_delete', callback_adapter(store_delete_command)))
-    application.add_handler(CommandHandler('store_delete_all', callback_adapter(store_delete_all_command)))
+    application.add_handler(CommandHandler('memory_list', callback_adapter(memory_list_command)))
+    application.add_handler(CommandHandler('memory', callback_adapter(memory_command)))
+    application.add_handler(CommandHandler('memory_delete', callback_adapter(memory_delete_command)))
+    application.add_handler(CommandHandler('memory_delete_all', callback_adapter(memory_delete_all_command)))
     application.add_handler(CommandHandler('tool_output', callback_adapter(tool_output_command)))
     application.add_handler(CommandHandler('settings_reset', callback_adapter(settings_reset_command)))
     application.add_handler(CommandHandler('sandbox_reset', callback_adapter(sandbox_reset_command)))
