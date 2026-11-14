@@ -350,7 +350,7 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self._tmp.name, "journal.db")
         patcher = mock.patch.object(
-            journal_store.config, "memory_db_path", self.db)
+            journal_store.config, "sql_db_path", self.db)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(self._tmp.cleanup)

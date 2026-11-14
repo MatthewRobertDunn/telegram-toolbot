@@ -92,8 +92,8 @@ class JournalStore:
     @property
     def db_path(self) -> str:
         # Resolved at call time so tests can point at a scratch database by
-        # patching config.memory_db_path.
-        return self._explicit_path or config.memory_db_path
+        # patching config.sql_db_path.
+        return self._explicit_path or config.sql_db_path
 
     async def _get_conn(self) -> aiosqlite.Connection:
         if self._conn is None:

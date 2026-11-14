@@ -1,5 +1,5 @@
 import aiosqlite
-from config import memory_db_path
+from config import sql_db_path
 
 
 class AsyncSQLiteStore:
@@ -110,8 +110,8 @@ SETTINGS_SCHEMA = '''
 
 def create_memory_store() -> AsyncSQLiteStore:
     # Table name "kv" is kept for backward compatibility with existing databases.
-    return AsyncSQLiteStore(memory_db_path, "kv", KV_SCHEMA)
+    return AsyncSQLiteStore(sql_db_path, "kv", KV_SCHEMA)
 
 
 def create_settings_store() -> AsyncSQLiteStore:
-    return AsyncSQLiteStore(memory_db_path, "settings", SETTINGS_SCHEMA)
+    return AsyncSQLiteStore(sql_db_path, "settings", SETTINGS_SCHEMA)
