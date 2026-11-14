@@ -45,7 +45,7 @@ async def memory_delete_command(ctx: ChatUpdateContext):
         return
     async with create_memory_store() as memory:
         await memory.delete_values(ctx.user_id, [key])
-    await send_message(ctx, f"Forgot ```{key}```.")
+    await send_message(ctx, f"Forgot ```{key}```")
 
 
 @handler
