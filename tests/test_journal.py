@@ -286,19 +286,20 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             await self.store.add_entry(
                 user_id=1, topic="Log", entry=f"entry {i}",
                 created=stamp, created_epoch_ms=_ms(stamp))
+        # Newest-first cursor returns entries created before it.
         window = await self.store.search_entries(
-            user_id=1, start_ms=_ms("2026-11-11T00:00:00+00:00"),
-            end_ms=_ms("2026-11-15T00:00:00+00:00"))
+            user_id=1, cursor_ms=_ms("2026-11-15T00:00:00+00:00"))
         # Newest first.
-        self.assertEqual([r.entry for r in window], ["entry 2", "entry 1"])
-        # Start exclusive, end exclusive.
-        self.assertEqual(len(await self.store.search_entries(
-            user_id=1, start_ms=_ms("2026-11-12T09:00:00+00:00"))), 1)
-        self.assertEqual(len(await self.store.search_entries(
-            user_id=1, end_ms=_ms("2026-11-12T09:00:00+00:00"))), 1)
-        with self.assertRaises(ValueError):
-            await self.store.search_entries(
-                user_id=1, start_ms=10, end_ms=10)
+        self.assertEqual([r.entry for r in window], ["entry 2", "entry 1", "entry 0"])
+        # Cursor is exclusive: exact match is skipped.
+        self.assertEqual([r.entry for r in await self.store.search_entries(
+            user_id=1, cursor_ms=_ms("2026-11-12T09:00:00+00:00"))],
+            ["entry 0"])
+        # Oldest-first cursor returns entries created after it.
+        self.assertEqual([r.entry for r in await self.store.search_entries(
+            user_id=1, cursor_ms=_ms("2026-11-12T09:00:00+00:00"),
+            sort_descending=False)],
+            ["entry 2"])
         limited = await self.store.search_entries(
             user_id=1, limit=1)
         self.assertEqual(len(limited), 1)
@@ -324,35 +325,39 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             await self.store.add_entry(
                 user_id=1, topic="Log", entry=f"entry {i}",
                 created=stamp, created_epoch_ms=_ms(stamp))
-        # Middle page: both directions have more.
+        # Middle page, newest-first: truncated by limit so more exist.
         page = await self.store.search_page(
-            user_id=1, start_ms=_ms("2026-11-10T09:00:00+00:00"),
-            end_ms=_ms("2026-11-14T09:00:00+00:00"))
+            user_id=1, cursor_ms=_ms("2026-11-14T09:00:00+00:00"), limit=1)
         self.assertEqual([r.entry for r in page.entries], ["entry 1"])
-        self.assertTrue(page.has_older)
-        self.assertTrue(page.has_newer)
-        # First page: only older entries exist.
+        self.assertTrue(page.has_more)
+        # First page truncated by limit: more exist.
         first = await self.store.search_page(user_id=1, limit=1)
         self.assertEqual([r.entry for r in first.entries], ["entry 2"])
-        self.assertTrue(first.has_older)
-        self.assertFalse(first.has_newer)
-        # Last page: only newer entries exist.
+        self.assertTrue(first.has_more)
+        # Last page: nothing more in this direction.
         last = await self.store.search_page(
-            user_id=1, limit=1, sort_descending=False)
+            user_id=1, cursor_ms=_ms("2026-11-12T09:00:00+00:00"))
         self.assertEqual([r.entry for r in last.entries], ["entry 0"])
-        self.assertFalse(last.has_older)
-        self.assertTrue(last.has_newer)
+        self.assertFalse(last.has_more)
+        # Oldest-first: more newer entries exist.
+        asc_first = await self.store.search_page(
+            user_id=1, limit=1, sort_descending=False)
+        self.assertEqual([r.entry for r in asc_first.entries], ["entry 0"])
+        self.assertTrue(asc_first.has_more)
+        asc_last = await self.store.search_page(
+            user_id=1, cursor_ms=_ms("2026-11-12T09:00:00+00:00"),
+            sort_descending=False)
+        self.assertEqual([r.entry for r in asc_last.entries], ["entry 2"])
+        self.assertFalse(asc_last.has_more)
         # Full result: no hints.
         full = await self.store.search_page(user_id=1)
         self.assertEqual(len(full.entries), 3)
-        self.assertFalse(full.has_older)
-        self.assertFalse(full.has_newer)
+        self.assertFalse(full.has_more)
         # Empty page: no hints.
         empty = await self.store.search_page(
-            user_id=1, start_ms=_ms("2030-01-01T00:00:00+00:00"))
+            user_id=1, cursor_ms=_ms("2026-11-10T09:00:00+00:00"))
         self.assertEqual(empty.entries, [])
-        self.assertFalse(empty.has_older)
-        self.assertFalse(empty.has_newer)
+        self.assertFalse(empty.has_more)
         # Hints respect topic filters.
         await self.store.add_entry(
             user_id=1, topic="Mood", entry="mood entry",
@@ -361,8 +366,11 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         topic_page = await self.store.search_page(
             user_id=1, topic="Log", limit=1)
         self.assertEqual([r.entry for r in topic_page.entries], ["entry 2"])
-        self.assertTrue(topic_page.has_older)
-        self.assertFalse(topic_page.has_newer)
+        self.assertTrue(topic_page.has_more)
+        topic_full = await self.store.search_page(
+            user_id=1, topic="Mood")
+        self.assertEqual(len(topic_full.entries), 1)
+        self.assertFalse(topic_full.has_more)
 
     async def test_search_sorts_by_epoch_not_text(self):
         # Lexically the +11:00 stamp sorts after the Z stamp, but its
@@ -594,18 +602,13 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         ctx = self._ctx()
         await journal_tool.journal_add(ctx, topic="Mood", entry="Calm day.")
         self.assertEqual(
-            await journal_tool.journal_query(ctx, start="2026-11-01"),
-            "Error: start timestamp must include an explicit timezone "
+            await journal_tool.journal_query(ctx, cursor="2026-11-01"),
+            "Error: cursor timestamp must include an explicit timezone "
             "or UTC indicator, e.g. '2026-11-01T00:00:00+10:30'.")
         self.assertEqual(
-            await journal_tool.journal_query(ctx, start="not a date"),
-            "Error: Invalid start timestamp 'not a date'. "
+            await journal_tool.journal_query(ctx, cursor="not a date"),
+            "Error: Invalid cursor timestamp 'not a date'. "
             "Use ISO 8601, e.g. '2026-11-01T00:00:00+10:30'.")
-        self.assertEqual(
-            await journal_tool.journal_query(
-                ctx, start="2026-11-15T00:00:00+00:00",
-                end="2026-11-01T00:00:00+00:00"),
-            "Error: Start timestamp must be earlier than end timestamp")
         self.assertEqual(
             await journal_tool.journal_query(ctx, query="nothing matching"),
             "No journal entries found.")
@@ -619,14 +622,19 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         record = await self.store.get_entry(
             user_id=1, entry_id=1)
         assert record is not None
-        day = record.created[:10]
+        # Cursor after the entry finds it newest-first.
         inside = await journal_tool.journal_query(
-            ctx, start=f"{day}T00:00:00+10:30",
-            end="2030-01-01T00:00:00+10:30")
+            ctx, cursor="2030-01-01T00:00:00+10:30")
         self.assertIn("sydney entry", inside)
+        # Cursor before the entry finds nothing newest-first.
+        day = record.created[:10]
         outside = await journal_tool.journal_query(
-            ctx, start="2030-01-01T00:00:00+10:30")
+            ctx, cursor=f"{day}T00:00:00+10:30")
         self.assertEqual(outside, "No journal entries found.")
+        # Same cursor oldest-first finds it (entries after start).
+        future = await journal_tool.journal_query(
+            ctx, cursor=f"{day}T00:00:00+10:30", sortDescending=False)
+        self.assertIn("sydney entry", future)
 
     async def test_query_tool_paging(self):
         ctx = self._ctx()
@@ -639,38 +647,44 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
             await self.store.add_entry(
                 user_id=1, topic="Log", entry=f"entry {i}",
                 created=stamp, created_epoch_ms=_ms(stamp))
-        # Bounds are exclusive: exact boundary entries do not match.
+        # Cursor is exclusive: exact boundary entry does not match.
+        # Full page, nothing more in this direction.
         out = await journal_tool.journal_query(
-            ctx, start="2026-11-10T09:00:00+00:00",
-            end="2026-11-14T09:00:00+00:00")
-        self.assertIn("Found 1 journal entry:", out)
+            ctx, cursor="2026-11-14T09:00:00+00:00")
+        self.assertIn("Found 2 journal entries:", out)
         self.assertIn("entry 1", out)
-        self.assertIn(
-            "Older journal entries exist before 2026-11-12T09:00:00+00:00.",
-            out)
-        self.assertIn(
-            "Newer journal entries exist after 2026-11-12T09:00:00+00:00.",
-            out)
+        self.assertIn("entry 0", out)
+        self.assertNotIn("More journal entries exist", out)
+        # Truncated cursor page hints with the edge date.
+        trunc = await journal_tool.journal_query(
+            ctx, cursor="2026-11-14T09:00:00+00:00", limit=1)
+        self.assertIn("entry 1", trunc)
+        self.assertIn("More journal entries exist.", trunc)
+        self.assertIn("cursor=\"2026-11-12T09:00:00+00:00\"", trunc)
+        # Full result has no hint.
+        full = await journal_tool.journal_query(ctx)
+        self.assertIn("Found 3 journal entries:", full)
+        self.assertNotIn("More journal entries exist", full)
         # Default newest-first page with a limit hints at older entries.
         first = await journal_tool.journal_query(ctx, limit=1)
         self.assertIn("entry 2", first)
-        self.assertIn("Older journal entries exist before", first)
-        self.assertNotIn("Newer journal entries exist after", first)
+        self.assertIn("More journal entries exist.", first)
+        self.assertIn("cursor=\"2026-11-14T09:00:00+00:00\"", first)
+        # Following the hint pages backwards.
+        second = await journal_tool.journal_query(
+            ctx, cursor="2026-11-14T09:00:00+00:00", limit=1)
+        self.assertIn("entry 1", second)
+        self.assertIn("More journal entries exist.", second)
         # Oldest-first page hints at newer entries.
         oldest = await journal_tool.journal_query(
             ctx, limit=1, sortDescending=False)
         self.assertIn("entry 0", oldest)
-        self.assertIn("Newer journal entries exist after", oldest)
-        self.assertNotIn("Older journal entries exist before", oldest)
-        # Full result has no hints.
-        full = await journal_tool.journal_query(ctx)
-        self.assertIn("Found 3 journal entries:", full)
-        self.assertNotIn("Older journal entries exist", full)
-        self.assertNotIn("Newer journal entries exist", full)
-        # Paging forward with the hinted date works.
-        older = await journal_tool.journal_query(
-            ctx, end="2026-11-14T09:00:00+00:00", limit=1)
-        self.assertIn("entry 1", older)
+        self.assertIn("More journal entries exist.", oldest)
+        self.assertIn("cursor=\"2026-11-10T09:00:00+00:00\"", oldest)
+        oldest_next = await journal_tool.journal_query(
+            ctx, cursor="2026-11-10T09:00:00+00:00",
+            sortDescending=False, limit=1)
+        self.assertIn("entry 1", oldest_next)
         # Validation.
         self.assertEqual(
             await journal_tool.journal_query(ctx, limit=0),

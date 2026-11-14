@@ -48,10 +48,9 @@ class ReplaceOutcome(Enum):
 @dataclass(frozen=True)
 class SearchPage:
     entries: list[JournalEntry]
-    # Whether matching entries exist older/newer than the returned page,
-    # ignoring the query's own time window so callers can page further.
-    has_older: bool
-    has_newer: bool
+    # Whether more matching entries exist beyond the returned page
+    # in the requested sort direction.
+    has_more: bool
 
 
 MAX_TOPIC_LENGTH = 128
@@ -251,7 +250,7 @@ class JournalStore:
         """Shared non-temporal WHERE clauses for journal search.
 
         Covers user scoping plus the optional topic and full-text filters.
-        Time-window bounds are added by the caller.
+        The paging cursor is added by the caller.
         """
         conditions = ["user_id = ?"]
         params: list[object] = [user_id]
@@ -268,8 +267,7 @@ class JournalStore:
         return conditions, params
 
     async def search_entries(self, *, user_id: int,
-                             start_ms: int | None = None,
-                             end_ms: int | None = None,
+                             cursor_ms: int | None = None,
                              query: str | None = None,
                              topic: str | None = None,
                              limit: int = SEARCH_LIMIT,
@@ -277,22 +275,21 @@ class JournalStore:
                              ) -> list[JournalEntry]:
         """Return matching entries, newest-first by default.
 
-        Both time bounds are exclusive: matches satisfy
-        ``start_ms < created_epoch_ms < end_ms``. At most ``limit``
-        entries are returned.
+        The cursor is exclusive and direction-aware: with newest-first
+        ordering only entries created before ``cursor_ms`` match, with
+        oldest-first ordering only entries created after it. At most
+        ``limit`` entries are returned.
         """
-        if start_ms is not None and end_ms is not None and start_ms >= end_ms:
-            raise ValueError("Start timestamp must be earlier than end timestamp")
         if limit < 1 or limit > SEARCH_LIMIT:
             raise ValueError(f"Limit must be between 1 and {SEARCH_LIMIT}")
         conditions, params = self._search_filter_clauses(
             user_id=user_id, query=query, topic=topic)
-        if start_ms is not None:
-            conditions.append("created_epoch_ms > ?")
-            params.append(start_ms)
-        if end_ms is not None:
-            conditions.append("created_epoch_ms < ?")
-            params.append(end_ms)
+        if cursor_ms is not None:
+            if sort_descending:
+                conditions.append("created_epoch_ms < ?")
+            else:
+                conditions.append("created_epoch_ms > ?")
+            params.append(cursor_ms)
         direction = "DESC" if sort_descending else "ASC"
         sql = ("SELECT id, user_id, created, created_epoch_ms, topic, entry "
                "FROM journal_entries WHERE " + " AND ".join(conditions)
@@ -304,49 +301,47 @@ class JournalStore:
         return [self._row_to_entry(row) for row in await cursor.fetchall()]
 
     async def search_page(self, *, user_id: int,
-                          start_ms: int | None = None,
-                          end_ms: int | None = None,
+                          cursor_ms: int | None = None,
                           query: str | None = None,
                           topic: str | None = None,
                           limit: int = SEARCH_LIMIT,
                           sort_descending: bool = True,
                           ) -> SearchPage:
-        """Return one page of matches plus older/newer existence flags.
+        """Return one page of matches plus a has_more flag.
 
-        The flags use the same topic/text filters but ignore the time
-        window, so callers paging with start/end can tell whether more
-        matching entries exist beyond the returned page. Position
+        has_more is true when further matching entries exist beyond the
+        returned page in the requested sort direction. Position
         comparisons use (created_epoch_ms, id) so entries sharing a
         millisecond are still detected.
         """
         entries = await self.search_entries(
-            user_id=user_id, start_ms=start_ms, end_ms=end_ms,
+            user_id=user_id, cursor_ms=cursor_ms,
             query=query, topic=topic, limit=limit,
             sort_descending=sort_descending)
         if not entries:
-            return SearchPage(entries=[], has_older=False, has_newer=False)
-        oldest = min(entries, key=lambda r: (r.created_epoch_ms, r.id))
-        newest = max(entries, key=lambda r: (r.created_epoch_ms, r.id))
+            return SearchPage(entries=[], has_more=False)
         conditions, params = self._search_filter_clauses(
             user_id=user_id, query=query, topic=topic)
         where = " AND ".join(conditions)
         db = await self._ready()
-        cursor = await db.execute(
-            "SELECT 1 FROM journal_entries WHERE " + where
-            + " AND (created_epoch_ms < ? OR "
-            "(created_epoch_ms = ? AND id < ?)) LIMIT 1",
-            (*params, oldest.created_epoch_ms,
-             oldest.created_epoch_ms, oldest.id))
-        has_older = await cursor.fetchone() is not None
-        cursor = await db.execute(
-            "SELECT 1 FROM journal_entries WHERE " + where
-            + " AND (created_epoch_ms > ? OR "
-            "(created_epoch_ms = ? AND id > ?)) LIMIT 1",
-            (*params, newest.created_epoch_ms,
-             newest.created_epoch_ms, newest.id))
-        has_newer = await cursor.fetchone() is not None
-        return SearchPage(entries=entries, has_older=has_older,
-                          has_newer=has_newer)
+        if sort_descending:
+            edge = min(entries, key=lambda r: (r.created_epoch_ms, r.id))
+            cursor = await db.execute(
+                "SELECT 1 FROM journal_entries WHERE " + where
+                + " AND (created_epoch_ms < ? OR "
+                "(created_epoch_ms = ? AND id < ?)) LIMIT 1",
+                (*params, edge.created_epoch_ms,
+                 edge.created_epoch_ms, edge.id))
+        else:
+            edge = max(entries, key=lambda r: (r.created_epoch_ms, r.id))
+            cursor = await db.execute(
+                "SELECT 1 FROM journal_entries WHERE " + where
+                + " AND (created_epoch_ms > ? OR "
+                "(created_epoch_ms = ? AND id > ?)) LIMIT 1",
+                (*params, edge.created_epoch_ms,
+                 edge.created_epoch_ms, edge.id))
+        has_more = await cursor.fetchone() is not None
+        return SearchPage(entries=entries, has_more=has_more)
 
     async def list_topics(self, *, user_id: int) -> list[str]:
         db = await self._ready()

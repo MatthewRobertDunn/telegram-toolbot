@@ -222,21 +222,16 @@ async def journal_edit(ctx: ChatUpdateContext, id: int | float | str,
 
 @context_tool
 async def journal_query(ctx: ChatUpdateContext,
-                         start: str | None = None,
-                         end: str | None = None,
+                         cursor: str | None = None,
                          query: str | None = None,
                          topic: str | None = None,
                          sortDescending: bool | None = None,
                          limit: int | float | str | None = None) -> str:
     try:
-        start_dt = (_parse_iso_timestamp(start, "start")
-                    if isinstance(start, str) and start.strip() else None)
-        end_dt = (_parse_iso_timestamp(end, "end")
-                  if isinstance(end, str) and end.strip() else None)
+        cursor_dt = (_parse_iso_timestamp(cursor, "cursor")
+                    if isinstance(cursor, str) and cursor.strip() else None)
     except ValueError as e:
         return str(e)
-    if start_dt is not None and end_dt is not None and start_dt >= end_dt:
-        return "Error: Start timestamp must be earlier than end timestamp"
     if sortDescending is None:
         sort_descending = True
     elif isinstance(sortDescending, bool):
@@ -254,10 +249,8 @@ async def journal_query(ctx: ChatUpdateContext,
         async with create_journal_store() as store:
             page = await store.search_page(
                 user_id=ctx.user_id,
-                start_ms=(int(start_dt.timestamp() * 1000)
-                          if start_dt is not None else None),
-                end_ms=(int(end_dt.timestamp() * 1000)
-                        if end_dt is not None else None),
+                cursor_ms=(int(cursor_dt.timestamp() * 1000)
+                           if cursor_dt is not None else None),
                 query=query if isinstance(query, str) and query.strip() else None,
                 topic=topic if isinstance(topic, str) and topic.strip() else None,
                 limit=max_entries,
@@ -273,17 +266,14 @@ async def journal_query(ctx: ChatUpdateContext,
     noun = "entry" if len(records) == 1 else "entries"
     out = (f"Found {len(records)} journal {noun}:\n\n"
            + "\n\n".join(_format_entry(r) for r in records))
-    oldest = min(records, key=lambda r: (r.created_epoch_ms, r.id))
-    newest = max(records, key=lambda r: (r.created_epoch_ms, r.id))
-    hints: list[str] = []
-    if page.has_older:
-        hints.append(
-            f"Older journal entries exist before {oldest.created}.")
-    if page.has_newer:
-        hints.append(
-            f"Newer journal entries exist after {newest.created}.")
-    if hints:
-        out += "\n\n" + "\n".join(hints)
+    if page.has_more:
+        if sort_descending:
+            edge = min(records, key=lambda r: (r.created_epoch_ms, r.id))
+        else:
+            edge = max(records, key=lambda r: (r.created_epoch_ms, r.id))
+        out += (f"\n\nMore journal entries exist. To see more, call "
+                f"journal_query with cursor=\"{edge.created}\" "
+                f"(keep the same sortDescending, query, topic and limit).")
     return out
 
 
@@ -431,19 +421,21 @@ TOOL_DEFINITIONS: list[dict] = [
             "name": JOURNAL_QUERY,
             "strict": False,
             "description": (
-                "Queries the authenticated user's journal by date, text "
+                "Searches the authenticated user's journal by text "
                 "and topic. This is the primary tool for recalling recorded "
                 "information: past experiences, mood over time, symptoms, "
                 "sleep or wellbeing patterns. All parameters are optional; "
                 "call with no parameters to retrieve recent entries. "
-                "Date bounds are exclusive: only entries created strictly "
-                "after start and strictly before end match. Results are "
-                "newest-first by default; set sortDescending to false for "
-                "oldest-first. At most limit entries are returned (default "
-                "50, maximum 50). When older or newer matching entries "
-                "exist beyond the returned page, the response says so with "
-                "the oldest/newest returned dates: page further by passing "
-                "those dates as end or start. Full-text search matches "
+                "Results are newest-first by default; set sortDescending to "
+                "false for oldest-first. cursor is an optional exclusive "
+                "paging cursor, ISO 8601 with timezone: with newest-first "
+                "it returns only entries created before cursor, with "
+                "oldest-first only entries created after cursor. At most "
+                "limit entries are returned (default 50, maximum 50). When "
+                "more matching entries exist beyond the returned page, the "
+                "response ends with a follow-up line telling you which date "
+                "to pass as cursor next; keep the other parameters the same. "
+                "Full-text search matches "
                 "words, not meanings: "
                 "use concise terms or quoted phrases for exact phrases. "
                 "Timestamps must be ISO 8601 with an explicit timezone or "
@@ -451,13 +443,9 @@ TOOL_DEFINITIONS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "start": {
+                    "cursor": {
                         "type": "string",
-                        "description": "Optional exclusive lower bound, ISO 8601 with timezone."
-                    },
-                    "end": {
-                        "type": "string",
-                        "description": "Optional exclusive upper bound, ISO 8601 with timezone."
+                        "description": "Optional exclusive paging cursor, ISO 8601 with timezone."
                     },
                     "query": {
                         "type": "string",
