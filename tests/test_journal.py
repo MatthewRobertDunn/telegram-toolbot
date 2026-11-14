@@ -434,7 +434,7 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
             await journal_tool.journal_edit(
                 other, id=1, oldString="private", newString="x"),
             "Journal entry 1 not found")
-        self.assertEqual(await journal_tool.journal_search(other, query="private"),
+        self.assertEqual(await journal_tool.journal_query(other, query="private"),
                          "No journal entries found.")
         self.assertEqual(await journal_tool.journal_list_topics(other),
                          "No journal topics yet.")
@@ -485,22 +485,22 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         ctx = self._ctx()
         await journal_tool.journal_add(ctx, topic="Mood", entry="Calm day.")
         self.assertEqual(
-            await journal_tool.journal_search(ctx, start="2026-11-01"),
+            await journal_tool.journal_query(ctx, start="2026-11-01"),
             "Error: start timestamp must include an explicit timezone "
             "or UTC indicator, e.g. '2026-11-01T00:00:00+10:30'.")
         self.assertEqual(
-            await journal_tool.journal_search(ctx, start="not a date"),
+            await journal_tool.journal_query(ctx, start="not a date"),
             "Error: Invalid start timestamp 'not a date'. "
             "Use ISO 8601, e.g. '2026-11-01T00:00:00+10:30'.")
         self.assertEqual(
-            await journal_tool.journal_search(
+            await journal_tool.journal_query(
                 ctx, start="2026-11-15T00:00:00+00:00",
                 end="2026-11-01T00:00:00+00:00"),
             "Error: Start timestamp must be earlier than end timestamp")
         self.assertEqual(
-            await journal_tool.journal_search(ctx, query="nothing matching"),
+            await journal_tool.journal_query(ctx, query="nothing matching"),
             "No journal entries found.")
-        out = await journal_tool.journal_search(ctx, query="calm")
+        out = await journal_tool.journal_query(ctx, query="calm")
         self.assertIn("Found 1 journal entry:", out)
         self.assertIn("ID: 1", out)
 
@@ -511,11 +511,11 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
             user_id=1, entry_id=1)
         assert record is not None
         day = record.created[:10]
-        inside = await journal_tool.journal_search(
+        inside = await journal_tool.journal_query(
             ctx, start=f"{day}T00:00:00+10:30",
             end="2030-01-01T00:00:00+10:30")
         self.assertIn("sydney entry", inside)
-        outside = await journal_tool.journal_search(
+        outside = await journal_tool.journal_query(
             ctx, start="2030-01-01T00:00:00+10:30")
         self.assertEqual(outside, "No journal entries found.")
 
@@ -535,7 +535,7 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         names = [d["function"]["name"] for d in definitions]
         self.assertEqual(names, ["journal_add", "journal_get",
                                  "journal_delete", "journal_edit",
-                                 "journal_search", "journal_list_topics"])
+                                 "journal_query", "journal_list_topics"])
         for name in names:
             self.assertIn(name, tool_map)
             self.assertTrue(getattr(tool_map[name], "_requires_context",

@@ -174,7 +174,7 @@ async def journal_edit(ctx: ChatUpdateContext, id: int | float | str,
 
 
 @context_tool
-async def journal_search(ctx: ChatUpdateContext,
+async def journal_query(ctx: ChatUpdateContext,
                          start: str | None = None,
                          end: str | None = None,
                          query: str | None = None,
@@ -201,7 +201,7 @@ async def journal_search(ctx: ChatUpdateContext,
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
-        logger.warning("journal_search failed: %s", e)
+        logger.warning("journal_query failed: %s", e)
         return f"Error: Could not search journal: {e}"
     if not records:
         return "No journal entries found."
@@ -227,7 +227,7 @@ JOURNAL_ADD = "journal_add"
 JOURNAL_GET = "journal_get"
 JOURNAL_DELETE = "journal_delete"
 JOURNAL_EDIT = "journal_edit"
-JOURNAL_SEARCH = "journal_search"
+JOURNAL_QUERY = "journal_query"
 JOURNAL_LIST_TOPICS = "journal_list_topics"
 
 TOOL_DEFINITIONS: list[dict] = [
@@ -350,21 +350,17 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": JOURNAL_SEARCH,
+            "name": JOURNAL_QUERY,
             "strict": False,
             "description": (
-                "Searches the authenticated user's journal by date, text "
+                "Queries the authenticated user's journal by date, text "
                 "and topic. This is the primary tool for recalling recorded "
                 "information: past experiences, mood over time, symptoms, "
                 "sleep or wellbeing patterns. All parameters are optional; "
-                "use the narrowest useful criteria rather than retrieving "
-                "everything. Full-text search matches words, not meanings: "
-                "use concise relevant terms, multiple terms when several "
-                "concepts matter, quoted phrases for exact phrases, and "
-                "topic or date filters when the category or period is known. "
-                "If nothing matches, try alternative wording or broader "
-                "terms. Absence of results does not mean an event never "
-                "happened. Date ranges are inclusive of start and exclusive "
+                "call with no parameters to retrieve recent entries. "
+                "Full-text search matches words, not meanings: "
+                "use concise terms or quoted phrases for exact phrases. "
+                "Date ranges are inclusive of start and exclusive "
                 "of end; newest entries come first; at most 50 are returned. "
                 "Timestamps must be ISO 8601 with an explicit timezone or "
                 "UTC indicator."),
@@ -419,5 +415,5 @@ def register(tools_list: list[dict], tool_map: dict):
     tool_map[JOURNAL_GET] = journal_get
     tool_map[JOURNAL_DELETE] = journal_delete
     tool_map[JOURNAL_EDIT] = journal_edit
-    tool_map[JOURNAL_SEARCH] = journal_search
+    tool_map[JOURNAL_QUERY] = journal_query
     tool_map[JOURNAL_LIST_TOPICS] = journal_list_topics
