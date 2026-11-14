@@ -30,6 +30,7 @@ from handlers.command_handlers import (
     top_p_reset_command,
     temperature_command,
     temperature_reset_command,
+    set_timezone_command,
     settings_reset_command,
     tool_output_command,
     user_profile_command,
@@ -92,6 +93,7 @@ async def post_init(application: Application):
             BotCommand("top_p_reset", "Reset top_p to default"),
             BotCommand("temperature", "Set temperature parameter"),
             BotCommand("temperature_reset", "Reset temperature to default"),
+            BotCommand("set_timezone", "Set your timezone (e.g. Australia/Sydney)"),
             BotCommand("store", "Get or set a stored value"),
             BotCommand("store_list", "List all stored keys"),
             BotCommand("store_delete", "Delete a stored key"),
@@ -154,6 +156,7 @@ def main():
     application.add_handler(CommandHandler('top_p_reset', callback_adapter(top_p_reset_command)))
     application.add_handler(CommandHandler('temperature', callback_adapter(temperature_command)))
     application.add_handler(CommandHandler('temperature_reset', callback_adapter(temperature_reset_command)))
+    application.add_handler(CommandHandler('set_timezone', callback_adapter(set_timezone_command)))
     application.add_handler(CommandHandler('store_list', callback_adapter(store_list_command)))
     application.add_handler(CommandHandler('store', callback_adapter(store_command)))
     application.add_handler(CommandHandler('store_delete', callback_adapter(store_delete_command)))

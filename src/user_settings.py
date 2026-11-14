@@ -1,8 +1,11 @@
 from __future__ import annotations
 import json
 from dataclasses import dataclass, asdict, fields
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import config
 DEFAULT_SYSTEM_PROMPT: str = 'You are a helpful assistant running as a Telegram chat bot. Answer the user\'s questions to the best of your ability.'
+# Fallback when the user never set one (matches the datetime tool's UTC).
+DEFAULT_TIMEZONE: str = 'UTC'
 
 @dataclass
 class UserSettingsSerialized:
@@ -13,6 +16,7 @@ class UserSettingsSerialized:
     user_profile: str | None = None
     show_tool_output: bool | None = None
     subagent_model: str | None = None
+    timezone: str | None = None
 
     @classmethod
     def from_json(cls, json_str: str) -> UserSettingsSerialized:
@@ -52,6 +56,21 @@ class UserSettings:
     @subagent_model.setter
     def subagent_model(self, value: str | None):
         self._settings.subagent_model = value
+
+    @property
+    def timezone(self) -> str:
+        return self._settings.timezone or DEFAULT_TIMEZONE
+
+    @timezone.setter
+    def timezone(self, value: str | None):
+        if value is not None:
+            try:
+                ZoneInfo(value)
+            except (ValueError, ZoneInfoNotFoundError):
+                raise ValueError(
+                    f"Unknown timezone '{value}'. "
+                    "Use an IANA name like 'Australia/Sydney'.")
+        self._settings.timezone = value
 
     @property
     def temperature(self) -> float:

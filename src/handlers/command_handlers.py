@@ -168,6 +168,21 @@ async def temperature_reset_command(ctx: ChatUpdateContext):
 
 @handler
 @settings
+async def set_timezone_command(ctx: ChatUpdateContext):
+    zone = ctx.command_text.strip()
+    if not zone:
+        await send_message(ctx, f'Current timezone is `{ctx.settings.timezone}`\n Usage: `/{ctx.command_name} <IANA timezone, e.g. Australia/Sydney>`')
+        return
+    try:
+        ctx.settings.timezone = zone
+        await send_message(ctx, f'Timezone set to `{ctx.settings.timezone}`.')
+    except ValueError as e:
+        await send_message(ctx, str(e))
+        return
+
+
+@handler
+@settings
 async def settings_reset_command(ctx: ChatUpdateContext):
     ctx.settings = ctx.settings.default()
     await send_message(ctx, 'Settings reset to default.')
