@@ -45,6 +45,15 @@ class ReplaceOutcome(Enum):
     MULTIPLE_MATCHES = "multiple_matches"
 
 
+@dataclass(frozen=True)
+class SearchPage:
+    entries: list[JournalEntry]
+    # Whether matching entries exist older/newer than the returned page,
+    # ignoring the query's own time window so callers can page further.
+    has_older: bool
+    has_newer: bool
+
+
 MAX_TOPIC_LENGTH = 128
 SEARCH_LIMIT = 50
 
@@ -165,13 +174,30 @@ class JournalStore:
 
     async def get_entry(self, *, user_id: int,
                         entry_id: int) -> JournalEntry | None:
+        records = await self.get_entries(
+            user_id=user_id, entry_ids=[entry_id])
+        return records[0] if records else None
+
+    async def get_entries(self, *, user_id: int,
+                          entry_ids: list[int]) -> list[JournalEntry]:
+        """Fetch multiple entries by ID with a single query.
+
+        Returns the found entries in the order requested. Unknown IDs
+        (including other users' entries) are silently skipped.
+        """
+        unique_ids = list(dict.fromkeys(entry_ids))
+        if not unique_ids:
+            return []
+        placeholders = ",".join("?" for _ in unique_ids)
         db = await self._ready()
         cursor = await db.execute(
             "SELECT id, user_id, created, created_epoch_ms, topic, entry "
-            "FROM journal_entries WHERE id = ? AND user_id = ?",
-            (entry_id, user_id))
-        row = await cursor.fetchone()
-        return self._row_to_entry(row) if row is not None else None
+            f"FROM journal_entries WHERE user_id = ? AND id IN ({placeholders})",
+            (user_id, *unique_ids))
+        by_id = {row["id"]: self._row_to_entry(row)
+                 for row in await cursor.fetchall()}
+        return [by_id[entry_id] for entry_id in unique_ids
+                if entry_id in by_id]
 
     async def delete_entry(self, *, user_id: int, entry_id: int) -> bool:
         db = await self._ready()
@@ -217,40 +243,110 @@ class JournalStore:
         await db.commit()
         return ReplaceOutcome.UPDATED
 
+    @staticmethod
+    def _search_filter_clauses(*, user_id: int,
+                               query: str | None,
+                               topic: str | None
+                               ) -> tuple[list[str], list[object]]:
+        """Shared non-temporal WHERE clauses for journal search.
+
+        Covers user scoping plus the optional topic and full-text filters.
+        Time-window bounds are added by the caller.
+        """
+        conditions = ["user_id = ?"]
+        params: list[object] = [user_id]
+        clean_topic = topic.strip() if isinstance(topic, str) else ""
+        if clean_topic:
+            conditions.append("topic = ? COLLATE NOCASE")
+            params.append(clean_topic)
+        if query is not None and query.strip():
+            fts = build_fts_match(query)
+            conditions.append(
+                "id IN (SELECT rowid FROM journal_entries_fts "
+                "WHERE journal_entries_fts MATCH ?)")
+            params.append(fts)
+        return conditions, params
+
     async def search_entries(self, *, user_id: int,
                              start_ms: int | None = None,
                              end_ms: int | None = None,
                              query: str | None = None,
                              topic: str | None = None,
-                             limit: int = SEARCH_LIMIT) -> list[JournalEntry]:
+                             limit: int = SEARCH_LIMIT,
+                             sort_descending: bool = True,
+                             ) -> list[JournalEntry]:
+        """Return matching entries, newest-first by default.
+
+        Both time bounds are exclusive: matches satisfy
+        ``start_ms < created_epoch_ms < end_ms``. At most ``limit``
+        entries are returned.
+        """
         if start_ms is not None and end_ms is not None and start_ms >= end_ms:
             raise ValueError("Start timestamp must be earlier than end timestamp")
-        conditions = ["user_id = ?"]
-        params: list[object] = [user_id]
+        if limit < 1 or limit > SEARCH_LIMIT:
+            raise ValueError(f"Limit must be between 1 and {SEARCH_LIMIT}")
+        conditions, params = self._search_filter_clauses(
+            user_id=user_id, query=query, topic=topic)
         if start_ms is not None:
-            conditions.append("created_epoch_ms >= ?")
+            conditions.append("created_epoch_ms > ?")
             params.append(start_ms)
         if end_ms is not None:
             conditions.append("created_epoch_ms < ?")
             params.append(end_ms)
-        clean_topic = topic.strip() if isinstance(topic, str) else ""
-        if clean_topic:
-            conditions.append("topic = ? COLLATE NOCASE")
-            params.append(clean_topic)
-        fts: str | None = None
-        if query is not None and query.strip():
-            fts = build_fts_match(query)
+        direction = "DESC" if sort_descending else "ASC"
         sql = ("SELECT id, user_id, created, created_epoch_ms, topic, entry "
-               "FROM journal_entries WHERE " + " AND ".join(conditions))
-        if fts is not None:
-            sql += (" AND id IN (SELECT rowid FROM journal_entries_fts "
-                    "WHERE journal_entries_fts MATCH ?)")
-            params.append(fts)
-        sql += " ORDER BY created_epoch_ms DESC LIMIT ?"
+               "FROM journal_entries WHERE " + " AND ".join(conditions)
+               + f" ORDER BY created_epoch_ms {direction}, id {direction}"
+               + " LIMIT ?")
         params.append(limit)
         db = await self._ready()
         cursor = await db.execute(sql, tuple(params))
         return [self._row_to_entry(row) for row in await cursor.fetchall()]
+
+    async def search_page(self, *, user_id: int,
+                          start_ms: int | None = None,
+                          end_ms: int | None = None,
+                          query: str | None = None,
+                          topic: str | None = None,
+                          limit: int = SEARCH_LIMIT,
+                          sort_descending: bool = True,
+                          ) -> SearchPage:
+        """Return one page of matches plus older/newer existence flags.
+
+        The flags use the same topic/text filters but ignore the time
+        window, so callers paging with start/end can tell whether more
+        matching entries exist beyond the returned page. Position
+        comparisons use (created_epoch_ms, id) so entries sharing a
+        millisecond are still detected.
+        """
+        entries = await self.search_entries(
+            user_id=user_id, start_ms=start_ms, end_ms=end_ms,
+            query=query, topic=topic, limit=limit,
+            sort_descending=sort_descending)
+        if not entries:
+            return SearchPage(entries=[], has_older=False, has_newer=False)
+        oldest = min(entries, key=lambda r: (r.created_epoch_ms, r.id))
+        newest = max(entries, key=lambda r: (r.created_epoch_ms, r.id))
+        conditions, params = self._search_filter_clauses(
+            user_id=user_id, query=query, topic=topic)
+        where = " AND ".join(conditions)
+        db = await self._ready()
+        cursor = await db.execute(
+            "SELECT 1 FROM journal_entries WHERE " + where
+            + " AND (created_epoch_ms < ? OR "
+            "(created_epoch_ms = ? AND id < ?)) LIMIT 1",
+            (*params, oldest.created_epoch_ms,
+             oldest.created_epoch_ms, oldest.id))
+        has_older = await cursor.fetchone() is not None
+        cursor = await db.execute(
+            "SELECT 1 FROM journal_entries WHERE " + where
+            + " AND (created_epoch_ms > ? OR "
+            "(created_epoch_ms = ? AND id > ?)) LIMIT 1",
+            (*params, newest.created_epoch_ms,
+             newest.created_epoch_ms, newest.id))
+        has_newer = await cursor.fetchone() is not None
+        return SearchPage(entries=entries, has_older=has_older,
+                          has_newer=has_newer)
 
     async def list_topics(self, *, user_id: int) -> list[str]:
         db = await self._ready()

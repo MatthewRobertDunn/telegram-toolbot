@@ -14,6 +14,7 @@ from journal_store import (
     JournalEntry,
     ReplaceOutcome,
     MAX_TOPIC_LENGTH,
+    SEARCH_LIMIT,
     create_journal_store,
 )
 
@@ -69,6 +70,29 @@ def _coerce_id(value: object) -> int:
     raise ValueError("Error: Invalid journal entry id.")
 
 
+def _coerce_limit(value: object) -> int:
+    if isinstance(value, bool):
+        raise ValueError(
+            f"Error: limit must be an integer between 1 and {SEARCH_LIMIT}.")
+    if isinstance(value, int):
+        coerced = value
+    elif isinstance(value, float):
+        if value.is_integer():
+            coerced = int(value)
+        else:
+            raise ValueError(
+                f"Error: limit must be an integer between 1 and {SEARCH_LIMIT}.")
+    elif isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        coerced = int(value.strip())
+    else:
+        raise ValueError(
+            f"Error: limit must be an integer between 1 and {SEARCH_LIMIT}.")
+    if coerced < 1 or coerced > SEARCH_LIMIT:
+        raise ValueError(
+            f"Error: limit must be an integer between 1 and {SEARCH_LIMIT}.")
+    return coerced
+
+
 def _format_entry(record: JournalEntry) -> str:
     return (f"ID: {record.id}\n"
             f"Created: {record.created}\n"
@@ -100,21 +124,44 @@ async def journal_add(ctx: ChatUpdateContext, topic: str, entry: str) -> str:
 
 
 @context_tool
-async def journal_get(ctx: ChatUpdateContext, id: int | float | str) -> str:
+async def journal_get(ctx: ChatUpdateContext,
+                      ids: list[int | float | str]) -> str:
+    if not isinstance(ids, (list, tuple)):
+        return "Error: ids must be an array of entry IDs."
+    if len(ids) == 0:
+        return "Error: ids cannot be empty."
+    if len(ids) > 50:
+        return "Error: Too many ids (maximum 50)."
     try:
-        entry_id = _coerce_id(id)
+        entry_ids = [_coerce_id(value) for value in ids]
     except ValueError as e:
         return str(e)
+    # Deduplicate while preserving request order.
+    entry_ids = list(dict.fromkeys(entry_ids))
     try:
         async with create_journal_store() as store:
-            record = await store.get_entry(
-                user_id=ctx.user_id, entry_id=entry_id)
+            records = await store.get_entries(
+                user_id=ctx.user_id, entry_ids=entry_ids)
     except Exception as e:
         logger.warning("journal_get failed: %s", e)
-        return f"Error: Could not retrieve journal entry: {e}"
-    if record is None:
-        return f"Journal entry {entry_id} not found"
-    return _format_entry(record)
+        return f"Error: Could not retrieve journal entries: {e}"
+    found_ids = {record.id for record in records}
+    missing = [entry_id for entry_id in entry_ids
+               if entry_id not in found_ids]
+    if not records:
+        if len(entry_ids) == 1:
+            return f"Journal entry {entry_ids[0]} not found"
+        return (f"Journal entries not found: "
+                f"{', '.join(str(i) for i in missing)}")
+    if len(records) == 1 and not missing:
+        return _format_entry(records[0])
+    noun = "entry" if len(records) == 1 else "entries"
+    out = (f"Found {len(records)} journal {noun}:\n\n"
+           + "\n\n".join(_format_entry(r) for r in records))
+    if missing:
+        out += (f"\n\nJournal entries not found: "
+                f"{', '.join(str(i) for i in missing)}")
+    return out
 
 
 @context_tool
@@ -178,7 +225,9 @@ async def journal_query(ctx: ChatUpdateContext,
                          start: str | None = None,
                          end: str | None = None,
                          query: str | None = None,
-                         topic: str | None = None) -> str:
+                         topic: str | None = None,
+                         sortDescending: bool | None = None,
+                         limit: int | float | str | None = None) -> str:
     try:
         start_dt = (_parse_iso_timestamp(start, "start")
                     if isinstance(start, str) and start.strip() else None)
@@ -188,26 +237,54 @@ async def journal_query(ctx: ChatUpdateContext,
         return str(e)
     if start_dt is not None and end_dt is not None and start_dt >= end_dt:
         return "Error: Start timestamp must be earlier than end timestamp"
+    if sortDescending is None:
+        sort_descending = True
+    elif isinstance(sortDescending, bool):
+        sort_descending = sortDescending
+    else:
+        return "Error: sortDescending must be a boolean."
+    if limit is None:
+        max_entries = SEARCH_LIMIT
+    else:
+        try:
+            max_entries = _coerce_limit(limit)
+        except ValueError as e:
+            return str(e)
     try:
         async with create_journal_store() as store:
-            records = await store.search_entries(
+            page = await store.search_page(
                 user_id=ctx.user_id,
                 start_ms=(int(start_dt.timestamp() * 1000)
                           if start_dt is not None else None),
                 end_ms=(int(end_dt.timestamp() * 1000)
                         if end_dt is not None else None),
                 query=query if isinstance(query, str) and query.strip() else None,
-                topic=topic if isinstance(topic, str) and topic.strip() else None)
+                topic=topic if isinstance(topic, str) and topic.strip() else None,
+                limit=max_entries,
+                sort_descending=sort_descending)
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
         logger.warning("journal_query failed: %s", e)
         return f"Error: Could not search journal: {e}"
+    records = page.entries
     if not records:
         return "No journal entries found."
     noun = "entry" if len(records) == 1 else "entries"
-    return (f"Found {len(records)} journal {noun}:\n\n"
-            + "\n\n".join(_format_entry(r) for r in records))
+    out = (f"Found {len(records)} journal {noun}:\n\n"
+           + "\n\n".join(_format_entry(r) for r in records))
+    oldest = min(records, key=lambda r: (r.created_epoch_ms, r.id))
+    newest = max(records, key=lambda r: (r.created_epoch_ms, r.id))
+    hints: list[str] = []
+    if page.has_older:
+        hints.append(
+            f"Older journal entries exist before {oldest.created}.")
+    if page.has_newer:
+        hints.append(
+            f"Newer journal entries exist after {newest.created}.")
+    if hints:
+        out += "\n\n" + "\n".join(hints)
+    return out
 
 
 @context_tool
@@ -269,19 +346,20 @@ TOOL_DEFINITIONS: list[dict] = [
             "name": JOURNAL_GET,
             "strict": False,
             "description": (
-                "Retrieves a complete journal entry by its ID. Use this to "
-                "inspect an entry, verify its contents before editing it, or "
-                "retrieve its full contents after a search. Only entries "
+                "Retrieves one or more journal entries by their IDs. Use this to "
+                "inspect entries, verify their contents before editing them, or "
+                "retrieve their full contents after a search. Only entries "
                 "belonging to the authenticated user can be retrieved."),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "id": {
-                        "type": "integer",
-                        "description": "ID of the entry to retrieve."
+                    "ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Array of entry IDs to retrieve (max 50)."
                     }
                 },
-                "required": ["id"],
+                "required": ["ids"],
                 "additionalProperties": False
             }
         }
@@ -358,10 +436,16 @@ TOOL_DEFINITIONS: list[dict] = [
                 "information: past experiences, mood over time, symptoms, "
                 "sleep or wellbeing patterns. All parameters are optional; "
                 "call with no parameters to retrieve recent entries. "
-                "Full-text search matches words, not meanings: "
+                "Date bounds are exclusive: only entries created strictly "
+                "after start and strictly before end match. Results are "
+                "newest-first by default; set sortDescending to false for "
+                "oldest-first. At most limit entries are returned (default "
+                "50, maximum 50). When older or newer matching entries "
+                "exist beyond the returned page, the response says so with "
+                "the oldest/newest returned dates: page further by passing "
+                "those dates as end or start. Full-text search matches "
+                "words, not meanings: "
                 "use concise terms or quoted phrases for exact phrases. "
-                "Date ranges are inclusive of start and exclusive "
-                "of end; newest entries come first; at most 50 are returned. "
                 "Timestamps must be ISO 8601 with an explicit timezone or "
                 "UTC indicator."),
             "parameters": {
@@ -369,11 +453,11 @@ TOOL_DEFINITIONS: list[dict] = [
                 "properties": {
                     "start": {
                         "type": "string",
-                        "description": "Optional start timestamp, ISO 8601 with timezone."
+                        "description": "Optional exclusive lower bound, ISO 8601 with timezone."
                     },
                     "end": {
                         "type": "string",
-                        "description": "Optional end timestamp, ISO 8601 with timezone."
+                        "description": "Optional exclusive upper bound, ISO 8601 with timezone."
                     },
                     "query": {
                         "type": "string",
@@ -382,6 +466,14 @@ TOOL_DEFINITIONS: list[dict] = [
                     "topic": {
                         "type": "string",
                         "description": "Optional exact topic filter (case-insensitive)."
+                    },
+                    "sortDescending": {
+                        "type": "boolean",
+                        "description": "Newest-first when true (default), oldest-first when false."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max entries to return, 1 to 50 (default 50)."
                     }
                 },
                 "additionalProperties": False

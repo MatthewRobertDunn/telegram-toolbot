@@ -53,6 +53,24 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             created=created, created_epoch_ms=_ms(created))
         self.assertEqual(second.id, 2)
 
+    async def test_get_entries_batch(self):
+        created = "2026-11-14T16:34:00+00:00"
+        epoch = _ms(created)
+        for topic in ("A", "B", "C"):
+            await self.store.add_entry(
+                user_id=1, topic=topic, entry=topic,
+                created=created, created_epoch_ms=epoch)
+        found = await self.store.get_entries(
+            user_id=1, entry_ids=[3, 1])
+        self.assertEqual([r.id for r in found], [3, 1])
+        self.assertEqual(
+            await self.store.get_entries(user_id=1, entry_ids=[]), [])
+        self.assertEqual(
+            await self.store.get_entries(
+                user_id=1, entry_ids=[1, 999]), [found[1]])
+        self.assertEqual(
+            await self.store.get_entries(user_id=2, entry_ids=[1, 2]), [])
+
     async def test_add_rejects_empty_and_long(self):
         created = "2026-11-14T16:34:00+00:00"
         epoch = _ms(created)
@@ -273,9 +291,9 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             end_ms=_ms("2026-11-15T00:00:00+00:00"))
         # Newest first.
         self.assertEqual([r.entry for r in window], ["entry 2", "entry 1"])
-        # Start inclusive, end exclusive.
+        # Start exclusive, end exclusive.
         self.assertEqual(len(await self.store.search_entries(
-            user_id=1, start_ms=_ms("2026-11-12T09:00:00+00:00"))), 2)
+            user_id=1, start_ms=_ms("2026-11-12T09:00:00+00:00"))), 1)
         self.assertEqual(len(await self.store.search_entries(
             user_id=1, end_ms=_ms("2026-11-12T09:00:00+00:00"))), 1)
         with self.assertRaises(ValueError):
@@ -285,6 +303,66 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             user_id=1, limit=1)
         self.assertEqual(len(limited), 1)
         self.assertEqual(limited[0].entry, "entry 2")
+        # Ascending order returns oldest first.
+        ascending = await self.store.search_entries(
+            user_id=1, sort_descending=False)
+        self.assertEqual([r.entry for r in ascending],
+                         ["entry 0", "entry 1", "entry 2"])
+        # Limit is validated.
+        with self.assertRaises(ValueError):
+            await self.store.search_entries(user_id=1, limit=0)
+        with self.assertRaises(ValueError):
+            await self.store.search_entries(user_id=1, limit=51)
+
+    async def test_search_page_hints(self):
+        stamps = [
+            "2026-11-10T09:00:00+00:00",
+            "2026-11-12T09:00:00+00:00",
+            "2026-11-14T09:00:00+00:00",
+        ]
+        for i, stamp in enumerate(stamps):
+            await self.store.add_entry(
+                user_id=1, topic="Log", entry=f"entry {i}",
+                created=stamp, created_epoch_ms=_ms(stamp))
+        # Middle page: both directions have more.
+        page = await self.store.search_page(
+            user_id=1, start_ms=_ms("2026-11-10T09:00:00+00:00"),
+            end_ms=_ms("2026-11-14T09:00:00+00:00"))
+        self.assertEqual([r.entry for r in page.entries], ["entry 1"])
+        self.assertTrue(page.has_older)
+        self.assertTrue(page.has_newer)
+        # First page: only older entries exist.
+        first = await self.store.search_page(user_id=1, limit=1)
+        self.assertEqual([r.entry for r in first.entries], ["entry 2"])
+        self.assertTrue(first.has_older)
+        self.assertFalse(first.has_newer)
+        # Last page: only newer entries exist.
+        last = await self.store.search_page(
+            user_id=1, limit=1, sort_descending=False)
+        self.assertEqual([r.entry for r in last.entries], ["entry 0"])
+        self.assertFalse(last.has_older)
+        self.assertTrue(last.has_newer)
+        # Full result: no hints.
+        full = await self.store.search_page(user_id=1)
+        self.assertEqual(len(full.entries), 3)
+        self.assertFalse(full.has_older)
+        self.assertFalse(full.has_newer)
+        # Empty page: no hints.
+        empty = await self.store.search_page(
+            user_id=1, start_ms=_ms("2030-01-01T00:00:00+00:00"))
+        self.assertEqual(empty.entries, [])
+        self.assertFalse(empty.has_older)
+        self.assertFalse(empty.has_newer)
+        # Hints respect topic filters.
+        await self.store.add_entry(
+            user_id=1, topic="Mood", entry="mood entry",
+            created="2026-11-09T09:00:00+00:00",
+            created_epoch_ms=_ms("2026-11-09T09:00:00+00:00"))
+        topic_page = await self.store.search_page(
+            user_id=1, topic="Log", limit=1)
+        self.assertEqual([r.entry for r in topic_page.entries], ["entry 2"])
+        self.assertTrue(topic_page.has_older)
+        self.assertFalse(topic_page.has_newer)
 
     async def test_search_sorts_by_epoch_not_text(self):
         # Lexically the +11:00 stamp sorts after the Z stamp, but its
@@ -407,16 +485,20 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
     async def test_get_and_delete(self):
         ctx = self._ctx()
         await journal_tool.journal_add(ctx, topic="Mood", entry="Hi.")
-        out = await journal_tool.journal_get(ctx, id=1)
+        out = await journal_tool.journal_get(ctx, ids=[1])
         self.assertIn("ID: 1", out)
         self.assertIn("Topic: Mood", out)
         self.assertIn("Entry: Hi.", out)
         self.assertIn("Created: ", out)
         self.assertEqual(
-            await journal_tool.journal_get(ctx, id=999),
+            await journal_tool.journal_get(ctx, ids=[999]),
             "Journal entry 999 not found")
-        self.assertEqual(await journal_tool.journal_get(ctx, id="nope"),
+        self.assertEqual(await journal_tool.journal_get(ctx, ids=["nope"]),
                          "Error: Invalid journal entry id.")
+        self.assertEqual(await journal_tool.journal_get(ctx, ids=[]),
+                         "Error: ids cannot be empty.")
+        self.assertEqual(await journal_tool.journal_get(ctx, ids="nope"),  # type: ignore[arg-type]
+                         "Error: ids must be an array of entry IDs.")
         self.assertEqual(await journal_tool.journal_delete(ctx, id=1),
                          "Journal entry 1 deleted")
         self.assertEqual(await journal_tool.journal_delete(ctx, id=1),
@@ -426,7 +508,7 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         await journal_tool.journal_add(
             self._ctx(user_id=1), topic="Mood", entry="private")
         other = self._ctx(user_id=2)
-        self.assertEqual(await journal_tool.journal_get(other, id=1),
+        self.assertEqual(await journal_tool.journal_get(other, ids=[1]),
                          "Journal entry 1 not found")
         self.assertEqual(await journal_tool.journal_delete(other, id=1),
                          "Journal entry 1 not found")
@@ -464,7 +546,34 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
                 ctx, id=1, oldString="bad", newString="okay"),
             "Journal entry 1 updated")
         self.assertIn("Entry: Felt okay.",
-                      await journal_tool.journal_get(ctx, id=1))
+                      await journal_tool.journal_get(ctx, ids=[1]))
+
+    async def test_get_multiple_ids(self):
+        ctx = self._ctx()
+        await journal_tool.journal_add(ctx, topic="Mood", entry="one")
+        await journal_tool.journal_add(ctx, topic="Sleep", entry="two")
+        await journal_tool.journal_add(ctx, topic="Log", entry="three")
+        out = await journal_tool.journal_get(ctx, ids=[1, 3])
+        self.assertIn("Found 2 journal entries:", out)
+        self.assertIn("ID: 1", out)
+        self.assertIn("ID: 3", out)
+        self.assertNotIn("ID: 2\n", out)
+        # Order follows the request.
+        self.assertLess(out.index("ID: 1"), out.index("ID: 3"))
+        flipped = await journal_tool.journal_get(ctx, ids=[3, 1])
+        self.assertLess(flipped.index("ID: 3"), flipped.index("ID: 1"))
+        # Partial miss still returns hits plus a missing note.
+        partial = await journal_tool.journal_get(ctx, ids=[1, 999])
+        self.assertIn("ID: 1", partial)
+        self.assertIn("Journal entries not found: 999", partial)
+        # All missing.
+        self.assertEqual(
+            await journal_tool.journal_get(ctx, ids=[998, 999]),
+            "Journal entries not found: 998, 999")
+        # Duplicates are deduplicated.
+        dupes = await journal_tool.journal_get(ctx, ids=[1, 1])
+        self.assertIn("ID: 1", dupes)
+        self.assertNotIn("Found", dupes)
 
     async def test_edit_tool_multiple_matches(self):
         ctx = self._ctx()
@@ -479,7 +588,7 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
                 replaceAll=True),
             "Journal entry 1 updated")
         self.assertIn("Entry: he he he",
-                      await journal_tool.journal_get(ctx, id=1))
+                      await journal_tool.journal_get(ctx, ids=[1]))
 
     async def test_search_tool_validation_and_format(self):
         ctx = self._ctx()
@@ -518,6 +627,63 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         outside = await journal_tool.journal_query(
             ctx, start="2030-01-01T00:00:00+10:30")
         self.assertEqual(outside, "No journal entries found.")
+
+    async def test_query_tool_paging(self):
+        ctx = self._ctx()
+        stamps = [
+            "2026-11-10T09:00:00+00:00",
+            "2026-11-12T09:00:00+00:00",
+            "2026-11-14T09:00:00+00:00",
+        ]
+        for i, stamp in enumerate(stamps):
+            await self.store.add_entry(
+                user_id=1, topic="Log", entry=f"entry {i}",
+                created=stamp, created_epoch_ms=_ms(stamp))
+        # Bounds are exclusive: exact boundary entries do not match.
+        out = await journal_tool.journal_query(
+            ctx, start="2026-11-10T09:00:00+00:00",
+            end="2026-11-14T09:00:00+00:00")
+        self.assertIn("Found 1 journal entry:", out)
+        self.assertIn("entry 1", out)
+        self.assertIn(
+            "Older journal entries exist before 2026-11-12T09:00:00+00:00.",
+            out)
+        self.assertIn(
+            "Newer journal entries exist after 2026-11-12T09:00:00+00:00.",
+            out)
+        # Default newest-first page with a limit hints at older entries.
+        first = await journal_tool.journal_query(ctx, limit=1)
+        self.assertIn("entry 2", first)
+        self.assertIn("Older journal entries exist before", first)
+        self.assertNotIn("Newer journal entries exist after", first)
+        # Oldest-first page hints at newer entries.
+        oldest = await journal_tool.journal_query(
+            ctx, limit=1, sortDescending=False)
+        self.assertIn("entry 0", oldest)
+        self.assertIn("Newer journal entries exist after", oldest)
+        self.assertNotIn("Older journal entries exist before", oldest)
+        # Full result has no hints.
+        full = await journal_tool.journal_query(ctx)
+        self.assertIn("Found 3 journal entries:", full)
+        self.assertNotIn("Older journal entries exist", full)
+        self.assertNotIn("Newer journal entries exist", full)
+        # Paging forward with the hinted date works.
+        older = await journal_tool.journal_query(
+            ctx, end="2026-11-14T09:00:00+00:00", limit=1)
+        self.assertIn("entry 1", older)
+        # Validation.
+        self.assertEqual(
+            await journal_tool.journal_query(ctx, limit=0),
+            "Error: limit must be an integer between 1 and 50.")
+        self.assertEqual(
+            await journal_tool.journal_query(ctx, limit=51),
+            "Error: limit must be an integer between 1 and 50.")
+        self.assertEqual(
+            await journal_tool.journal_query(ctx, limit="many"),
+            "Error: limit must be an integer between 1 and 50.")
+        self.assertEqual(
+            await journal_tool.journal_query(ctx, sortDescending="yes"),  # type: ignore[arg-type]
+            "Error: sortDescending must be a boolean.")
 
     async def test_list_topics_tool(self):
         ctx = self._ctx()
