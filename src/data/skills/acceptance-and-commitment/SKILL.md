@@ -108,12 +108,6 @@ Do not create a diagnostic profile. Do not infer sensitive traits or disclose pr
 
 Read `references/safety-and-boundaries.md` before handling high-risk or clinically complex situations.
 
-If there is immediate danger, imminent self-harm or suicide risk, risk of harm to others, abuse, or a medical emergency, prioritise immediate safety and connection to local emergency or crisis support. Do not continue with ordinary ACT coaching as if the situation were routine.
-
-Do not advise someone to accept abuse, discrimination, unsafe conditions, or preventable harm. Acceptance concerns how a person relates to internal experiences; it does not mean approving harmful circumstances or giving up on changing them.
-
-Encourage a qualified mental health professional when distress is severe, persistent, worsening, function is substantially impaired, or the person requests clinical care. Be especially cautious with trauma, dissociation, psychosis, mania, eating disorders, substance dependence, and complex risk.
-
 ## Reference navigation
 
 Consult the relevant supporting file when more depth is needed:
