@@ -6,6 +6,7 @@ from telegram import Update, Bot, Chat, User, Message
 from telegram.ext import ContextTypes
 
 from conversation import Conversation
+from skills_store import get_active_skills
 
 if TYPE_CHECKING:
     from user_settings import UserSettings
@@ -106,16 +107,25 @@ class ChatUpdateContext:
     @property
     def system_prompt(self) -> str:
         base = self.settings.system_prompt
+        parts = [base]
         profile = self.settings.user_profile
         if profile:
-            return (
-                f"{base}\n\n"
+            parts.append(
                 "The following is user-provided background information. Use it only when relevant.\n"
                 "<user_profile>\n"
                 f"{profile.strip()}\n"
                 "</user_profile>"
             )
-        return base
+        skills = get_active_skills()
+        if skills:
+            blocks = [
+                f"## {skill.name}\n"
+                f"- Path: {skill.sandbox_path}\n"
+                f"{skill.description}".rstrip()
+                for skill in skills
+            ]
+            parts.append("# Available skills\n\n" + "\n\n".join(blocks))
+        return "\n\n".join(parts)
 
 
 def _parse_command_text(text: str) -> str:

@@ -47,6 +47,7 @@ from handlers.memory_handlers import (
 )
 from tool_registration import register_tools
 from sandbox import manager, start_reaper, stop_reaper
+from skills_store import load_skills
 import user_settings
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ def configure_logging():
 
 async def post_init(application: Application):
     register_tools()
+    load_skills()
     async with create_memory_store() as memory:
         await memory.create_schema()
     async with create_settings_store() as settings_store:

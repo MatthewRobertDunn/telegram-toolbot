@@ -143,4 +143,33 @@ def update_sandbox_image(ctx):
     ctx.call("ssh", DEPLOY_HOST, f"docker pull {SANDBOX_IMAGE}")
 
 
+@pk.task
+def recreate_sandboxes(ctx):
+    """Remove sandbox container(s) on the server so they are recreated.
+
+    Docker cannot add a mount to an existing container, so sandboxes
+    created before a `docker run` change (e.g. the /skills mount) must
+    be removed; the next access recreates them with the current flags.
+    WARNING: this loses all files in the sandbox /workspace.
+    Deploy code first (`pake publish`), or combine the two:
+      pake publish recreate_sandboxes
+    Limit to one user with:
+      pake -D USER_ID=123 recreate_sandboxes
+    """
+
+    user_id = pk.get_define("USER_ID", "")
+    if user_id:
+        try:
+            uid = int(user_id)
+        except ValueError:
+            raise ValueError(
+                f"USER_ID must be an integer, got {user_id!r}")
+        ctx.call("ssh", DEPLOY_HOST, f"docker rm -f toolbot-sandbox-{uid}")
+    else:
+        ctx.call("ssh", DEPLOY_HOST,
+                 "docker ps -aq --filter label=toolbot.sandbox"
+                 " | xargs -r docker rm -f")
+    print("Removed sandbox container(s); they are recreated on next use.")
+
+
 pake.run(pk)

@@ -165,6 +165,15 @@ class SandboxManager:
                     "--cap-drop", "ALL",
                     "--cap-add", "NET_RAW",
                     "--workdir", "/workspace",
+                ]
+                skills_dir = os.path.abspath(config.SKILLS_DIR)
+                if os.path.isdir(skills_dir):
+                    args += [
+                        "--mount",
+                        f"type=bind,src={skills_dir},"
+                        f"dst={config.SANDBOX_SKILLS_DIR},readonly",
+                    ]
+                args += [
                     config.SANDBOX_IMAGE,
                     "sleep", "infinity",
                 ]

@@ -54,4 +54,10 @@ SANDBOX_MEMORY = os.environ.get("SANDBOX_MEMORY", "1g")
 SANDBOX_CPUS = os.environ.get("SANDBOX_CPUS", "8.0")
 SANDBOX_PIDS_LIMIT = int(os.environ.get("SANDBOX_PIDS_LIMIT", "256"))
 
+# Host directory mounted read-only into each sandbox at SANDBOX_SKILLS_DIR.
+SKILLS_DIR = os.environ.get(
+    "SKILLS_DIR", os.path.join(_SOURCE_DIR, "data", "skills"))
+# Container path the skills directory is mounted at (see sandbox.py).
+SANDBOX_SKILLS_DIR = os.environ.get("SANDBOX_SKILLS_DIR", "/skills")
+
 
