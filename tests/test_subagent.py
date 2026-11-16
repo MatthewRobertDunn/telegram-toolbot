@@ -182,6 +182,8 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
         self.assertIn('sent', result.lower())
         notify.assert_awaited_once()
         self.assertIn('halfway there', notify.call_args.args[1].result)
+        # No subagent context: the parent itself is the sender.
+        self.assertEqual(notify.call_args.args[1].id, 'parent')
 
     async def test_send_to_parent_shared_with_parent_tools(self):
         # The parent loop offers it too: role confusion degrades to a
@@ -510,8 +512,11 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
             self._report(), True)
         self.assertEqual(drained, 1)
         send.assert_awaited_once()
-        # The receipt carries the report body.
-        self.assertIn('report', send.call_args.args[1])
+        receipt = send.call_args.args[1]
+        # Collapsible receipt: summary names sender + state, body is full.
+        self.assertIn('<details>', receipt)
+        self.assertIn('Subagent **abc** *Job* — finished', receipt)
+        self.assertIn('report', receipt)
         # Its Telegram id is linked to the injected turn, so /undo
         # deletes the post along with the turn.
         user_turn = conversation.messages[-1]
@@ -521,16 +526,33 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
         stored = (user_turn.get('custom') or {}).get('telegram_message_ids')
         self.assertEqual(stored, [9])
 
-    async def test_receipt_truncates_long_results(self):
+    async def test_receipt_carries_full_result(self):
         drained, conversation, send = await self._drain(
             self._report('x' * 2000), True)
         self.assertEqual(drained, 1)
         send.assert_awaited_once()
         receipt = send.call_args.args[1]
-        self.assertLess(len(receipt), 2000)
-        self.assertIn('truncated', receipt)
+        # No truncation: the details block collapses the full report.
+        self.assertIn('x' * 2000, receipt)
         # The conversation turn keeps the full report for the model.
         self.assertIn('x' * 2000, conversation.messages[-1]['content'])
+
+    async def test_receipt_empty_body_falls_back_to_state(self):
+        drained, conversation, send = await self._drain(
+            SubagentMessage(id='abc', state='stopped',
+                            description='Job'), True)
+        self.assertEqual(drained, 1)
+        receipt = send.call_args.args[1]
+        self.assertIn('stopped', receipt)
+
+    async def test_receipt_parent_note_summary(self):
+        drained, conversation, send = await self._drain(
+            SubagentMessage(id='parent', state='status',
+                            result='note'), True)
+        self.assertEqual(drained, 1)
+        receipt = send.call_args.args[1]
+        self.assertIn('Parent note', receipt)
+        self.assertNotIn('Subagent', receipt)
 
     async def test_rejects_unstructured_puts(self):
         inbox = SubagentInbox()
@@ -565,8 +587,10 @@ class TestAgentMessageUndo(unittest.IsolatedAsyncioTestCase):
                 {'role': 'assistant', 'content': 'human answer'},
             ])
         # A subagent report arrives and gets answered.
+        from agent_inbox import SubagentMessage
         ctx.conversation.add_user(
-            '[subagent abc finished]: report',
+            SubagentMessage(id='abc', state='finished',
+                            description='Job', result='report').format(),
             message_type=ConversationMessageType.AGENT_MESSAGE)
         ctx.conversation.add_assistant('noted')
         with unittest.mock.patch.object(

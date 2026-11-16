@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 import config
-from agent_inbox import SubagentInbox
+from agent_inbox import PARENT_ID, SubagentInbox
 from tool_definitions import TOOL_MAP
 from chat_update_context import ChatUpdateContext
 from conversation import Conversation, ConversationMessageType
@@ -45,6 +45,26 @@ async def execute_tool_call(ctx: ChatUpdateContext, tool_call,
         return f"Tool '{name}' execution error: {e}"
 
 
+def _receipt_text(message) -> str:
+    """Telegram receipt for one drained inbox message.
+
+    A collapsible block: the summary names the sender and its terminal
+    state, the body carries the full report (no truncation — the
+    <details> block keeps long reports out of the way). Parent-originated
+    notes (role-confusion fallback) get a "Parent note" summary instead
+    of a subagent one.
+    """
+    if message.id == PARENT_ID:
+        summary = "Parent note"
+    else:
+        summary = f"Subagent **{message.id}**"
+        if message.description:
+            summary += f" *{message.description}*"
+        summary += f" — {message.state}"
+    body = message.result or f"({message.state})"
+    return f"<details>\n<summary>{summary}</summary>\n\n{body}\n\n</details>"
+
+
 async def _drain_inbox(ctx: ChatUpdateContext,
                        conversation: Conversation,
                        inbox: SubagentInbox | None,
@@ -58,11 +78,11 @@ async def _drain_inbox(ctx: ChatUpdateContext,
 
     Display text is built here from the structured fields (never threaded
     through as pre-rendered strings). When announce is set (and
-    show_tool_output is on), each message is also posted to Telegram via
-    send_rich_message as a truncated preview, with its message ids linked
-    to the injected turn - so /undo deletes the post along with the turn.
-    Subagent loops pass announce=False to stay silent: their inbox traffic
-    is not user-chat material.
+    show_tool_output is on), each message is also posted to Telegram as a
+    collapsible rich-text receipt (see _receipt_text), with its message
+    ids linked to the injected turn - so /undo deletes the post along
+    with the turn. Subagent loops pass announce=False to stay silent:
+    their inbox traffic is not user-chat material.
     """
     if inbox is None:
         return 0
@@ -76,7 +96,7 @@ async def _drain_inbox(ctx: ChatUpdateContext,
             message.format(), message_type=ConversationMessageType.AGENT_MESSAGE)
         if announce and ctx.settings.show_tool_output:
             for message_id in await send_rich_message(
-                    ctx, message.format_preview()):
+                    ctx, _receipt_text(message)):
                 user_message.add_telegram_message_id(message_id)
         drained += 1
     return drained

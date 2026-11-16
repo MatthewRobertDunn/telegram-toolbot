@@ -17,7 +17,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from agent_inbox import (clear_main_inbox, conversation_epoch,
+from agent_inbox import (PARENT_ID, clear_main_inbox, conversation_epoch,
                          get_main_inbox, main_loop_active,
                          set_main_loop_active, set_wakeup_task,
                          take_wakeup_task, SubagentInbox, SubagentMessage)
@@ -336,7 +336,8 @@ async def subagent_steer(ctx: ChatUpdateContext, id: str,
         return f"Error: unknown subagent {id}."
     if record.status != "running":
         return f"Error: subagent {id} is {record.status}, cannot message it."
-    record.inbox.put_nowait(SubagentMessage(state="steer", result=message))
+    record.inbox.put_nowait(SubagentMessage(id=PARENT_ID, state="steer",
+                                            result=message))
     return f"Message queued for subagent {id}."
 
 
@@ -357,7 +358,7 @@ async def subagent_send_to_parent(ctx: ChatUpdateContext,
         if record is not None:
             description = record.description
     await _notify_parent(
-        ctx, SubagentMessage(id=sid or "", state="status",
+        ctx, SubagentMessage(id=sid or PARENT_ID, state="status",
                              description=description, result=message))
     return "Status sent to parent."
 

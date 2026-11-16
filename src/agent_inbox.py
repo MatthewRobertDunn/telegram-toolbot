@@ -19,53 +19,35 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from chat_update_context import ChatUpdateContext
 
-#: Telegram receipt preview cap, mirroring the tool-call announcement
-#: truncation (``args[:1024]``).
-RECEIPT_PREVIEW_LIMIT = 1024
+#: Sender id used for parent-originated inbox mail (steers into a
+#: subagent's inbox, parent notes back into its own).
+PARENT_ID = "parent"
 
 
 @dataclass
 class SubagentMessage:
     """One structured inbox delivery.
 
-    id: subagent id the notice is about ("" for parent-originated mail).
+    id: sender — subagent id, or "parent" for parent-originated mail.
     state: finished | timed out | failed | stopped | status | steer.
     description: subagent description ("" when unknown/inapplicable).
     result: report body, error detail, status text, or steer text.
     """
 
-    id: str = ""
-    state: str = "status"
+    id: str
+    state: str
     description: str = ""
     result: str = ""
 
-    def format(self, result_limit: int | None = None) -> str:
-        """Full conversation text (result_limit=None) or a truncated
-        Telegram preview (result_limit=1024)."""
-        body = self.result
-        if result_limit is not None and len(body) > result_limit:
-            body = body[:result_limit] + "\n…(truncated)"
-        if self.state == "steer":
-            return f"[parent message]:\n{body}"
-        if self.state == "status" and not self.id:
-            return f"[parent note]:\n{body}"
-        label = f"[subagent {self.id}"
+    def format(self) -> str:
+        """Full conversation text for the model."""
+        label = f"[{self.id}"
         if self.description:
             label += f" ({self.description})"
-        if self.state == "finished":
-            return f"{label} finished]:\n{body}"
-        if self.state == "status":
-            return f"{label} status]:\n{body}"
-        if self.state == "failed":
-            return f"{label} failed: {body}]"
-        if self.state == "stopped":
-            return f"{label} stopped by parent]"
-        return f"{label} {self.state}]"
-
-    def format_preview(self,
-                       limit: int = RECEIPT_PREVIEW_LIMIT) -> str:
-        """Truncated Telegram receipt text."""
-        return self.format(result_limit=limit)
+        label += f" {self.state}]"
+        if self.result:
+            label += f":\n{self.result}"
+        return label
 
 
 class SubagentInbox(asyncio.Queue[SubagentMessage]):
