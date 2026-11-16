@@ -13,6 +13,7 @@ assistant tool_calls message from its tool results.
 import asyncio
 import contextvars
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 
@@ -60,6 +61,32 @@ class SubagentRecord:
     status: str = "running"
     result: str | None = None
     notified: bool = False
+    started_at: float = field(default_factory=time.monotonic)
+    ended_at: float | None = None
+
+    def finish(self, status: str) -> None:
+        """Mark the record terminal, stamping the end time once."""
+        self.status = status
+        if self.ended_at is None:
+            self.ended_at = time.monotonic()
+
+    @property
+    def elapsed(self) -> float:
+        """Seconds from start until end (or now, while running)."""
+        end = self.ended_at if self.ended_at is not None else time.monotonic()
+        return max(0.0, end - self.started_at)
+
+
+def format_duration(seconds: float) -> str:
+    """Compact human duration: 45s, 1m23s, 2h04m."""
+    total = max(0, int(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
 
 
 def get_subagents(ctx: ChatUpdateContext) -> dict[str, SubagentRecord]:
@@ -78,7 +105,7 @@ def cancel_all_subagents(ctx: ChatUpdateContext) -> None:
         record.notified = True
         if record.task is not None and not record.task.done():
             record.task.cancel()
-        record.status = "stopped"
+        record.finish("stopped")
     ctx.user_data['subagents'] = {}
     clear_main_inbox(ctx)
     wakeup = take_wakeup_task(ctx)
@@ -168,7 +195,7 @@ async def _run_subagent(ctx: ChatUpdateContext, record: SubagentRecord,
             timeout=SUBAGENT_TIMEOUT,
         )
     except asyncio.CancelledError:
-        record.status = "stopped"
+        record.finish("stopped")
         # A task cancelled before its first run never enters the body, so
         # subagent_stop (which runs in the parent loop) owns the stop
         # notice; this is only a fallback for a mid-run cancel. The inbox
@@ -183,7 +210,7 @@ async def _run_subagent(ctx: ChatUpdateContext, record: SubagentRecord,
                 logger.warning('subagent stop notification failed', exc_info=True)
         raise
     except (asyncio.TimeoutError, TimeoutError):
-        record.status = "timed out"
+        record.finish("timed out")
         record.result = f"Subagent timed out after {SUBAGENT_TIMEOUT}s."
         record.notified = True
         logger.warning('subagent %s timed out', record.id)
@@ -196,7 +223,7 @@ async def _run_subagent(ctx: ChatUpdateContext, record: SubagentRecord,
                            exc_info=True)
         return
     except Exception as e:
-        record.status = "failed"
+        record.finish("failed")
         record.result = f"Subagent error: {e}"
         record.notified = True
         logger.warning('subagent %s failed: %s', record.id, e, exc_info=True)
@@ -211,7 +238,7 @@ async def _run_subagent(ctx: ChatUpdateContext, record: SubagentRecord,
     finally:
         _current_subagent.reset(token)
 
-    record.status = "done"
+    record.finish("done")
     record.result = result
     record.notified = True
     try:
@@ -261,8 +288,15 @@ async def subagent_list(ctx: ChatUpdateContext) -> str:
     subs = get_subagents(ctx)
     if not subs:
         return "No subagents."
-    lines = [f"- {sid}: `{rec.description}` [{rec.status}]"
-             for sid, rec in subs.items()]
+    lines = []
+    for sid, rec in subs.items():
+        if rec.status == "running":
+            age = f"running {format_duration(rec.elapsed)}"
+        elif rec.ended_at is not None:
+            age = f"ran {format_duration(rec.elapsed)}"
+        else:
+            age = rec.status
+        lines.append(f"- {sid}: `{rec.description}` [{rec.status}, {age}]")
     return "Subagents:\n" + "\n".join(lines)
 
 
@@ -278,7 +312,7 @@ async def subagent_stop(ctx: ChatUpdateContext, id: str) -> str:
     # never executes its own cleanup, so relying on it would lose the
     # Telegram notification. No parent-inbox notice: the tool result below
     # already informs the parent loop that called us.
-    record.status = "stopped"
+    record.finish("stopped")
     record.notified = True
     if record.task is not None and not record.task.done():
         record.task.cancel()
@@ -380,7 +414,8 @@ PARENT_TOOL_DEFINITIONS: list[dict] = [
         "type": "function",
         "function": {
             "name": "subagent_list",
-            "description": "List all subagents and their ids/statuses.",
+            "description": ("List all subagents with their ids, statuses, "
+                            "and how long each has been running."),
             "parameters": {
                 "type": "object",
                 "properties": {},

@@ -19,7 +19,9 @@ from tools.subagent import (
     MAX_RECORDS,
     MAX_SUBAGENTS,
     SUBAGENT_TIMEOUT,
+    SubagentRecord,
     cancel_all_subagents,
+    format_duration,
     get_main_inbox,
     get_parent_tool_defs,
     get_subagent_tool_defs,
@@ -373,6 +375,43 @@ class TestSubagentLimits(unittest.IsolatedAsyncioTestCase):
         send.assert_not_awaited()
         notify.assert_awaited_once()
         self.assertIn('kaboom', notify.call_args.args[1])
+
+
+class TestSubagentListDurations(unittest.IsolatedAsyncioTestCase):
+
+    def test_format_duration(self):
+        self.assertEqual(format_duration(0), '0s')
+        self.assertEqual(format_duration(45), '45s')
+        self.assertEqual(format_duration(83), '1m23s')
+        self.assertEqual(format_duration(2 * 3600 + 4 * 60), '2h04m')
+
+    async def test_running_shows_elapsed(self):
+        import time
+        from conversation import Conversation
+        ctx = _ctx()
+        rec = SubagentRecord(
+            id='abc123', description='Research',
+            conversation=Conversation(),
+            started_at=time.monotonic() - 83)
+        ctx.user_data['subagents'] = {'abc123': rec}
+        text = await subagent_list(ctx)
+        self.assertIn('abc123', text)
+        self.assertIn('running 1m23s', text)
+
+    async def test_finished_shows_total(self):
+        import time
+        from conversation import Conversation
+        ctx = _ctx()
+        rec = SubagentRecord(
+            id='abc123', description='Research',
+            conversation=Conversation(),
+            started_at=time.monotonic() - 125)
+        rec.finish('done')
+        # Pin the end so the assertion is deterministic.
+        rec.ended_at = rec.started_at + 125
+        ctx.user_data['subagents'] = {'abc123': rec}
+        text = await subagent_list(ctx)
+        self.assertIn('ran 2m05s', text)
 
 
 class TestAnnounceTools(unittest.IsolatedAsyncioTestCase):
