@@ -4,12 +4,13 @@ import logging
 from typing import Any
 
 import config
+from agent_inbox import SubagentInbox
 from tool_definitions import TOOL_MAP
 from chat_update_context import ChatUpdateContext
 from conversation import Conversation, ConversationMessageType
 from .draft_streamer import DraftStreamer
 from .consume_stream import ConsumeStreamResult, consume_stream
-from messaging import send_message
+from messaging import send_message, send_rich_message
 from tool_result import ToolCallResult
 from openai import AsyncOpenAI
 
@@ -46,7 +47,7 @@ async def execute_tool_call(ctx: ChatUpdateContext, tool_call,
 
 async def _drain_inbox(ctx: ChatUpdateContext,
                        conversation: Conversation,
-                       inbox: asyncio.Queue | None,
+                       inbox: SubagentInbox | None,
                        announce: bool = False) -> int:
     """Move queued agent messages into the conversation as user turns.
 
@@ -55,11 +56,13 @@ async def _drain_inbox(ctx: ChatUpdateContext,
     can never split an assistant tool_calls message from its tool results.
     Returns the number of messages drained.
 
-    When announce is set (and show_tool_output is on), each injected
-    message is also posted to Telegram, like a tool announcement, with its
-    message ids linked to the injected turn - so /undo deletes the post
-    along with the turn. Subagent loops pass announce=False to stay
-    silent: their inbox traffic is not user-chat material.
+    Display text is built here from the structured fields (never threaded
+    through as pre-rendered strings). When announce is set (and
+    show_tool_output is on), each message is also posted to Telegram via
+    send_rich_message as a truncated preview, with its message ids linked
+    to the injected turn - so /undo deletes the post along with the turn.
+    Subagent loops pass announce=False to stay silent: their inbox traffic
+    is not user-chat material.
     """
     if inbox is None:
         return 0
@@ -70,9 +73,10 @@ async def _drain_inbox(ctx: ChatUpdateContext,
         except asyncio.QueueEmpty:
             break
         user_message = conversation.add_user(
-            message, message_type=ConversationMessageType.AGENT_MESSAGE)
+            message.format(), message_type=ConversationMessageType.AGENT_MESSAGE)
         if announce and ctx.settings.show_tool_output:
-            for message_id in await send_message(ctx, message):
+            for message_id in await send_rich_message(
+                    ctx, message.format_preview()):
                 user_message.add_telegram_message_id(message_id)
         drained += 1
     return drained
@@ -96,7 +100,7 @@ async def run_llm(ctx: ChatUpdateContext,
                   extra_body: dict | None = None,
                   conversation: Conversation | None = None,
                   tools: list[dict] | None = None,
-                  inbox: asyncio.Queue | None = None,
+                  inbox: SubagentInbox | None = None,
                   stream_drafts: bool = True,
                   announce_tools: bool = True) -> str:
     """Run a model conversation to completion, executing tool calls as needed.

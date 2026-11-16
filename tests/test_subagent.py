@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from handlers import run_llm as run_llm_mod
+from agent_inbox import SubagentInbox, SubagentMessage
 from conversation import ConversationMessageType
 from mock_context import mock_ctx
 from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
@@ -64,8 +65,10 @@ class TestInboxDrain(unittest.IsolatedAsyncioTestCase):
 
     async def test_inbox_messages_land_in_conversation(self):
         ctx = _ctx()
-        inbox = asyncio.Queue()
-        inbox.put_nowait("[subagent abc finished]: done stuff")
+        inbox = SubagentInbox()
+        inbox.put_nowait(SubagentMessage(
+            id='abc', state='finished', description='T',
+            result='done stuff'))
         captured = {}
         with unittest.mock.patch.object(
                 run_llm_mod, 'client',
@@ -160,7 +163,7 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
 
             result = await subagent_steer(ctx, sid, 'go left')
             self.assertIn('queued', result)
-            self.assertIn('go left', await record.inbox.get())
+            self.assertIn('go left', (await record.inbox.get()).result)
 
             self.assertIn('Error', await subagent_steer(ctx, 'nope', 'x'))
 
@@ -178,7 +181,7 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
             result = await subagent_send_to_parent(ctx, 'halfway there')
         self.assertIn('sent', result.lower())
         notify.assert_awaited_once()
-        self.assertIn('halfway there', notify.call_args.args[1])
+        self.assertIn('halfway there', notify.call_args.args[1].result)
 
     async def test_send_to_parent_shared_with_parent_tools(self):
         # The parent loop offers it too: role confusion degrades to a
@@ -237,10 +240,14 @@ class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
             unittest.mock.patch.object(
                 gq, 'generate_response',
                 unittest.mock.AsyncMock(return_value=None)) as gen:
-            await subagent_mod._notify_parent(ctx, 'first done')
+            await subagent_mod._notify_parent(
+                ctx, SubagentMessage(id='x', state='status',
+                                     description='T', result='first done'))
             # Let the wakeup task run to completion.
             await ctx.user_data['wakeup_task']
-            await subagent_mod._notify_parent(ctx, 'second done')
+            await subagent_mod._notify_parent(
+                ctx, SubagentMessage(id='x', state='status',
+                                     description='T', result='second done'))
             wakeup = ctx.user_data.get('wakeup_task')
             if wakeup is not None:
                 await wakeup
@@ -253,7 +260,8 @@ class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
         from agent_inbox import bump_conversation_epoch
         from handlers import generation_queue as gq
         ctx = _ctx()
-        get_main_inbox(ctx).put_nowait('old report')
+        get_main_inbox(ctx).put_nowait(SubagentMessage(
+            id='x', state='finished', description='T', result='old report'))
         with unittest.mock.patch.object(
                 gq, 'submit_task',
                 unittest.mock.AsyncMock(
@@ -291,7 +299,9 @@ class TestPostReplyDrain(unittest.IsolatedAsyncioTestCase):
         async def fake_create(**kwargs):
             calls.append(kwargs)
             if len(calls) == 1:
-                inbox.put_nowait('[subagent xyz finished]: done stuff')
+                inbox.put_nowait(SubagentMessage(
+                    id='xyz', state='finished', description='T',
+                    result='done stuff'))
 
             async def stream():
                 yield _chunk('reply %d' % len(calls))
@@ -374,7 +384,7 @@ class TestSubagentLimits(unittest.IsolatedAsyncioTestCase):
         # receipt (carrying the detail) is the only user-visible signal.
         send.assert_not_awaited()
         notify.assert_awaited_once()
-        self.assertIn('kaboom', notify.call_args.args[1])
+        self.assertIn('kaboom', notify.call_args.args[1].result)
 
 
 class TestSubagentListDurations(unittest.IsolatedAsyncioTestCase):
@@ -473,7 +483,7 @@ class TestAnnounceTools(unittest.IsolatedAsyncioTestCase):
 
 class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
 
-    async def _drain(self, text, announce, show_tool_output=True):
+    async def _drain(self, message, announce, show_tool_output=True):
         from conversation import Conversation
         ctx = _ctx()
         ctx.bot = _fake_bot()
@@ -481,20 +491,26 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
             show_tool_output=show_tool_output, model='m',
             temperature=1.0, top_p=0.95)
         conversation = Conversation()
-        inbox = asyncio.Queue()
-        inbox.put_nowait(text)
+        inbox = SubagentInbox()
+        inbox.put_nowait(message)
         send = unittest.mock.AsyncMock(return_value=[9])
-        with unittest.mock.patch.object(run_llm_mod, 'send_message', send):
+        with unittest.mock.patch.object(
+                run_llm_mod, 'send_rich_message', send):
             drained = await run_llm_mod._drain_inbox(
                 ctx, conversation, inbox, announce)
         return drained, conversation, send
 
+    @staticmethod
+    def _report(result='report'):
+        return SubagentMessage(id='abc', state='finished',
+                               description='Job', result=result)
+
     async def test_receipt_posted_and_linked(self):
         drained, conversation, send = await self._drain(
-            '[subagent abc finished]: report', True)
+            self._report(), True)
         self.assertEqual(drained, 1)
         send.assert_awaited_once()
-        # The receipt text is the inbox message itself.
+        # The receipt carries the report body.
         self.assertIn('report', send.call_args.args[1])
         # Its Telegram id is linked to the injected turn, so /undo
         # deletes the post along with the turn.
@@ -505,8 +521,25 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
         stored = (user_turn.get('custom') or {}).get('telegram_message_ids')
         self.assertEqual(stored, [9])
 
+    async def test_receipt_truncates_long_results(self):
+        drained, conversation, send = await self._drain(
+            self._report('x' * 2000), True)
+        self.assertEqual(drained, 1)
+        send.assert_awaited_once()
+        receipt = send.call_args.args[1]
+        self.assertLess(len(receipt), 2000)
+        self.assertIn('truncated', receipt)
+        # The conversation turn keeps the full report for the model.
+        self.assertIn('x' * 2000, conversation.messages[-1]['content'])
+
+    async def test_rejects_unstructured_puts(self):
+        inbox = SubagentInbox()
+        with self.assertRaises(TypeError):
+            inbox.put_nowait('just a string')  # type: ignore[arg-type]
+
     async def test_silent_when_not_announced(self):
-        drained, conversation, send = await self._drain('x', False)
+        drained, conversation, send = await self._drain(
+            self._report('x'), False)
         self.assertEqual(drained, 1)
         send.assert_not_awaited()
         stored = (conversation.messages[-1].get('custom') or {}).get(
@@ -515,7 +548,7 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
 
     async def test_silent_when_show_tool_output_off(self):
         drained, conversation, send = await self._drain(
-            'x', True, show_tool_output=False)
+            self._report('x'), True, show_tool_output=False)
         self.assertEqual(drained, 1)
         send.assert_not_awaited()
 

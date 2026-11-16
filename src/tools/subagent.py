@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from agent_inbox import (clear_main_inbox, conversation_epoch,
                          get_main_inbox, main_loop_active,
                          set_main_loop_active, set_wakeup_task,
-                         take_wakeup_task)
+                         take_wakeup_task, SubagentInbox, SubagentMessage)
 from chat_update_context import ChatUpdateContext, context_tool
 from conversation import Conversation
 from handlers.run_llm import run_llm
@@ -56,7 +56,7 @@ class SubagentRecord:
     id: str
     description: str
     conversation: Conversation
-    inbox: asyncio.Queue = field(default_factory=asyncio.Queue)
+    inbox: SubagentInbox = field(default_factory=SubagentInbox)
     task: asyncio.Task | None = None
     status: str = "running"
     result: str | None = None
@@ -137,7 +137,8 @@ def get_subagent_tool_defs() -> list[dict]:
             if t.get("function", {}).get("name") not in PARENT_ONLY_NAMES]
 
 
-async def _notify_parent(ctx: ChatUpdateContext, text: str) -> None:
+async def _notify_parent(ctx: ChatUpdateContext,
+                         message: SubagentMessage) -> None:
     """Queue a message for the main agent, waking it if idle.
 
     When the parent loop is still running it drains the inbox on its next
@@ -147,7 +148,7 @@ async def _notify_parent(ctx: ChatUpdateContext, text: str) -> None:
     atomic, so the wakeup decision cannot be lost.
     """
     inbox = get_main_inbox(ctx)
-    inbox.put_nowait(text)
+    inbox.put_nowait(message)
     if main_loop_active(ctx):
         return
     set_main_loop_active(ctx, True)
@@ -204,8 +205,8 @@ async def _run_subagent(ctx: ChatUpdateContext, record: SubagentRecord,
             record.notified = True
             try:
                 await _notify_parent(
-                    ctx, f"[subagent {record.id} ({record.description}) "
-                         f"stopped by parent]")
+                    ctx, SubagentMessage(id=record.id, state="stopped",
+                                        description=record.description))
             except Exception:
                 logger.warning('subagent stop notification failed', exc_info=True)
         raise
@@ -216,8 +217,8 @@ async def _run_subagent(ctx: ChatUpdateContext, record: SubagentRecord,
         logger.warning('subagent %s timed out', record.id)
         try:
             await _notify_parent(
-                ctx, f"[subagent {record.id} ({record.description}) "
-                     f"timed out]")
+                ctx, SubagentMessage(id=record.id, state="timed out",
+                                     description=record.description))
         except Exception:
             logger.warning('subagent timeout notification failed',
                            exc_info=True)
@@ -229,8 +230,9 @@ async def _run_subagent(ctx: ChatUpdateContext, record: SubagentRecord,
         logger.warning('subagent %s failed: %s', record.id, e, exc_info=True)
         try:
             await _notify_parent(
-                ctx, f"[subagent {record.id} ({record.description}) "
-                     f"failed: {e}]")
+                ctx, SubagentMessage(id=record.id, state="failed",
+                                     description=record.description,
+                                     result=str(e)))
         except Exception:
             logger.warning('subagent failure notification failed',
                            exc_info=True)
@@ -243,8 +245,9 @@ async def _run_subagent(ctx: ChatUpdateContext, record: SubagentRecord,
     record.notified = True
     try:
         await _notify_parent(
-            ctx, f"[subagent {record.id} ({record.description}) finished]:\n"
-                 f"{result}")
+            ctx, SubagentMessage(id=record.id, state="finished",
+                                 description=record.description,
+                                 result=result))
     except Exception:
         logger.warning('subagent parent notification failed', exc_info=True)
 
@@ -333,7 +336,7 @@ async def subagent_steer(ctx: ChatUpdateContext, id: str,
         return f"Error: unknown subagent {id}."
     if record.status != "running":
         return f"Error: subagent {id} is {record.status}, cannot message it."
-    record.inbox.put_nowait(f"[parent message]:\n{message}")
+    record.inbox.put_nowait(SubagentMessage(state="steer", result=message))
     return f"Message queued for subagent {id}."
 
 
@@ -348,8 +351,14 @@ async def subagent_send_to_parent(ctx: ChatUpdateContext,
     into the parent's own inbox.
     """
     sid = _current_subagent.get()
-    label = f"[subagent {sid} status]" if sid else "[parent note]"
-    await _notify_parent(ctx, f"{label}:\n{message}")
+    description = ""
+    if sid:
+        record = get_subagents(ctx).get(sid)
+        if record is not None:
+            description = record.description
+    await _notify_parent(
+        ctx, SubagentMessage(id=sid or "", state="status",
+                             description=description, result=message))
     return "Status sent to parent."
 
 

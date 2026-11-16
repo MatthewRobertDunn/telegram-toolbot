@@ -76,8 +76,7 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
         # inbox receipt is the only user-visible signal.
         self.assertEqual(ctx.sent, [])
         notify.assert_awaited_once()
-        args, _ = notify.call_args
-        self.assertIn("final report", args[1])
+        self.assertIn("final report", notify.call_args.args[1].result)
 
     async def test_send_and_stop(self):
         ctx = self._context_with_settings()
@@ -102,7 +101,7 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
             self.assertIn("queued", sent)
             record = ctx.user_data['subagents'][sid]
             queued = await record.inbox.get()
-            self.assertIn("steer left", queued)
+            self.assertIn("steer left", queued.result)
 
             stopped = await subagent_stop(ctx, sid)
             self.assertIn("Stopped", stopped)
