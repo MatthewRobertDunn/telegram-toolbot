@@ -187,7 +187,6 @@ async def run_llm(ctx: ChatUpdateContext,
             except Exception as e:
                 logger.warning('%s: %s, trying again...', type(e).__name__, e)
                 await asyncio.sleep(time_to_wait)
-                time_to_wait = time_to_wait * 2
 
         if message is None:
             streamer.new_round()
