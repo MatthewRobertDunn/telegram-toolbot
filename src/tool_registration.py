@@ -21,6 +21,8 @@ def register_tools():
     register_python_runner(TOOL_DEFINITIONS, TOOL_MAP)
     register_memory(TOOL_DEFINITIONS, TOOL_MAP)
     register_journal(TOOL_DEFINITIONS, TOOL_MAP)
+    # Control tools for both roles live in the global registry; each agent
+    # loop is only offered its own subset (see tools.subagent getters).
     register_subagent(TOOL_DEFINITIONS, TOOL_MAP)
     # This tool doesn't seem that useful for now, so we don't register it. It can be added back in later if needed.
     # register_status(TOOL_DEFINITIONS, TOOL_MAP)

@@ -148,10 +148,17 @@ async def undo_turn(ctx: ChatUpdateContext) -> None:
 
     # Walk the history back to and including the last user turn: a whole
     # exchange (prompt + reply + any tool rounds) is removed in one go.
+    # Agent-injected turns (subagent reports, parent steering) are skipped:
+    # they are not the human exchange, and anything after them belongs to
+    # a later exchange that /undo removes as well.
     last_user_index = -1
     for i, message in enumerate(messages):
-        if message.get('role') == 'user':
-            last_user_index = i
+        if message.get('role') != 'user':
+            continue
+        if (getattr(message, 'message_type', None)
+                is ConversationMessageType.AGENT_MESSAGE):
+            continue
+        last_user_index = i
 
     if last_user_index == -1:
         # No user turn exists (e.g. only an assistant greeting); undo just
@@ -350,7 +357,7 @@ async def impersonate_turn(ctx: ChatUpdateContext) -> None:
         copy.deepcopy(message) for message in ctx.conversation.messages])
     clone.add_user(IMPERSONATE_PROMPT)
 
-    response = (await run_llm(ctx, conversation=clone, allow_tools=False)
+    response = (await run_llm(ctx, conversation=clone)
                 or '').strip()
     if not response or response in (NO_RESPONSE_MESSAGE, NO_CONTENT_MESSAGE):
         await send_message(

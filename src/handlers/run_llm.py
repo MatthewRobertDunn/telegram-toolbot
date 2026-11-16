@@ -4,9 +4,9 @@ import logging
 from typing import Any
 
 import config
-from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
+from tool_definitions import TOOL_MAP
 from chat_update_context import ChatUpdateContext
-from conversation import Conversation
+from conversation import Conversation, ConversationMessageType
 from .draft_streamer import DraftStreamer
 from .consume_stream import ConsumeStreamResult, consume_stream
 from messaging import send_message
@@ -25,10 +25,11 @@ NO_RESPONSE_MESSAGE = "Problem getting response from model."
 NO_CONTENT_MESSAGE = "Model response had no content."
 
 
-async def execute_tool_call(ctx: ChatUpdateContext, tool_call) -> str | ToolCallResult:
+async def execute_tool_call(ctx: ChatUpdateContext, tool_call,
+                           tool_map: dict) -> str | ToolCallResult:
     name = tool_call.function.name
     arguments = json.loads(tool_call.function.arguments)
-    func = TOOL_MAP.get(name)
+    func = tool_map.get(name)
     if func is None:
         return f"Unknown tool: {name}"
     try:
@@ -43,17 +44,61 @@ async def execute_tool_call(ctx: ChatUpdateContext, tool_call) -> str | ToolCall
         return f"Tool '{name}' execution error: {e}"
 
 
+def _drain_inbox(conversation: Conversation,
+                 inbox: asyncio.Queue | None) -> int:
+    """Move queued agent messages into the conversation as user turns.
+
+    Only called at the top of an agent loop iteration and just before a
+    final reply is returned (never mid-tool-batch), so an injected message
+    can never split an assistant tool_calls message from its tool results.
+    Returns the number of messages drained.
+    """
+    if inbox is None:
+        return 0
+    drained = 0
+    while True:
+        try:
+            message = inbox.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        conversation.add_user(
+            message, message_type=ConversationMessageType.AGENT_MESSAGE)
+        drained += 1
+    return drained
+
+
+def _tool_map_for(tool_defs: list[dict]) -> dict:
+    """The executable map matching the offered definitions.
+
+    Derived from the global TOOL_MAP on demand, so a model that
+    hallucinates a non-offered tool name cannot execute it: it simply
+    is not in the map.
+    """
+    offered = {t.get("function", {}).get("name") for t in tool_defs}
+    return {name: func for name, func in TOOL_MAP.items()
+            if name in offered}
+
+
 async def run_llm(ctx: ChatUpdateContext,
                   model: str | None = None,
                   reasoning_effort: str | None = None,
                   extra_body: dict | None = None,
                   conversation: Conversation | None = None,
-                  excluded_tools: list[str] | None = None,
-                  allow_tools: bool = True) -> str:
+                  tools: list[dict] | None = None,
+                  inbox: asyncio.Queue | None = None,
+                  stream_drafts: bool = True,
+                  announce_tools: bool = True) -> str:
     """Run a model conversation to completion, executing tool calls as needed.
 
-    With allow_tools=False no tools are offered to the model, so the reply is
-    always plain text (used for nested calls such as context compaction).
+    tools=None means no tools are offered to the model (used for nested
+    calls such as context compaction). Pass an explicit tool list otherwise;
+    there is intentionally no "all tools" default. Only the passed
+    definitions are offered to the model, and only those names are
+    executable.
+
+    inbox, when given, is drained into the conversation as user turns at
+    the top of every loop iteration - the only injection point, so queued
+    messages never split a tool-call batch.
 
     conversation defaults to ctx.conversation. Nested calls with their own
     history (subagent, compaction) construct their own Conversation, whose
@@ -64,15 +109,14 @@ async def run_llm(ctx: ChatUpdateContext,
     settings = ctx.settings
     effective_model = model if model is not None else settings.model
 
-    tools = TOOL_DEFINITIONS
-    if excluded_tools:
-        tools = [t for t in TOOL_DEFINITIONS
-                 if t.get("function", {}).get("name") not in excluded_tools]
+    offer_tools = tools is not None and len(tools) > 0
+    active_map = _tool_map_for(tools) if tools else {}
 
-    streamer = DraftStreamer(ctx)
+    streamer = DraftStreamer(ctx, enabled=stream_drafts)
     await streamer.start()
 
     while True:
+        _drain_inbox(conversation, inbox)
         time_to_wait = 1
         t0 = asyncio.get_event_loop().time()
         message: ConsumeStreamResult | None = None
@@ -90,7 +134,7 @@ async def run_llm(ctx: ChatUpdateContext,
                         "x-opencode-session": conversation.id,
                     },
                 )
-                if allow_tools:
+                if offer_tools:
                     create_kwargs["tools"] = tools  # type: ignore
                     create_kwargs["tool_choice"] = "auto"
                 if reasoning_effort is not None:
@@ -113,15 +157,23 @@ async def run_llm(ctx: ChatUpdateContext,
             streamer.new_round()
             return NO_RESPONSE_MESSAGE
 
-        if not message.tool_calls or not allow_tools:
+        if not message.tool_calls or not offer_tools:
             if message.tool_calls:
                 logger.warning('model returned tool calls while tools are '
                                'disabled; ignoring them')
             if message.content:
+                # Anything that arrived while this round was in flight gets
+                # another turn instead of a stale reply (see _drain_inbox).
+                if _drain_inbox(conversation, inbox):
+                    continue
                 return message.content
             elif message.reasoning_content:
+                if _drain_inbox(conversation, inbox):
+                    continue
                 return message.reasoning_content
             else:
+                if _drain_inbox(conversation, inbox):
+                    continue
                 return NO_CONTENT_MESSAGE
             
         assistant_message = conversation.add_assistant(message.content or '')
@@ -147,12 +199,12 @@ async def run_llm(ctx: ChatUpdateContext,
             name = tc.function.name
             args = tc.function.arguments
             logger.info("tool call: %s(%s)", name, args)
-            if ctx.settings.show_tool_output:
+            if announce_tools and ctx.settings.show_tool_output:
                 for message_id in await send_message(
                         ctx,
                         f"Tool call: `{name}`\n```json\n{args[:1024]}\n```"):
                     assistant_message.add_telegram_message_id(message_id)
-            result = await execute_tool_call(ctx, tc)
+            result = await execute_tool_call(ctx, tc, active_map)
             if isinstance(result, ToolCallResult):
                 logger.info("tool result (%s): image attached", name)
                 conversation.add_tool(result.text, tc.id)

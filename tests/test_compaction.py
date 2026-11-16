@@ -180,7 +180,7 @@ class TestCompactContext(unittest.IsolatedAsyncioTestCase):
                              ctx.conversation))
 
         self.assertEqual(len(calls), 1)
-        self.assertFalse(calls[0]['allow_tools'])
+        self.assertIsNone(calls[0].get('tools'))
         request = calls[0]['conversation']
         self.assertEqual(request[0]['role'], 'system')
         self.assertIn('first question', request[1]['content'])

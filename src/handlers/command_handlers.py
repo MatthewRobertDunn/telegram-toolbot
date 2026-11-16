@@ -16,6 +16,15 @@ from config import OPENAI_KEY, OPENAI_BASE_URL
 @handler
 async def start_restart_command(ctx: ChatUpdateContext):
     stop_generation(ctx)
+    try:
+        from agent_inbox import bump_conversation_epoch
+        from tools.subagent import cancel_all_subagents
+        cancel_all_subagents(ctx)
+        # Any wakeup already queued in the worker carries the old epoch
+        # and skips instead of injecting into the fresh conversation.
+        bump_conversation_epoch(ctx)
+    except Exception:
+        pass
     await send_message(ctx, f"Starting conversation with model `{ctx.model}`")
     ctx.conversation = Conversation()
     await save_conversation(ctx.user_id, ctx.conversation)
