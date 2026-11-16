@@ -15,8 +15,8 @@ from tools.subagent import (
     PARENT_TOOL_DEFINITIONS,
     SUBAGENT_TOOL_DEFINITIONS,
     subagent_list,
-    subagent_send,
     subagent_start,
+    subagent_steer,
     subagent_stop,
 )
 
@@ -55,7 +55,7 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             pass
 
-    async def test_completion_notifies_telegram_and_parent(self):
+    async def test_completion_notifies_parent_via_inbox(self):
         ctx = self._context_with_settings()
 
         async def fake_run_llm(*args, **kwargs):
@@ -72,10 +72,9 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(record.status, "done")
         self.assertEqual(record.result, "final report")
-        # Telegram notice went out via the mock bot.
-        self.assertTrue(
-            any("final report" in m["text"] for m in ctx.sent),
-            f"no completion notice in {ctx.sent}")
+        # Single path: nothing goes straight to Telegram; the parent
+        # inbox receipt is the only user-visible signal.
+        self.assertEqual(ctx.sent, [])
         notify.assert_awaited_once()
         args, _ = notify.call_args
         self.assertIn("final report", args[1])
@@ -99,7 +98,7 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
             listed = await subagent_list(ctx)
             self.assertIn(sid, listed)
 
-            sent = await subagent_send(ctx, sid, "steer left")
+            sent = await subagent_steer(ctx, sid, "steer left")
             self.assertIn("queued", sent)
             record = ctx.user_data['subagents'][sid]
             queued = await record.inbox.get()
@@ -146,10 +145,11 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
         parent_names = {t["function"]["name"]
                         for t in PARENT_TOOL_DEFINITIONS}
         self.assertEqual(parent_names, {"subagent_start", "subagent_list",
-                                        "subagent_stop", "subagent_send"})
+                                        "subagent_stop", "subagent_steer",
+                                        "subagent_send_to_parent"})
         self.assertEqual(
             [t["function"]["name"] for t in SUBAGENT_TOOL_DEFINITIONS],
-            ["parent_send"])
+            ["subagent_send_to_parent"])
 
 
 if __name__ == "__main__":

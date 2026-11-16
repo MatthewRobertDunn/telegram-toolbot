@@ -44,14 +44,22 @@ async def execute_tool_call(ctx: ChatUpdateContext, tool_call,
         return f"Tool '{name}' execution error: {e}"
 
 
-def _drain_inbox(conversation: Conversation,
-                 inbox: asyncio.Queue | None) -> int:
+async def _drain_inbox(ctx: ChatUpdateContext,
+                       conversation: Conversation,
+                       inbox: asyncio.Queue | None,
+                       announce: bool = False) -> int:
     """Move queued agent messages into the conversation as user turns.
 
     Only called at the top of an agent loop iteration and just before a
     final reply is returned (never mid-tool-batch), so an injected message
     can never split an assistant tool_calls message from its tool results.
     Returns the number of messages drained.
+
+    When announce is set (and show_tool_output is on), each injected
+    message is also posted to Telegram, like a tool announcement, with its
+    message ids linked to the injected turn - so /undo deletes the post
+    along with the turn. Subagent loops pass announce=False to stay
+    silent: their inbox traffic is not user-chat material.
     """
     if inbox is None:
         return 0
@@ -61,8 +69,11 @@ def _drain_inbox(conversation: Conversation,
             message = inbox.get_nowait()
         except asyncio.QueueEmpty:
             break
-        conversation.add_user(
+        user_message = conversation.add_user(
             message, message_type=ConversationMessageType.AGENT_MESSAGE)
+        if announce and ctx.settings.show_tool_output:
+            for message_id in await send_message(ctx, message):
+                user_message.add_telegram_message_id(message_id)
         drained += 1
     return drained
 
@@ -116,7 +127,7 @@ async def run_llm(ctx: ChatUpdateContext,
     await streamer.start()
 
     while True:
-        _drain_inbox(conversation, inbox)
+        await _drain_inbox(ctx, conversation, inbox, announce_tools)
         time_to_wait = 1
         t0 = asyncio.get_event_loop().time()
         message: ConsumeStreamResult | None = None
@@ -164,15 +175,18 @@ async def run_llm(ctx: ChatUpdateContext,
             if message.content:
                 # Anything that arrived while this round was in flight gets
                 # another turn instead of a stale reply (see _drain_inbox).
-                if _drain_inbox(conversation, inbox):
+                if await _drain_inbox(ctx, conversation, inbox,
+                                       announce_tools):
                     continue
                 return message.content
             elif message.reasoning_content:
-                if _drain_inbox(conversation, inbox):
+                if await _drain_inbox(ctx, conversation, inbox,
+                                      announce_tools):
                     continue
                 return message.reasoning_content
             else:
-                if _drain_inbox(conversation, inbox):
+                if await _drain_inbox(ctx, conversation, inbox,
+                                      announce_tools):
                     continue
                 return NO_CONTENT_MESSAGE
             

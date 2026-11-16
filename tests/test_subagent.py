@@ -23,10 +23,10 @@ from tools.subagent import (
     get_main_inbox,
     get_parent_tool_defs,
     get_subagent_tool_defs,
-    parent_send,
     subagent_list,
-    subagent_send,
+    subagent_send_to_parent,
     subagent_start,
+    subagent_steer,
     subagent_stop,
 )
 
@@ -102,27 +102,29 @@ class TestToolSets(unittest.TestCase):
     def setUpClass(cls):
         subagent_mod.register(TOOL_DEFINITIONS, TOOL_MAP)
 
-    def test_parent_tools_have_no_parent_send(self):
+    def test_parent_tools_include_send_to_parent(self):
         names = {t['function']['name'] for t in get_parent_tool_defs()}
         self.assertIn('subagent_start', names)
         self.assertIn('subagent_list', names)
         self.assertIn('subagent_stop', names)
-        self.assertIn('subagent_send', names)
-        self.assertNotIn('parent_send', names)
+        self.assertIn('subagent_steer', names)
+        # Shared steering tool: offered to the parent too, so role
+        # confusion degrades to a working tool instead of 'Unknown tool'.
+        self.assertIn('subagent_send_to_parent', names)
 
     def test_subagent_tools_have_no_subagent_controls(self):
         names = {t['function']['name'] for t in get_subagent_tool_defs()}
-        self.assertIn('parent_send', names)
+        self.assertIn('subagent_send_to_parent', names)
         for name in ('subagent_start', 'subagent_list', 'subagent_stop',
-                     'subagent_send'):
+                     'subagent_steer'):
             self.assertNotIn(name, names)
 
     def test_map_filtered_to_offered_definitions(self):
         # A model hallucinating a non-offered tool cannot execute it.
         active = run_llm_mod._tool_map_for(get_subagent_tool_defs())
-        self.assertIn('parent_send', active)
+        self.assertIn('subagent_send_to_parent', active)
         for name in ('subagent_start', 'subagent_list', 'subagent_stop',
-                     'subagent_send'):
+                     'subagent_steer'):
             self.assertNotIn(name, active)
         self.assertEqual(run_llm_mod._tool_map_for([]), {})
 
@@ -154,11 +156,11 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
             self.assertIs(get_main_inbox(ctx),
                           ctx.user_data['main_inbox'])
 
-            result = await subagent_send(ctx, sid, 'go left')
+            result = await subagent_steer(ctx, sid, 'go left')
             self.assertIn('queued', result)
             self.assertIn('go left', await record.inbox.get())
 
-            self.assertIn('Error', await subagent_send(ctx, 'nope', 'x'))
+            self.assertIn('Error', await subagent_steer(ctx, 'nope', 'x'))
 
             stopped = await subagent_stop(ctx, sid)
             self.assertIn('Stopped', stopped)
@@ -167,14 +169,28 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
                           await subagent_stop(ctx, sid))
             self.assertIn('Error', await subagent_stop(ctx, 'nope'))
 
-    async def test_parent_send_queues_for_main(self):
+    async def test_send_to_parent_queues_for_main(self):
         ctx = _ctx()
         with unittest.mock.patch.object(subagent_mod, '_notify_parent',
                                         unittest.mock.AsyncMock()) as notify:
-            result = await parent_send(ctx, 'halfway there')
+            result = await subagent_send_to_parent(ctx, 'halfway there')
         self.assertIn('sent', result.lower())
         notify.assert_awaited_once()
         self.assertIn('halfway there', notify.call_args.args[1])
+
+    async def test_send_to_parent_shared_with_parent_tools(self):
+        # The parent loop offers it too: role confusion degrades to a
+        # working tool instead of an 'Unknown tool' error. (Based on the
+        # module lists, not the global registry: independent of test
+        # ordering.)
+        from tools.subagent import CONTROL_TOOL_MAP, PARENT_TOOL_DEFINITIONS
+        names = {t['function']['name'] for t in PARENT_TOOL_DEFINITIONS}
+        self.assertIn('subagent_send_to_parent', names)
+        self.assertIn('subagent_send_to_parent', CONTROL_TOOL_MAP)
+        with unittest.mock.patch.object(run_llm_mod, 'TOOL_MAP',
+                                        CONTROL_TOOL_MAP):
+            active = run_llm_mod._tool_map_for(list(PARENT_TOOL_DEFINITIONS))
+        self.assertIn('subagent_send_to_parent', active)
 
     async def test_cancel_all(self):
         ctx = _ctx()
@@ -352,10 +368,9 @@ class TestSubagentLimits(unittest.IsolatedAsyncioTestCase):
             await record.task
         self.assertEqual(record.status, 'failed')
         self.assertTrue(record.notified)
-        # Telegram gets a generic message; the parent keeps the detail.
-        sent_text = ' '.join(
-            str(c.args[1]) for c in send.call_args_list)
-        self.assertNotIn('kaboom', sent_text)
+        # Single path: nothing goes straight to Telegram; the inbox
+        # receipt (carrying the detail) is the only user-visible signal.
+        send.assert_not_awaited()
         notify.assert_awaited_once()
         self.assertIn('kaboom', notify.call_args.args[1])
 
@@ -415,6 +430,55 @@ class TestAnnounceTools(unittest.IsolatedAsyncioTestCase):
         result, send = await self._run_tool_turn(announce=True)
         self.assertEqual(result, 'done')
         send.assert_awaited_once()
+
+
+class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
+
+    async def _drain(self, text, announce, show_tool_output=True):
+        from conversation import Conversation
+        ctx = _ctx()
+        ctx.bot = _fake_bot()
+        ctx.user_data['settings'] = SimpleNamespace(
+            show_tool_output=show_tool_output, model='m',
+            temperature=1.0, top_p=0.95)
+        conversation = Conversation()
+        inbox = asyncio.Queue()
+        inbox.put_nowait(text)
+        send = unittest.mock.AsyncMock(return_value=[9])
+        with unittest.mock.patch.object(run_llm_mod, 'send_message', send):
+            drained = await run_llm_mod._drain_inbox(
+                ctx, conversation, inbox, announce)
+        return drained, conversation, send
+
+    async def test_receipt_posted_and_linked(self):
+        drained, conversation, send = await self._drain(
+            '[subagent abc finished]: report', True)
+        self.assertEqual(drained, 1)
+        send.assert_awaited_once()
+        # The receipt text is the inbox message itself.
+        self.assertIn('report', send.call_args.args[1])
+        # Its Telegram id is linked to the injected turn, so /undo
+        # deletes the post along with the turn.
+        user_turn = conversation.messages[-1]
+        self.assertEqual(user_turn.get('role'), 'user')
+        self.assertEqual(
+            user_turn.message_type, ConversationMessageType.AGENT_MESSAGE)
+        stored = (user_turn.get('custom') or {}).get('telegram_message_ids')
+        self.assertEqual(stored, [9])
+
+    async def test_silent_when_not_announced(self):
+        drained, conversation, send = await self._drain('x', False)
+        self.assertEqual(drained, 1)
+        send.assert_not_awaited()
+        stored = (conversation.messages[-1].get('custom') or {}).get(
+            'telegram_message_ids')
+        self.assertIsNone(stored)
+
+    async def test_silent_when_show_tool_output_off(self):
+        drained, conversation, send = await self._drain(
+            'x', True, show_tool_output=False)
+        self.assertEqual(drained, 1)
+        send.assert_not_awaited()
 
 
 class TestAgentMessageUndo(unittest.IsolatedAsyncioTestCase):
