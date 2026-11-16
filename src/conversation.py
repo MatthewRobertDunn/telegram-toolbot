@@ -34,6 +34,10 @@ class ConversationMessageType(enum.Enum):
     a /impersonation turn instead of answering as usual). Stripped by
     to_openai() like the rest of the metadata."""
     IMPERSONATION = 'impersonation'
+    # A turn injected from an agent inbox (subagent report, parent
+    # steering): model-visible as a user turn, but /undo skips it when
+    # looking for the human exchange to remove.
+    AGENT_MESSAGE = 'agent_message'
 
 
 def _tool_call_ids(message: dict) -> set:

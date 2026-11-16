@@ -245,8 +245,7 @@ async def _run_compaction(
             {'role': 'user',
              'content': f'Conversation transcript:\n\n{split.older_text}'
                         f'\n\n{SUMMARY_PROMPT}'},
-        ]),
-        allow_tools=False)
+        ]))
     summary = (summary or '').strip()
     if not summary or summary in (NO_RESPONSE_MESSAGE, NO_CONTENT_MESSAGE):
         raise CompactionError('Compaction failed: no summary was produced.')

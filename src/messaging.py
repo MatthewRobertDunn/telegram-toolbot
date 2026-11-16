@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from telegram import constants
 from telegram.error import BadRequest
@@ -13,16 +14,60 @@ MAX_MSG_LEN = 4000
 MAX_RICH_MSG_LEN = 32000
 
 
-async def send_rich_message(ctx: ChatUpdateContext, text: str):
+async def send_rich_message(ctx: ChatUpdateContext, text: str) -> list:
+    """Send markdown via sendRichMessage, chunking if needed. Returns the
+    message_ids of all posted chunks, like send_message, so callers can
+    link them back to the conversation."""
+    message_ids = []
     # PTB doesn't expose sendRichMessage yet (Bot API 10.1); we use the raw
     # request layer as recommended by the PTB maintainers until it ships.
-    return await ctx.bot._post(
-        "sendRichMessage",
-        data={
-            "chat_id": ctx.chat_id,
-            "rich_message": {"markdown": text},
-        },
-    )
+    for chunk in _split_at_linebreak(text, MAX_RICH_MSG_LEN):
+        result = await ctx.bot._post(
+            "sendRichMessage",
+            data={
+                "chat_id": ctx.chat_id,
+                "rich_message": {"markdown": chunk},
+            },
+        )
+        if isinstance(result, dict) and result.get('message_id') is not None:
+            message_ids.append(result['message_id'])
+    return message_ids
+
+
+async def send_collapsible(ctx: ChatUpdateContext, summary: str,
+                           body: str) -> list:
+    """Post a collapsible rich-text block, chunking long bodies.
+
+    Each posted message is a self-contained <details> block; bodies
+    over the rich-message limit are split at line breaks across
+    continuations ("summary (cont. N)"). Returns the message_ids of all
+    posted chunks, like send_message, so callers can link them back to
+    the conversation.
+    """
+    overhead = len("<details>\n<summary></summary>\n\n\n\n</details>")
+    budget = max(1024, MAX_RICH_MSG_LEN - len(summary) - overhead)
+    message_ids = []
+    for i, chunk in enumerate(_split_at_linebreak(body, budget)):
+        label = summary if i == 0 else f"{summary} (cont. {i + 1})"
+        message_ids.extend(await send_rich_message(
+            ctx,
+            f"<details>\n<summary>{label}</summary>\n\n{chunk}\n\n</details>"))
+    return message_ids
+
+
+async def send_json(ctx: ChatUpdateContext, summary: str,
+                    json_text: str) -> list:
+    """Post a JSON payload as a collapsible pretty-printed code block.
+
+    Malformed input falls back to the raw text, so model output never
+    fails to display. Returns the message_ids, like send_collapsible.
+    """
+    try:
+        pretty = json.dumps(json.loads(json_text), indent=2,
+                            ensure_ascii=False)
+    except (json.JSONDecodeError, ValueError):
+        pretty = json_text
+    return await send_collapsible(ctx, summary, f"```json\n{pretty}\n```")
 
 
 async def _send_chunk_maybe_fallback(ctx: ChatUpdateContext, text: str, parse_mode, disable_web_page_preview):
@@ -57,10 +102,7 @@ async def send_message(ctx: ChatUpdateContext, text: str, parse_mode='Markdown',
     posted chunks, so callers can link them back to the conversation."""
     message_ids = []
     if parse_mode == 'LLM':
-        for chunk in _split_at_linebreak(text, MAX_RICH_MSG_LEN):
-            result = await send_rich_message(ctx, chunk)
-            if isinstance(result, dict) and result.get('message_id') is not None:
-                message_ids.append(result['message_id'])
+        message_ids.extend(await send_rich_message(ctx, text))
     else:
         for chunk in _split_at_linebreak(text, MAX_MSG_LEN):
             message = await _send_chunk_maybe_fallback(

@@ -32,7 +32,7 @@ class DraftStreamer:
     never need to check `enabled` themselves; just feed output through.
     """
 
-    def __init__(self, ctx: ChatUpdateContext):
+    def __init__(self, ctx: ChatUpdateContext, enabled: bool = True):
         self._ctx = ctx
         self._chat_id = ctx.chat_id
         thread_id = getattr(ctx.message, 'message_thread_id', None)
@@ -43,7 +43,8 @@ class DraftStreamer:
         self._last_flush = 0.0
         self._prefer_plain = False
         self.enabled = (
-            config.STREAM_DRAFTS
+            enabled
+            and config.STREAM_DRAFTS
             and hasattr(ctx.bot, '_post')  # type: ignore[attr-defined]
             and ctx.chat.type == ChatType.PRIVATE  # type: ignore[union-attr]
         )

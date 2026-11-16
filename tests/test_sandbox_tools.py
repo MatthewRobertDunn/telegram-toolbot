@@ -768,10 +768,9 @@ class TestToolResultImageContract(unittest.IsolatedAsyncioTestCase):
                 (text_tool, '{}', "plain text result")):
             with self.subTest(tool=tool.__name__):
                 setattr(tool, "_requires_context", True)
-                with unittest.mock.patch.object(
-                        run_llm_mod, 'TOOL_MAP', {"fake_tool": tool}):
-                    result = await run_llm_mod.execute_tool_call(
-                        mock_ctx(), self._tool_call("fake_tool", arguments))
+                result = await run_llm_mod.execute_tool_call(
+                    mock_ctx(), self._tool_call("fake_tool", arguments),
+                    {"fake_tool": tool})
                 self.assertEqual(result, expected)
                 if isinstance(expected, ToolCallResult):
                     assert isinstance(result, ToolCallResult)
@@ -811,6 +810,9 @@ class TestToolResultImageContract(unittest.IsolatedAsyncioTestCase):
         fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
             create=fake_create)))
         bot = _FakeBot()
+        tool_defs = [{"type": "function",
+                      "function": {"name": sandbox_tool.READ_IMAGE,
+                                   "parameters": {}}}]
         with unittest.mock.patch.object(sandbox_tool, 'manager', manager), \
              unittest.mock.patch.object(
                  run_llm_mod, 'TOOL_MAP',
@@ -820,7 +822,8 @@ class TestToolResultImageContract(unittest.IsolatedAsyncioTestCase):
             ctx.user_data['settings'] = SimpleNamespace(
                 show_tool_output=False, model='m', temperature=1.0, top_p=0.95)
             conversation = Conversation()
-            result = await run_llm_mod.run_llm(ctx, conversation=conversation)
+            result = await run_llm_mod.run_llm(
+                ctx, conversation=conversation, tools=tool_defs)
 
         self.assertEqual(result, 'It is a space scene.')
         tool_messages = [m for m in conversation if m['role'] == 'tool']

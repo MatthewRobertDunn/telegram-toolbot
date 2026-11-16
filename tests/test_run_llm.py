@@ -36,17 +36,20 @@ def _fake_client(captured: dict, chunks: list):
 class TestRunLlmReplies(unittest.IsolatedAsyncioTestCase):
 
     async def test_tools_offered_by_default_and_omitted_on_request(self):
-        # Tools are offered unless the caller opts out (e.g. the nested
-        # summarizing call compaction makes).
-        for allow_tools, expected in ((True, True), (False, False)):
-            with self.subTest(allow_tools=allow_tools):
+        # Tools are offered only when the caller passes an explicit list;
+        # tools=None (the default) means no tools (e.g. nested calls like
+        # compaction or impersonation).
+        tool_defs = [{"type": "function",
+                      "function": {"name": "x", "parameters": {}}}]
+        for tools, expected in ((tool_defs, True), (None, False)):
+            with self.subTest(tools=bool(tools)):
                 captured: dict = {}
                 with unittest.mock.patch.object(
                         run_llm_mod, 'client',
                         _fake_client(captured, [_chunk('plain reply')])):
                     result = await run_llm_mod.run_llm(
                         mock_ctx(settings=SETTINGS, conversation=[]),
-                        allow_tools=allow_tools)
+                        tools=tools)
                 self.assertEqual(result, 'plain reply')
                 self.assertEqual('tools' in captured, expected)
                 self.assertEqual('tool_choice' in captured, expected)
@@ -156,11 +159,14 @@ class TestReasoningContentPassback(unittest.IsolatedAsyncioTestCase):
             [_tool_chunk('unknown_tool', '{}', reasoning=reasoning)],
             [_chunk('done')],
         ]
+        tool_defs = [{"type": "function",
+                      "function": {"name": "unknown_tool", "parameters": {}}}]
         with unittest.mock.patch.object(
                 run_llm_mod, 'client',
                 _fake_client_calls(captured, streams)):
             result = await run_llm_mod.run_llm(
-                mock_ctx(settings=SETTINGS, conversation=[]))
+                mock_ctx(settings=SETTINGS, conversation=[]),
+                tools=tool_defs)
         self.assertEqual(result, 'done')
         return next(m for m in captured[1]['messages']
                     if m.get('role') == 'assistant' and m.get('tool_calls'))
@@ -184,6 +190,8 @@ class TestToolCallAnnouncements(unittest.IsolatedAsyncioTestCase):
             show_tool_output=True, model='m', temperature=1.0, top_p=0.95),
             conversation=[])
         send = unittest.mock.AsyncMock(return_value=[101, 102])
+        tool_defs = [{"type": "function",
+                      "function": {"name": "web_search", "parameters": {}}}]
         with unittest.mock.patch.object(
                 run_llm_mod, 'client',
                 _fake_client_calls([], [
@@ -191,15 +199,16 @@ class TestToolCallAnnouncements(unittest.IsolatedAsyncioTestCase):
                     [_chunk('done')],
                 ])):
             with unittest.mock.patch.object(
-                    run_llm_mod, 'send_message', send):
-                await run_llm_mod.run_llm(ctx)
+                    run_llm_mod, 'send_json', send):
+                await run_llm_mod.run_llm(ctx, tools=tool_defs)
         assistant = next(m for m in ctx.conversation.messages
                          if m.get('tool_calls'))
         self.assertEqual(assistant['custom'],
                          {'telegram_message_ids': [101, 102]})
         call = send.await_args
         assert call is not None
-        self.assertIn('Tool call: `web_search`', call.args[1])
+        self.assertEqual(call.args[1], 'Tool call: `web_search`')
+        self.assertEqual(call.args[2], '{"query": "cheese"}')
 
 
 if __name__ == '__main__':

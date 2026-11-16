@@ -22,8 +22,11 @@ import logging
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
 
+from agent_inbox import (get_main_inbox, main_loop_active,
+                         set_main_loop_active)
 from chat_update_context import ChatUpdateContext
 from settings_store import save_conversation
+from tools.subagent import get_parent_tool_defs
 from .run_llm import run_llm
 from messaging import run_with_typing, send_message
 
@@ -78,33 +81,68 @@ def submit_generation(ctx, content: str | None = None,
         ctx, content=content, telegram_message_id=telegram_message_id))
 
 
+async def _generate_until_idle(ctx: ChatUpdateContext) -> str:
+    """One reply, extended while inbox mail keeps arriving.
+
+    run_llm drains the inbox at the top of every iteration and takes
+    another turn when mail arrived mid-round, so when it returns the inbox
+    is empty *at that instant*. The empty check below runs with no await
+    in between, so nothing can slip past it.
+    """
+    while True:
+        reply = await run_llm(
+            ctx,
+            tools=get_parent_tool_defs(),
+            inbox=get_main_inbox(ctx),
+        )
+        if get_main_inbox(ctx).empty():
+            return reply
+
+
 async def generate_response(ctx: ChatUpdateContext, content: str | None = None,
                             telegram_message_id: int | None = None) -> None:
     """One unit of work: append the user turn (if given) and carry a full
     generation+reply cycle. The generation task is tracked in
-    ctx.generation_task, so /stop always acts on whatever is running."""
+    ctx.generation_task, so /stop always acts on whatever is running.
+
+    Owns main_loop_active for the whole job (including the Telegram send):
+    anything queued meanwhile is picked up by the loop below instead of
+    stranding a wakeup.
+    """
     if content is not None:
         ctx.conversation.add_user(
             content, telegram_message_ids=telegram_message_id)
 
-    ctx.generation_task = inner = asyncio.create_task(
-        run_with_typing(ctx, run_llm(ctx)))
+    set_main_loop_active(ctx, True)
     try:
-        gpt_response = await inner
-    except asyncio.CancelledError:
-        if not inner.cancelled():
-            # This job itself was cancelled (bot shutdown): take the
-            # generation down too and re-raise.
-            inner.cancel()
-            raise
-        # /stop cancelled just the generation task; leave nothing behind
-        # (the user can /regenerate or simply talk again).
-    else:
-        message_ids = await send_message(ctx, gpt_response, parse_mode='LLM')
-        ctx.conversation.add_assistant(gpt_response,
-                                       telegram_message_ids=message_ids)
+        while True:
+            ctx.generation_task = inner = asyncio.create_task(
+                run_with_typing(ctx, _generate_until_idle(ctx)))
+            try:
+                gpt_response = await inner
+            except asyncio.CancelledError:
+                if not inner.cancelled():
+                    # This job itself was cancelled (bot shutdown): take the
+                    # generation down too and re-raise.
+                    inner.cancel()
+                    raise
+                # /stop cancelled just the generation task; leave nothing behind
+                # (the user can /regenerate or simply talk again).
+                return
+            finally:
+                ctx.generation_task = None
+
+            message_ids = await send_message(ctx, gpt_response, parse_mode='LLM')
+            ctx.conversation.add_assistant(gpt_response,
+                                           telegram_message_ids=message_ids)
+            if get_main_inbox(ctx).empty():
+                return
     finally:
+        # No await between the last empty check and this clearing, so a
+        # notifier either saw active (its mail is being drained) or sees
+        # inactive and schedules a wakeup. No lost wakeup either way.
         ctx.generation_task = None
+        set_main_loop_active(ctx, False)
 
 
 async def _generation_worker(submitter: ChatUpdateContext) -> None:

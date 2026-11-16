@@ -39,6 +39,7 @@ from handlers.command_handlers import (
 )
 from handlers.upload_handler import upload_handler
 from handlers.sandbox_handlers import sandbox_reset_command
+from handlers.subagent_handlers import subagent_list_command
 from handlers.memory_handlers import (
     memory_command,
     memory_list_command,
@@ -94,6 +95,7 @@ async def post_init(application: Application):
             BotCommand("model_reset", "Reset model to default"),
             BotCommand("subagent_model", "Set the model used by the subagent tool"),
             BotCommand("subagent_model_reset", "Reset subagent model to default"),
+            BotCommand("subagent_list", "List running background subagents"),
             BotCommand("top_p", "Set top_p sampling parameter"),
             BotCommand("top_p_reset", "Reset top_p to default"),
             BotCommand("temperature", "Set temperature parameter"),
@@ -157,6 +159,7 @@ def main():
     application.add_handler(CommandHandler('model_reset', callback_adapter(model_reset_command)))
     application.add_handler(CommandHandler('subagent_model', callback_adapter(subagent_model_command)))
     application.add_handler(CommandHandler('subagent_model_reset', callback_adapter(subagent_model_reset_command)))
+    application.add_handler(CommandHandler('subagent_list', callback_adapter(subagent_list_command)))
     application.add_handler(CommandHandler('top_p', callback_adapter(top_p_command)))
     application.add_handler(CommandHandler('top_p_reset', callback_adapter(top_p_reset_command)))
     application.add_handler(CommandHandler('temperature', callback_adapter(temperature_command)))
