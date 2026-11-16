@@ -473,7 +473,7 @@ class TestAnnounceTools(unittest.IsolatedAsyncioTestCase):
                 run_llm_mod, 'TOOL_MAP', {'t': fake_tool}), \
             unittest.mock.patch.object(
                 run_llm_mod, 'client', fake_client), \
-            unittest.mock.patch.object(run_llm_mod, 'send_message', send):
+            unittest.mock.patch.object(run_llm_mod, 'send_json', send):
             result = await run_llm_mod.run_llm(
                 ctx, conversation=Conversation(), tools=tool_defs,
                 announce_tools=announce)
@@ -504,7 +504,7 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
         inbox.put_nowait(message)
         send = unittest.mock.AsyncMock(return_value=[9])
         with unittest.mock.patch.object(
-                run_llm_mod, 'send_rich_message', send):
+                run_llm_mod, 'send_collapsible', send):
             drained = await run_llm_mod._drain_inbox(
                 ctx, conversation, inbox, announce)
         return drained, conversation, send
@@ -519,11 +519,10 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
             self._report(), True)
         self.assertEqual(drained, 1)
         send.assert_awaited_once()
-        receipt = send.call_args.args[1]
+        summary, body = send.call_args.args[1], send.call_args.args[2]
         # Collapsible receipt: summary names sender + state, body is full.
-        self.assertIn('<details>', receipt)
-        self.assertIn('Subagent **abc** *Job* — finished', receipt)
-        self.assertIn('report', receipt)
+        self.assertIn('Subagent **abc** *Job* — finished', summary)
+        self.assertEqual(body, 'report')
         # Its Telegram id is linked to the injected turn, so /undo
         # deletes the post along with the turn.
         user_turn = conversation.messages[-1]
@@ -538,9 +537,9 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
             self._report('x' * 2000), True)
         self.assertEqual(drained, 1)
         send.assert_awaited_once()
-        receipt = send.call_args.args[1]
+        body = send.call_args.args[2]
         # No truncation: the details block collapses the full report.
-        self.assertIn('x' * 2000, receipt)
+        self.assertIn('x' * 2000, body)
         # The conversation turn keeps the full report for the model.
         self.assertIn('x' * 2000, conversation.messages[-1]['content'])
 
@@ -549,26 +548,27 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
             SubagentMessage(id='abc', state='stopped',
                             description='Job'), True)
         self.assertEqual(drained, 1)
-        receipt = send.call_args.args[1]
-        self.assertIn('stopped', receipt)
+        summary, body = send.call_args.args[1], send.call_args.args[2]
+        self.assertIn('stopped', summary)
+        self.assertEqual(body, '(stopped)')
 
     async def test_receipt_parent_note_summary(self):
         drained, conversation, send = await self._drain(
             SubagentMessage(id='parent', state='running',
                             result='note'), True)
         self.assertEqual(drained, 1)
-        receipt = send.call_args.args[1]
-        self.assertIn('Parent note', receipt)
-        self.assertNotIn('Subagent', receipt)
+        summary, body = send.call_args.args[1], send.call_args.args[2]
+        self.assertEqual(summary, 'Parent note')
+        self.assertEqual(body, 'note')
 
     async def test_receipt_running_omits_state_suffix(self):
         drained, conversation, send = await self._drain(
             SubagentMessage(id='abc', state='running',
                             description='Job', result='halfway'), True)
         self.assertEqual(drained, 1)
-        receipt = send.call_args.args[1]
-        self.assertIn('Subagent **abc** *Job*', receipt)
-        self.assertNotIn('— running', receipt)
+        summary = send.call_args.args[1]
+        self.assertIn('Subagent **abc** *Job*', summary)
+        self.assertNotIn('— running', summary)
 
     async def test_rejects_unstructured_puts(self):
         inbox = SubagentInbox()

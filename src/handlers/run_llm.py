@@ -11,7 +11,7 @@ from chat_update_context import ChatUpdateContext
 from conversation import Conversation, ConversationMessageType
 from .draft_streamer import DraftStreamer
 from .consume_stream import ConsumeStreamResult, consume_stream
-from messaging import send_message, send_rich_message
+from messaging import send_collapsible, send_json
 from tool_result import ToolCallResult
 from openai import AsyncOpenAI
 
@@ -46,26 +46,23 @@ async def execute_tool_call(ctx: ChatUpdateContext, tool_call,
         return f"Tool '{name}' execution error: {e}"
 
 
-def _receipt_text(message: SubagentMessage) -> str:
-    """Telegram receipt for one drained inbox message.
+def _receipt_summary(message: SubagentMessage) -> str:
+    """Telegram receipt summary for one drained inbox message.
 
-    A collapsible block: the summary names the sender and, for terminal
-    states, how it ended; the body carries the full report (no
-    truncation — the <details> block keeps long reports out of the way).
-    Interim progress ("running") needs no suffix: the summary alone says
-    the sender is still alive. Parent-originated notes (role-confusion
+    Names the sender and, for terminal states, how it ended. Interim
+    progress ("running") needs no suffix: the summary alone says the
+    sender is still alive. Parent-originated notes (role-confusion
     fallback) get a "Parent note" summary instead of a subagent one.
+    The body is the full report, passed separately to send_collapsible.
     """
     if message.id == PARENT_ID:
-        summary = "Parent note"
-    else:
-        # Non-parent mail always carries a description: subagent_start
-        # rejects empty ones, so every record-backed message has one.
-        summary = f"Subagent **{message.id}** *{message.description}*"
-        if message.state in TERMINAL_STATES:
-            summary += f" — {message.state}"
-    body = message.result or f"({message.state})"
-    return f"<details>\n<summary>{summary}</summary>\n\n{body}\n\n</details>"
+        return "Parent note"
+    # Non-parent mail always carries a description: subagent_start
+    # rejects empty ones, so every record-backed message has one.
+    summary = f"Subagent **{message.id}** *{message.description}*"
+    if message.state in TERMINAL_STATES:
+        summary += f" — {message.state}"
+    return summary
 
 
 async def _drain_inbox(ctx: ChatUpdateContext,
@@ -82,10 +79,10 @@ async def _drain_inbox(ctx: ChatUpdateContext,
     Display text is built here from the structured fields (never threaded
     through as pre-rendered strings). When announce is set (and
     show_tool_output is on), each message is also posted to Telegram as a
-    collapsible rich-text receipt (see _receipt_text), with its message
-    ids linked to the injected turn - so /undo deletes the post along
-    with the turn. Subagent loops pass announce=False to stay silent:
-    their inbox traffic is not user-chat material.
+    collapsible rich-text receipt (see _receipt_summary), with its
+    message ids linked to the injected turn - so /undo deletes the post
+    along with the turn. Subagent loops pass announce=False to stay
+    silent: their inbox traffic is not user-chat material.
     """
     if inbox is None:
         return 0
@@ -98,8 +95,9 @@ async def _drain_inbox(ctx: ChatUpdateContext,
         user_message = conversation.add_user(
             message.format(), message_type=ConversationMessageType.AGENT_MESSAGE)
         if announce and ctx.settings.show_tool_output:
-            for message_id in await send_rich_message(
-                    ctx, _receipt_text(message)):
+            for message_id in await send_collapsible(
+                    ctx, _receipt_summary(message),
+                    message.result or f"({message.state})"):
                 user_message.add_telegram_message_id(message_id)
         drained += 1
     return drained
@@ -241,9 +239,8 @@ async def run_llm(ctx: ChatUpdateContext,
             args = tc.function.arguments
             logger.info("tool call: %s(%s)", name, args)
             if announce_tools and ctx.settings.show_tool_output:
-                for message_id in await send_message(
-                        ctx,
-                        f"Tool call: `{name}`\n```json\n{args[:1024]}\n```"):
+                for message_id in await send_json(
+                        ctx, f"Tool call: `{name}`", args):
                     assistant_message.add_telegram_message_id(message_id)
             result = await execute_tool_call(ctx, tc, active_map)
             if isinstance(result, ToolCallResult):

@@ -199,7 +199,7 @@ class TestToolCallAnnouncements(unittest.IsolatedAsyncioTestCase):
                     [_chunk('done')],
                 ])):
             with unittest.mock.patch.object(
-                    run_llm_mod, 'send_message', send):
+                    run_llm_mod, 'send_json', send):
                 await run_llm_mod.run_llm(ctx, tools=tool_defs)
         assistant = next(m for m in ctx.conversation.messages
                          if m.get('tool_calls'))
@@ -207,7 +207,8 @@ class TestToolCallAnnouncements(unittest.IsolatedAsyncioTestCase):
                          {'telegram_message_ids': [101, 102]})
         call = send.await_args
         assert call is not None
-        self.assertIn('Tool call: `web_search`', call.args[1])
+        self.assertEqual(call.args[1], 'Tool call: `web_search`')
+        self.assertEqual(call.args[2], '{"query": "cheese"}')
 
 
 if __name__ == '__main__':
