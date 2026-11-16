@@ -29,7 +29,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "function": {
             "name": "get_current_datetime",
             "strict": False,
-            "description": "Get the current date, time, and day of the week in the user's timezone (set with /set_timezone, UTC when never set). Returns a full ISO 8601 timestamp with UTC offset, plus weekday and IANA timezone name.",
+            "description": "Get the current date, time, and day of the week in the user's timezone (set with /timezone, UTC when never set). Returns a full ISO 8601 timestamp with UTC offset, plus weekday and IANA timezone name.",
             "parameters": {
                 "type": "object",
                 "properties": {},

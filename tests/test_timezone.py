@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import handlers.middleware as middleware
-from handlers.command_handlers import set_timezone_command
+from handlers.command_handlers import timezone_command
 from mock_context import mock_ctx
 from user_settings import UserSettings
 
@@ -29,7 +29,7 @@ class _Bot:
 def _run(ctx):
     with mock.patch.object(middleware, 'save_settings',
                            mock.AsyncMock()) as save:
-        asyncio.run(set_timezone_command(ctx))
+        asyncio.run(timezone_command(ctx))
     return save
 
 

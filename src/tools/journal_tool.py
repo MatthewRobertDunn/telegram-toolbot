@@ -2,7 +2,7 @@
 
 All tools operate on the authenticated user's journal automatically.
 Creation timestamps use the timezone
-set with /set_timezone (UTC when never set).
+set with /timezone (UTC when never set).
 """
 import logging
 from datetime import datetime, timezone
