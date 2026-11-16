@@ -256,6 +256,9 @@ async def _run_subagent(ctx: ChatUpdateContext, record: SubagentRecord,
 async def subagent_start(ctx: ChatUpdateContext, description: str,
                          prompt: str) -> str:
     """Start a background subagent and return its id immediately."""
+    description = description.strip()
+    if not description:
+        return "Error: description must be non-empty."
     if _running_count(ctx) >= MAX_SUBAGENTS:
         return (f"Error: too many running subagents "
                 f"(max {MAX_SUBAGENTS}). Stop one first.")
@@ -344,12 +347,14 @@ async def subagent_steer(ctx: ChatUpdateContext, id: str,
 @context_tool
 async def subagent_send_to_parent(ctx: ChatUpdateContext,
                                   message: str) -> str:
-    """Send a status message back to the parent assistant.
+    """Send a progress update back to the parent assistant.
 
     Subagents use it for progress worth surfacing before the final
-    report. The parent is also offered it (as a safety net for role
-    confusion): with no subagent context it just notes the message back
-    into the parent's own inbox.
+    report; the state is "running" — the most up-to-date fact at send
+    time — so the parent can tell interim mail apart from terminal
+    reports (finished/failed/timed out/stopped). The parent is also
+    offered it (as a safety net for role confusion): with no subagent
+    context it just notes the message back into the parent's own inbox.
     """
     sid = _current_subagent.get()
     description = ""
@@ -358,7 +363,7 @@ async def subagent_send_to_parent(ctx: ChatUpdateContext,
         if record is not None:
             description = record.description
     await _notify_parent(
-        ctx, SubagentMessage(id=sid or PARENT_ID, state="status",
+        ctx, SubagentMessage(id=sid or PARENT_ID, state="running",
                              description=description, result=message))
     return "Status sent to parent."
 
@@ -368,7 +373,8 @@ _SEND_TO_PARENT_DEF: dict = {
     "function": {
         "name": "subagent_send_to_parent",
         "description": (
-            "Send a status message back to the parent assistant. "
+            "Send a progress update back to the parent assistant "
+            "(you are still running). "
             "Use it for progress worth surfacing before your final "
             "report."
         ),
@@ -377,7 +383,7 @@ _SEND_TO_PARENT_DEF: dict = {
             "properties": {
                 "message": {
                     "type": "string",
-                    "description": "Status update for the parent assistant",
+                    "description": "Progress update for the parent assistant",
                 },
             },
             "required": ["message"],

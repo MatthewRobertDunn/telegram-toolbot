@@ -4,7 +4,8 @@ import logging
 from typing import Any
 
 import config
-from agent_inbox import PARENT_ID, SubagentInbox
+from agent_inbox import (PARENT_ID, TERMINAL_STATES, SubagentInbox,
+                         SubagentMessage)
 from tool_definitions import TOOL_MAP
 from chat_update_context import ChatUpdateContext
 from conversation import Conversation, ConversationMessageType
@@ -45,22 +46,24 @@ async def execute_tool_call(ctx: ChatUpdateContext, tool_call,
         return f"Tool '{name}' execution error: {e}"
 
 
-def _receipt_text(message) -> str:
+def _receipt_text(message: SubagentMessage) -> str:
     """Telegram receipt for one drained inbox message.
 
-    A collapsible block: the summary names the sender and its terminal
-    state, the body carries the full report (no truncation — the
-    <details> block keeps long reports out of the way). Parent-originated
-    notes (role-confusion fallback) get a "Parent note" summary instead
-    of a subagent one.
+    A collapsible block: the summary names the sender and, for terminal
+    states, how it ended; the body carries the full report (no
+    truncation — the <details> block keeps long reports out of the way).
+    Interim progress ("running") needs no suffix: the summary alone says
+    the sender is still alive. Parent-originated notes (role-confusion
+    fallback) get a "Parent note" summary instead of a subagent one.
     """
     if message.id == PARENT_ID:
         summary = "Parent note"
     else:
-        summary = f"Subagent **{message.id}**"
-        if message.description:
-            summary += f" *{message.description}*"
-        summary += f" — {message.state}"
+        # Non-parent mail always carries a description: subagent_start
+        # rejects empty ones, so every record-backed message has one.
+        summary = f"Subagent **{message.id}** *{message.description}*"
+        if message.state in TERMINAL_STATES:
+            summary += f" — {message.state}"
     body = message.result or f"({message.state})"
     return f"<details>\n<summary>{summary}</summary>\n\n{body}\n\n</details>"
 

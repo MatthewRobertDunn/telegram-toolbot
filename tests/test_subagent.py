@@ -174,6 +174,13 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
                           await subagent_stop(ctx, sid))
             self.assertIn('Error', await subagent_stop(ctx, 'nope'))
 
+    async def test_start_rejects_empty_description(self):
+        ctx = _ctx()
+        for bad in ('', '   '):
+            result = await subagent_start(ctx, bad, 'Do it')
+            self.assertIn('Error', result)
+        self.assertEqual(ctx.user_data.get('subagents', {}), {})
+
     async def test_send_to_parent_queues_for_main(self):
         ctx = _ctx()
         with unittest.mock.patch.object(subagent_mod, '_notify_parent',
@@ -243,12 +250,12 @@ class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
                 gq, 'generate_response',
                 unittest.mock.AsyncMock(return_value=None)) as gen:
             await subagent_mod._notify_parent(
-                ctx, SubagentMessage(id='x', state='status',
+                ctx, SubagentMessage(id='x', state='running',
                                      description='T', result='first done'))
             # Let the wakeup task run to completion.
             await ctx.user_data['wakeup_task']
             await subagent_mod._notify_parent(
-                ctx, SubagentMessage(id='x', state='status',
+                ctx, SubagentMessage(id='x', state='running',
                                      description='T', result='second done'))
             wakeup = ctx.user_data.get('wakeup_task')
             if wakeup is not None:
@@ -547,12 +554,21 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
 
     async def test_receipt_parent_note_summary(self):
         drained, conversation, send = await self._drain(
-            SubagentMessage(id='parent', state='status',
+            SubagentMessage(id='parent', state='running',
                             result='note'), True)
         self.assertEqual(drained, 1)
         receipt = send.call_args.args[1]
         self.assertIn('Parent note', receipt)
         self.assertNotIn('Subagent', receipt)
+
+    async def test_receipt_running_omits_state_suffix(self):
+        drained, conversation, send = await self._drain(
+            SubagentMessage(id='abc', state='running',
+                            description='Job', result='halfway'), True)
+        self.assertEqual(drained, 1)
+        receipt = send.call_args.args[1]
+        self.assertIn('Subagent **abc** *Job*', receipt)
+        self.assertNotIn('— running', receipt)
 
     async def test_rejects_unstructured_puts(self):
         inbox = SubagentInbox()
