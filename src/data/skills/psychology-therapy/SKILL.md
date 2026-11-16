@@ -25,7 +25,6 @@ Load only what is useful for the current request:
 - `references/psychological-formulation.md` — biopsychosocial thinking, behaviour patterns, personality, attachment, cognitive and social psychology.
 - `references/therapeutic-frameworks.md` — safe, self-help-level explanations of CBT, DBT, ACT, behavioural activation, MI, mindfulness and interpersonal approaches.
 - `references/session-structure.md` — optional structure for ongoing reflective conversations and practical follow-through.
-- `references/safety-and-scope.md` — crisis response, boundaries, referrals, and high-risk situations.
 - `references/evidence-standards.md` — evidence hierarchy, screening limitations, citations and uncertainty.
 - `references/source-notes.md` — source projects consulted, attribution and known limitations.
 
