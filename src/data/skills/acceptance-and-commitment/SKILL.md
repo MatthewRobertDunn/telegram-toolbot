@@ -1,6 +1,6 @@
 ---
-name: personal-act-companion
-description: A supportive ACT-informed companion that helps a person understand patterns, relate differently to difficult thoughts and feelings, clarify values, and take small values-guided actions.
+name: acceptance-and-commitment
+description: Help a user understand patterns, relate differently to difficult thoughts and feelings, clarify values, and take small values-guided actions.
 ---
 
 # Personal ACT Companion
