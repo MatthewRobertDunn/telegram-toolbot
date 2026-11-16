@@ -334,7 +334,8 @@ PARENT_TOOL_DEFINITIONS: list[dict] = [
                 "and none of this conversation's history, so include all "
                 "relevant context in the prompt. It shares your tools "
                 "(except these subagent controls) and the sandbox; file "
-                "changes persist. You will be notified with its final "
+                "changes persist. The subagent can communicate with you via "
+                "its parent_send tool. You will be notified with its final "
                 "report when it finishes; use subagent_send to steer it "
                 "meanwhile."
             ),
