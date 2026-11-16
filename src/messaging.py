@@ -51,7 +51,7 @@ async def send_collapsible(ctx: ChatUpdateContext, summary: str,
         label = summary if i == 0 else f"{summary} (cont. {i + 1})"
         message_ids.extend(await send_rich_message(
             ctx,
-            f"<details>\n<summary>{label}</summary>\n\n{chunk}\n\n</details>"))
+            f"<details>\n<summary>{label}</summary>{chunk}</details>"))
     return message_ids
 
 
