@@ -399,7 +399,7 @@ PARENT_TOOL_DEFINITIONS: list[dict] = [
                 "(except these subagent controls) and the sandbox; file "
                 "changes persist. The subagent can communicate with you via "
                 "its subagent_send_to_parent tool. You will be notified with its final "
-                "report when it finishes; use subagent_steer to steer it "
+                "report when it finishes, no need to poll. Use subagent_steer to steer it "
                 "meanwhile."
             ),
             "parameters": {
