@@ -148,6 +148,7 @@ class ChatUpdateContext(AgentContext):
                  message: Message,
                  user_data: UserData,
                  thread_data: ThreadData,
+                 message_thread_id: int | None,
                  command_text: str,
                  command_name: str) -> None:
         super().__init__(user_id=user.id, user_data=user_data,
@@ -158,6 +159,7 @@ class ChatUpdateContext(AgentContext):
         self.chat = chat
         self.user = user
         self.message = message
+        self.message_thread_id = message_thread_id
         self.command_text = command_text
         self.command_name = command_name
         self.messaging = Messaging(self)
@@ -297,6 +299,7 @@ def create_chat_update_context(
         message=message,
         user_data=user_data,
         thread_data=thread_data,
+        message_thread_id=thread_id,
         command_text=_parse_command_text(text),
         command_name=_parse_command_name(text),
     )

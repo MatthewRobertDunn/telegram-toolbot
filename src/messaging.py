@@ -48,12 +48,15 @@ class Messaging:
         # raw request layer as recommended by the PTB maintainers until it
         # ships.
         for chunk in _split_at_linebreak(text, MAX_RICH_MSG_LEN):
+            data = {
+                "chat_id": ctx.chat_id,
+                "rich_message": {"markdown": chunk},
+            }
+            if ctx.message_thread_id is not None:
+                data["message_thread_id"] = ctx.message_thread_id
             result = await ctx.bot._post(  # type: ignore[attr-defined]
                 "sendRichMessage",
-                data={
-                    "chat_id": ctx.chat_id,
-                    "rich_message": {"markdown": chunk},
-                },
+                data=data,
             )
             if isinstance(result, dict) and result.get('message_id') is not None:
                 message_ids.append(result['message_id'])
@@ -96,13 +99,15 @@ class Messaging:
         try:
             return await ctx.bot.send_message(
                 chat_id=ctx.chat_id, text=text, parse_mode=parse_mode,
-                disable_web_page_preview=disable_web_page_preview)
+                disable_web_page_preview=disable_web_page_preview,
+                message_thread_id=ctx.message_thread_id)
         except BadRequest as e:
             if parse_mode and 'parse entities' in str(e):
                 escaped = escape_markdown(text, version=1)
                 return await ctx.bot.send_message(
                     chat_id=ctx.chat_id, text=escaped, parse_mode=parse_mode,
-                    disable_web_page_preview=disable_web_page_preview)
+                    disable_web_page_preview=disable_web_page_preview,
+                    message_thread_id=ctx.message_thread_id)
             raise
 
     async def send_message(self, text: str, parse_mode='Markdown',
@@ -128,6 +133,7 @@ class Messaging:
                 chat_id=self._ctx.chat_id,
                 text=f"<pre>{html.escape(chunk)}</pre>",
                 parse_mode="HTML",
+                message_thread_id=self._ctx.message_thread_id,
             )
 
     async def send_image(self, photo: bytes, caption: str = "") -> None:
@@ -135,11 +141,13 @@ class Messaging:
             chat_id=self._ctx.chat_id,
             photo=photo,
             caption=caption,
+            message_thread_id=self._ctx.message_thread_id,
         )
 
     async def send_document(self, document: bytes, filename: str) -> None:
         await self._ctx.bot.send_document(
-            chat_id=self._ctx.chat_id, document=document, filename=filename)
+            chat_id=self._ctx.chat_id, document=document, filename=filename,
+            message_thread_id=self._ctx.message_thread_id)
 
     async def delete_message(self, message_id: int) -> None:
         await self._ctx.bot.delete_message(self._ctx.chat_id, message_id)
@@ -150,7 +158,8 @@ class Messaging:
             try:
                 await self._ctx.bot.send_chat_action(
                     chat_id=self._ctx.chat_id,
-                    action=constants.ChatAction.TYPING)
+                    action=constants.ChatAction.TYPING,
+                    message_thread_id=self._ctx.message_thread_id)
             except Exception as e:
                 logger.exception(
                     "Error occurred while sending typing action: %s", e)

@@ -86,6 +86,7 @@ def create_mock_context(
     command_text: str = "",
     command_name: str = "",
     chat_type: str = "private",
+    message_thread_id: int | None = None,
 ) -> MockContext:
     bot = create_mock_bot()
     context = SimpleNamespace(
@@ -109,6 +110,7 @@ def create_mock_context(
         message=message,  # type: ignore[arg-type]
         user_data=UserData(),
         thread_data=ThreadData(),
+        message_thread_id=message_thread_id,
         command_text=command_text,
         command_name=command_name,
     )

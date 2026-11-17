@@ -61,8 +61,7 @@ class DraftStreamer:
     def __init__(self, ctx: ChatUpdateContext, enabled: bool = True):
         self._ctx = ctx
         self._chat_id = ctx.chat_id
-        thread_id = getattr(ctx.message, 'message_thread_id', None)
-        self._thread_id = thread_id if isinstance(thread_id, int) else None
+        self._thread_id = ctx.message_thread_id
         self._draft_id = random.getrandbits(31) + 1
         self._round_text = ''
         self._sent_text = ''
