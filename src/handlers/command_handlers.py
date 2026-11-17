@@ -26,7 +26,8 @@ async def start_restart_command(ctx: ChatUpdateContext):
         pass
     await ctx.messaging.send_message(f"Starting conversation with model `{ctx.model}`")
     ctx.conversation = Conversation()
-    await save_conversation(ctx.user_id, ctx.conversation)
+    await save_conversation(ctx.user_id, ctx.message_thread_id,
+                            ctx.conversation)
 
 
 @handler

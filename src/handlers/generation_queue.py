@@ -168,6 +168,7 @@ async def _generation_worker(submitter: ChatUpdateContext) -> None:
         # worker loop.
         try:
             await save_conversation(item.ctx.user_id,
+                                    item.ctx.message_thread_id,
                                     item.ctx.conversation)
         except Exception:
             logger.warning('Could not persist conversation for user %d',
