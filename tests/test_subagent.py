@@ -17,12 +17,10 @@ from chat_update_context import (AgentContext,
 from conversation import Conversation, ConversationMessageType
 from messaging import Messaging
 from mock_context import mock_ctx
-from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
-from tool_scope import BOTH, tool_scope
+from tool_registry import PARENT, SUBAGENT
+from tool_registration import register_tools
 from tools import subagent as subagent_mod
 from tools.subagent import (
-    CONTROL_TOOL_DEFINITIONS,
-    CONTROL_TOOL_MAP,
     MAX_RECORDS,
     MAX_SUBAGENTS,
     SUBAGENT_TIMEOUT,
@@ -112,10 +110,8 @@ class TestToolSets(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Register the real tool surface once; get_*_tool_defs read the
-        # global registry.
-        if not TOOL_DEFINITIONS:
-            from tool_registration import register_tools
-            register_tools()
+        # registry.
+        register_tools()
 
     def test_parent_tools_include_send_to_parent(self):
         names = {t['function']['name'] for t in get_parent_tool_defs()}
@@ -137,21 +133,32 @@ class TestToolSets(unittest.TestCase):
         # Chat-writing tools are never offered: they would have no way to
         # act (a subagent context has no messaging handle).
         for name in ('subagent_start', 'subagent_list', 'subagent_stop',
-                     'subagent_steer', 'send_file', 'read_image',
-                     'generate_image'):
+                     'subagent_steer', 'send_file'):
             self.assertNotIn(name, names)
-        # ...but the silent variants are.
-        self.assertIn('read_image_subagent', names)
-        self.assertIn('generate_image_subagent', names)
+        # The tools that would post keep their name but swap
+        # implementation, so the subagent still has them.
+        self.assertIn('read_image', names)
+        self.assertIn('generate_image', names)
+        self.assertNotIn('read_image_subagent', names)
+        self.assertNotIn('generate_image_subagent', names)
 
     def test_map_filtered_to_offered_definitions(self):
         # A model hallucinating a non-offered tool cannot execute it.
-        active = run_llm_mod._tool_map_for(get_subagent_tool_defs())
+        active = run_llm_mod._tool_map_for(get_subagent_tool_defs(),
+                                           SUBAGENT)
         self.assertIn('subagent_send_to_parent', active)
         for name in ('subagent_start', 'subagent_list', 'subagent_stop',
                      'subagent_steer'):
             self.assertNotIn(name, active)
-        self.assertEqual(run_llm_mod._tool_map_for([]), {})
+        self.assertEqual(run_llm_mod._tool_map_for([], PARENT), {})
+
+    def test_each_role_executes_its_own_implementation(self):
+        parent = run_llm_mod._tool_map_for(get_parent_tool_defs(), PARENT)
+        subagent = run_llm_mod._tool_map_for(get_subagent_tool_defs(),
+                                             SUBAGENT)
+        for name in ('read_image', 'generate_image'):
+            with self.subTest(tool=name):
+                self.assertIsNot(parent[name], subagent[name])
 
 
 class TestSubagentContextWiring(unittest.IsolatedAsyncioTestCase):
@@ -269,14 +276,13 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
     async def test_send_to_parent_shared_with_parent_tools(self):
         # The parent loop offers it too: role confusion degrades to a
         # working tool instead of an 'Unknown tool' error.
-        names = {t['function']['name'] for t in CONTROL_TOOL_DEFINITIONS}
-        self.assertIn('subagent_send_to_parent', names)
-        self.assertEqual(tool_scope(CONTROL_TOOL_MAP['subagent_send_to_parent']),
-                         BOTH)
-        with unittest.mock.patch.object(run_llm_mod, 'TOOL_MAP',
-                                        CONTROL_TOOL_MAP):
-            active = run_llm_mod._tool_map_for(list(CONTROL_TOOL_DEFINITIONS))
-        self.assertIn('subagent_send_to_parent', active)
+        parent = {t['function']['name'] for t in get_parent_tool_defs()}
+        self.assertIn('subagent_send_to_parent', parent)
+        for role in (PARENT, SUBAGENT):
+            active = run_llm_mod._tool_map_for(
+                get_subagent_tool_defs() if role == SUBAGENT
+                else get_parent_tool_defs(), role)
+            self.assertIn('subagent_send_to_parent', active)
 
     async def test_cancel_all(self):
         ctx = _ctx()
@@ -506,7 +512,7 @@ class TestAnnounceTools(unittest.IsolatedAsyncioTestCase):
         async def fake_tool(ctx):
             return 'tool output'
 
-        setattr(fake_tool, '_requires_context', True)
+        setattr(fake_tool, '_needs_ctx', True)
         tool_defs = [{'type': 'function',
                       'function': {'name': 't', 'parameters': {}}}]
         chunk_tool = SimpleNamespace(choices=[SimpleNamespace(
@@ -535,7 +541,7 @@ class TestAnnounceTools(unittest.IsolatedAsyncioTestCase):
             show_tool_output=True, model='m', temperature=1.0, top_p=0.95)
         send = unittest.mock.AsyncMock(return_value=[9])
         with unittest.mock.patch.object(
-                run_llm_mod, 'TOOL_MAP', {'t': fake_tool}), \
+                run_llm_mod, 'functions_for', lambda role: {'t': fake_tool}), \
             unittest.mock.patch.object(
                 run_llm_mod, 'client', fake_client), \
             unittest.mock.patch.object(Messaging, 'send_json', send):

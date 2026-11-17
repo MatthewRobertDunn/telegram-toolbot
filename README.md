@@ -104,7 +104,7 @@ python build_sandbox_image.py           # build only
 python build_sandbox_image.py --push    # build and push to Docker Hub
 ```
 
-If you don't need the sandbox, you can disable its tools by commenting out the `register_sandbox_tool` line in `src/tool_registration.py`.
+If you don't need the sandbox, you can disable its tools by removing the `tools.sandbox.*` modules from `TOOL_MODULES` in `src/tool_registration.py`.
 
 ### Configuration reference
 
@@ -207,7 +207,7 @@ The bot uses OpenAI-compatible function calling. These tools are available to th
 | `subagent` | Spawn a subagent in a fresh conversation to work on a task (with the same tools and sandbox) and report back |
 | `generate_image` | Generate an image using NVIDIA Flux |
 
-Subagents get a restricted tool surface. Tools that write to the chat (`send_file`, `read_image`, `generate_image`, and the `subagent_*` controls) are never offered to them; the silent variants (`read_image_subagent`, `generate_image_subagent`) read or generate without posting, and report the file path for the parent to share. Each subagent runs against its own isolated context copy with no bot, inbox, or generation queue it could touch, and tools declare their audience with `@parent_tool` / `@subagent_tool` / `@subagent_only_tool` (see `src/tool_scope.py`).
+Subagents get a restricted tool surface. Tools that write to the chat (`send_file` and the `subagent_*` controls) are never offered to them. `read_image` and `generate_image` keep the same name for both agents but swap implementation: the subagent's variant reads or generates without posting and reports the file path for the parent to share. Each subagent runs against its own isolated context copy with no bot, inbox, or generation queue it could touch. Tools declare themselves with `@agent_tool` (see `src/tool_registry.py`), which carries the schema, derives `required` from the signature, and defaults to parent-only.
 
 ---
 

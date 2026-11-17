@@ -1,15 +1,30 @@
 import logging
 
-from chat_update_context import AgentContext, context_tool
+from chat_update_context import AgentContext
 from sandbox import manager
-from tool_scope import subagent_tool
-from .sandbox_tool import _cap_output
+from tool_registry import BOTH, agent_tool
+from .sandbox.common import _cap_output
 
 logger = logging.getLogger(__name__)
 
 
-@subagent_tool
-@context_tool
+@agent_tool(
+    name="python",
+    scope=BOTH,
+    description=(
+        "Execute a Python script in the user's sandbox and return the "
+        "output. The script runs with the working directory "
+        "/workspace (continue reading/writing files there with the "
+        "other tools afterwards). The sandbox has network access, "
+        "and state persists between calls. Use this to run "
+        "calculations, process data, or test code. Prefer this tool "
+        "over the bash tool for Python scripts."),
+    parameters={
+        "code": {
+            "type": "string",
+            "description": "The Python code to execute.",
+        },
+    })
 async def run_python_code(ctx: AgentContext, code: str) -> str:
     if not code.strip():
         return "Error: empty code."
@@ -28,40 +43,3 @@ async def run_python_code(ctx: AgentContext, code: str) -> str:
     if not output:
         return "(executed with no output)"
     return "\n".join(output)
-
-
-TOOL_NAME = "python"
-TOOL_DEFINITIONS: list[dict] = [
-    {
-        "type": "function",
-        "function": {
-            "name": TOOL_NAME,
-            "strict": False,
-            "description": (
-                "Execute a Python script in the user's sandbox and return the "
-                "output. The script runs with the working directory "
-                "/workspace (continue reading/writing files there with the "
-                "other tools afterwards). The sandbox has network access, "
-                "and state persists between calls. Use this to run "
-                "calculations, process data, or test code. Prefer this tool "
-                "over the bash tool for Python scripts."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "code": {
-                        "type": "string",
-                        "description": "The Python code to execute."
-                    }
-                },
-                "required": ["code"],
-                "additionalProperties": False
-            }
-        }
-    },
-]
-
-
-def register(tools_list: list[dict], tool_map: dict):
-    tools_list.extend(TOOL_DEFINITIONS)
-    tool_map[TOOL_NAME] = run_python_code

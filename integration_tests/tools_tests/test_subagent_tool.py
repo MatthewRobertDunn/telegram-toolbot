@@ -10,16 +10,14 @@ from mocks import create_mock_context
 
 import config
 from user_settings import UserSettings
+from tool_registry import BOTH, PARENT
 from tools import subagent as subagent_mod
 from tools.subagent import (
-    CONTROL_TOOL_DEFINITIONS,
-    CONTROL_TOOL_MAP,
     subagent_list,
     subagent_start,
     subagent_steer,
     subagent_stop,
 )
-from tool_scope import BOTH, PARENT, tool_scope
 
 
 class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
@@ -142,19 +140,19 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(captured["model"], expected)
 
     def test_tool_definition_shapes(self):
-        names = [t["function"]["name"] for t in CONTROL_TOOL_DEFINITIONS]
+        from tool_registry import all_tools
+        declared = {t.name: t for t in all_tools()
+                    if t.name.startswith('subagent_')}
         self.assertEqual(
-            set(names),
+            set(declared),
             {"subagent_start", "subagent_list", "subagent_stop",
              "subagent_steer", "subagent_send_to_parent"})
-        self.assertEqual(set(names), set(CONTROL_TOOL_MAP))
         # Controls are parent-only; the progress channel is shared so the
         # parent gets a working tool even under role confusion.
-        scopes = {name: tool_scope(CONTROL_TOOL_MAP[name]) for name in names}
         for name in ("subagent_start", "subagent_list", "subagent_stop",
                      "subagent_steer"):
-            self.assertEqual(scopes[name], PARENT)
-        self.assertEqual(scopes["subagent_send_to_parent"], BOTH)
+            self.assertEqual(declared[name].scope, PARENT)
+        self.assertEqual(declared["subagent_send_to_parent"].scope, BOTH)
 
 
 if __name__ == "__main__":

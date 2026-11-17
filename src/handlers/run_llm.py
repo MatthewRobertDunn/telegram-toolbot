@@ -6,7 +6,7 @@ from typing import Any
 import config
 from agent_inbox import (PARENT_ID, TERMINAL_STATES, SubagentInbox,
                          SubagentMessage)
-from tool_definitions import TOOL_MAP
+from tool_registry import functions_for, role_for
 from chat_update_context import AgentContext, ChatUpdateContext
 from conversation import Conversation, ConversationMessageType
 from .draft_streamer import DraftSink, DraftStreamer, NullDraftSink
@@ -34,7 +34,7 @@ async def execute_tool_call(ctx: AgentContext, tool_call,
     if func is None:
         return f"Unknown tool: {name}"
     try:
-        if getattr(func, '_requires_context', False):
+        if getattr(func, '_needs_ctx', False):
             result = await func(ctx, **arguments)
         else:
             result = await func(**arguments)
@@ -102,15 +102,16 @@ async def _drain_inbox(ctx: AgentContext,
     return drained
 
 
-def _tool_map_for(tool_defs: list[dict]) -> dict:
+def _tool_map_for(tool_defs: list[dict], role: str) -> dict:
     """The executable map matching the offered definitions.
 
-    Derived from the global TOOL_MAP on demand, so a model that
-    hallucinates a non-offered tool name cannot execute it: it simply
-    is not in the map.
+    Derived from the role's registry view on demand, so a model that
+    hallucinates a non-offered tool name cannot execute it: it simply is
+    not in the map. The role matters because one name can have an
+    implementation per audience (``read_image``).
     """
     offered = {t.get("function", {}).get("name") for t in tool_defs}
-    return {name: func for name, func in TOOL_MAP.items()
+    return {name: func for name, func in functions_for(role).items()
             if name in offered}
 
 
@@ -151,7 +152,7 @@ async def run_llm(ctx: AgentContext,
     effective_model = model if model is not None else settings.model
 
     offer_tools = tools is not None and len(tools) > 0
-    active_map = _tool_map_for(tools) if tools else {}
+    active_map = _tool_map_for(tools, role_for(ctx)) if tools else {}
 
     # Only an interactive context can stream drafts or announce tool calls.
     chat = ctx if isinstance(ctx, ChatUpdateContext) else None

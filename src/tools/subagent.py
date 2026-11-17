@@ -23,10 +23,10 @@ from agent_inbox import (PARENT_ID, clear_main_inbox, conversation_epoch,
                          get_main_inbox, main_loop_active,
                          set_main_loop_active, set_wakeup_task,
                          take_wakeup_task, SubagentInbox, SubagentMessage)
-from chat_update_context import AgentContext, ChatUpdateContext, context_tool
+from chat_update_context import AgentContext, ChatUpdateContext
 from conversation import Conversation
 from handlers.run_llm import run_llm
-from tool_scope import BOTH, SUBAGENT, parent_tool, subagent_tool, tool_scope
+from tool_registry import BOTH, PARENT, SUBAGENT, agent_tool, definitions_for
 
 logger = logging.getLogger(__name__)
 
@@ -129,33 +129,20 @@ def _running_count(ctx: ChatUpdateContext) -> int:
     return sum(1 for r in get_subagents(ctx).values() if r.status == "running")
 
 
-def _scope(definition: dict, tool_map: dict) -> str | None:
-    name = definition.get("function", {}).get("name")
-    return tool_scope(tool_map.get(name))
-
-
 def get_parent_tool_defs() -> list[dict]:
-    """Every registered tool the parent agent is offered.
-
-    Visibility comes from each tool's declared scope (see tool_scope):
-    subagent-only tools are hidden, everything else is offered. An
-    undeclared tool still reaches the parent, so a forgotten decorator
-    costs a test failure rather than a missing capability.
-    """
-    from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
-    return [t for t in TOOL_DEFINITIONS
-            if _scope(t, TOOL_MAP) != SUBAGENT]
+    """Every tool the parent agent is offered."""
+    return definitions_for(PARENT)
 
 
 def get_subagent_tool_defs() -> list[dict]:
-    """The tools a subagent may use: shared and subagent-only tools.
+    """The tools a subagent may use: the shared toolbox plus its own
+    variants of the tools that would otherwise post to the chat.
 
-    Undeclared tools are excluded, so a new tool cannot join the subagent
-    surface by accident.
+    A subagent never sees a chat-writing tool: those are declared
+    parent-only, and the shared ones are declared once per audience so the
+    model-facing name stays the same for both agents.
     """
-    from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
-    return [t for t in TOOL_DEFINITIONS
-            if _scope(t, TOOL_MAP) in (SUBAGENT, BOTH)]
+    return definitions_for(SUBAGENT)
 
 
 async def _notify_parent(ctx: ChatUpdateContext,
@@ -273,8 +260,31 @@ async def _run_subagent(parent: ChatUpdateContext, record: SubagentRecord,
         logger.warning('subagent parent notification failed', exc_info=True)
 
 
-@parent_tool
-@context_tool
+@agent_tool(
+    description=(
+        "Start a background subagent on a task and return its id "
+        "immediately (does not wait). The subagent has fresh context "
+        "and none of this conversation's history, so include all "
+        "relevant context in the prompt. It shares your tools "
+        "(except these subagent controls and the tools that post to "
+        "the chat), and the sandbox; file changes persist. The "
+        "subagent can communicate with you via its "
+        "subagent_send_to_parent tool. You will be notified with its "
+        "final report when it finishes, no need to poll. Use "
+        "subagent_steer to steer it meanwhile."),
+    parameters={
+        "description": {
+            "type": "string",
+            "description": ("A short 3-5 word label for the task, displayed "
+                            "to the user"),
+        },
+        "prompt": {
+            "type": "string",
+            "description": ("The task for the subagent. Include context, "
+                            "constraints, and what its final report should "
+                            "contain."),
+        },
+    })
 async def subagent_start(ctx: ChatUpdateContext, description: str,
                          prompt: str) -> str:
     """Start a background subagent and return its id immediately."""
@@ -312,8 +322,9 @@ async def subagent_start(ctx: ChatUpdateContext, description: str,
             f"Use subagent_steer to message it, subagent_list to check it.")
 
 
-@parent_tool
-@context_tool
+@agent_tool(
+    description=("List all subagents with their ids, statuses, "
+                 "and how long each has been running."))
 async def subagent_list(ctx: ChatUpdateContext) -> str:
     subs = get_subagents(ctx)
     if not subs:
@@ -330,8 +341,14 @@ async def subagent_list(ctx: ChatUpdateContext) -> str:
     return "Subagents:\n" + "\n".join(lines)
 
 
-@parent_tool
-@context_tool
+@agent_tool(
+    description="Stop a running background subagent by id.",
+    parameters={
+        "id": {
+            "type": "string",
+            "description": "The subagent id returned by subagent_start",
+        },
+    })
 async def subagent_stop(ctx: ChatUpdateContext, id: str) -> str:
     subs = get_subagents(ctx)
     record = subs.get(id)
@@ -355,8 +372,22 @@ async def subagent_stop(ctx: ChatUpdateContext, id: str) -> str:
     return f"Stopped subagent {id} (`{record.description}`)."
 
 
-@parent_tool
-@context_tool
+@agent_tool(
+    description=(
+        "Steer a running background subagent mid-run: queue a "
+        "message delivered as a parent message in its conversation. "
+        "Use it to redirect, answer its questions, or give it its "
+        "next task once idle."),
+    parameters={
+        "id": {
+            "type": "string",
+            "description": "The subagent id returned by subagent_start",
+        },
+        "message": {
+            "type": "string",
+            "description": "Message for the subagent",
+        },
+    })
 async def subagent_steer(ctx: ChatUpdateContext, id: str,
                          message: str) -> str:
     subs = get_subagents(ctx)
@@ -370,8 +401,19 @@ async def subagent_steer(ctx: ChatUpdateContext, id: str,
     return f"Message queued for subagent {id}."
 
 
-@subagent_tool
-@context_tool
+@agent_tool(
+    scope=BOTH,
+    description=(
+        "Send a progress update back to the parent assistant "
+        "(you are still running). "
+        "Use it for progress worth surfacing before your final "
+        "report."),
+    parameters={
+        "message": {
+            "type": "string",
+            "description": "Progress update for the parent assistant",
+        },
+    })
 async def subagent_send_to_parent(ctx: AgentContext,
                                   message: str) -> str:
     """Send a progress update back to the parent assistant.
@@ -404,143 +446,3 @@ async def subagent_send_to_parent(ctx: AgentContext,
         parent, SubagentMessage(id=sender_id, state="running",
                                 description=description, result=message))
     return "Status sent to parent."
-
-
-_SEND_TO_PARENT_DEF: dict = {
-    "type": "function",
-    "function": {
-        "name": "subagent_send_to_parent",
-        "description": (
-            "Send a progress update back to the parent assistant "
-            "(you are still running). "
-            "Use it for progress worth surfacing before your final "
-            "report."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string",
-                    "description": "Progress update for the parent assistant",
-                },
-            },
-            "required": ["message"],
-            "additionalProperties": False,
-        },
-    },
-}
-
-CONTROL_TOOL_DEFINITIONS: list[dict] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "subagent_start",
-            "description": (
-                "Start a background subagent on a task and return its id "
-                "immediately (does not wait). The subagent has fresh context "
-                "and none of this conversation's history, so include all "
-                "relevant context in the prompt. It shares your tools "
-                "(except these subagent controls and the tools that post to "
-                "the chat), and the sandbox; file changes persist. The "
-                "subagent can communicate with you via its "
-                "subagent_send_to_parent tool. You will be notified with its "
-                "final report when it finishes, no need to poll. Use "
-                "subagent_steer to steer it meanwhile."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "description": {
-                        "type": "string",
-                        "description": "A short 3-5 word label for the task, displayed to the user",
-                    },
-                    "prompt": {
-                        "type": "string",
-                        "description": "The task for the subagent. Include context, constraints, and what its final report should contain.",
-                    },
-                },
-                "required": ["description", "prompt"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "subagent_list",
-            "description": ("List all subagents with their ids, statuses, "
-                            "and how long each has been running."),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "subagent_stop",
-            "description": "Stop a running background subagent by id.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "description": "The subagent id returned by subagent_start",
-                    },
-                },
-                "required": ["id"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "subagent_steer",
-            "description": (
-                "Steer a running background subagent mid-run: queue a "
-                "message delivered as a parent message in its conversation. "
-                "Use it to redirect, answer its questions, or give it its "
-                "next task once idle."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "description": "The subagent id returned by subagent_start",
-                    },
-                    "message": {
-                        "type": "string",
-                        "description": "Message for the subagent",
-                    },
-                },
-                "required": ["id", "message"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    _SEND_TO_PARENT_DEF,
-]
-
-CONTROL_TOOL_MAP: dict = {
-    "subagent_start": subagent_start,
-    "subagent_list": subagent_list,
-    "subagent_stop": subagent_stop,
-    "subagent_steer": subagent_steer,
-    "subagent_send_to_parent": subagent_send_to_parent,
-}
-
-
-def register(tools_list: list[dict], tool_map: dict):
-    """Register all five control tools globally.
-
-    Visibility is controlled per-agent by each tool's declared scope (see
-    tool_scope) and by which definitions are passed to run_llm
-    (get_parent_tool_defs / get_subagent_tool_defs); run_llm only executes
-    tool names present in the offered definitions.
-    """
-    tools_list.extend(CONTROL_TOOL_DEFINITIONS)
-    tool_map.update(CONTROL_TOOL_MAP)

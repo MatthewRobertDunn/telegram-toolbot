@@ -6,10 +6,10 @@ from dataclasses import dataclass
 
 import requests
 import config
-from chat_update_context import AgentContext, ChatUpdateContext, context_tool
+from chat_update_context import AgentContext, ChatUpdateContext
 from sandbox import manager
+from tool_registry import SUBAGENT, agent_tool
 from tool_result import ImageAttachment, ToolCallResult
-from tool_scope import subagent_only_tool, parent_tool
 
 logger = logging.getLogger(__name__)
 
@@ -125,8 +125,46 @@ def _as_result(text: str, image: GeneratedImage,
         image=ImageAttachment(data=image.png, mime="image/png"))
 
 
-@parent_tool
-@context_tool
+_RESOLUTION_PARAM = {
+    "type": "string",
+    "description": ("Image dimensions as WIDTHxHEIGHT, e.g. '1024x1024'. "
+                    f"Width and height must each be a multiple of {DIM_STEP} "
+                    f"between {MIN_DIM} and {MAX_DIM}, e.g. '1024x1024', "
+                    "'1568x672', '768x1344', '1344x768'"),
+}
+
+_ADD_TO_CONTEXT_PARAM = {
+    "type": "boolean",
+    "description": ("Whether to attach the generated image to this conversation "
+                    "so you can see it. Defaults to false. Requires a "
+                    "vision-capable model."),
+}
+
+
+@agent_tool(
+    name="generate_image",
+    description=("Generate an image from a text prompt. The image is sent to "
+                 "the user in the chat and stored in the sandbox at "
+                 "/workspace/uploads, so it can be processed with sandbox "
+                 "tools. Set send_to_chat to false to generate an image "
+                 "without showing it to the user. Set add_to_context to true "
+                 "to attach the generated image to this conversation so you "
+                 "can look at it (requires a vision-capable model)."),
+    parameters={
+        "prompt": {
+            "type": "string",
+            "description": "A text description of the image to generate",
+        },
+        "resolution": _RESOLUTION_PARAM,
+        "send_to_chat": {
+            "type": "boolean",
+            "description": ("Whether to send the generated image to the user "
+                            "in the chat. Defaults to true. Set to false to "
+                            "generate the image privately: it is still stored "
+                            "in the sandbox, but not shown to the user."),
+        },
+        "add_to_context": _ADD_TO_CONTEXT_PARAM,
+    })
 async def generate_and_send_image(
         ctx: ChatUpdateContext, prompt: str,
         resolution: str = DEFAULT_RESOLUTION,
@@ -141,8 +179,24 @@ async def generate_and_send_image(
                       result, add_to_context)
 
 
-@subagent_only_tool
-@context_tool
+@agent_tool(
+    name="generate_image",
+    scope=SUBAGENT,
+    description=("Generate an image from a text prompt and store it in the "
+                 "sandbox at /workspace/uploads, where it can be processed "
+                 "with the sandbox tools. The image is never shown to the "
+                 "user: report its path to the parent assistant, which can "
+                 "share it. Set add_to_context to true to attach the image to "
+                 "this conversation so you can look at it (requires a "
+                 "vision-capable model)."),
+    parameters={
+        "prompt": {
+            "type": "string",
+            "description": "A text description of the image to generate",
+        },
+        "resolution": _RESOLUTION_PARAM,
+        "add_to_context": _ADD_TO_CONTEXT_PARAM,
+    })
 async def generate_image_subagent(
         ctx: AgentContext, prompt: str,
         resolution: str = DEFAULT_RESOLUTION,
@@ -152,89 +206,3 @@ async def generate_image_subagent(
         return result
     return _as_result(_describe(result, prompt, sent=False),
                       result, add_to_context)
-
-
-TOOL_NAME = "generate_image"
-SUBAGENT_TOOL_NAME = "generate_image_subagent"
-
-_RESOLUTION_PARAM = {
-    "type": "string",
-    "description": ("Image dimensions as WIDTHxHEIGHT, e.g. '1024x1024'. "
-                    f"Width and height must each be a multiple of {DIM_STEP} "
-                    f"between {MIN_DIM} and {MAX_DIM}, e.g. '1024x1024', "
-                    "'1568x672', '768x1344', '1344x768'")
-}
-
-_ADD_TO_CONTEXT_PARAM = {
-    "type": "boolean",
-    "description": ("Whether to attach the generated image to this conversation "
-                    "so you can see it. Defaults to false. Requires a "
-                    "vision-capable model.")
-}
-
-TOOL_DEFINITIONS: list[dict] = [
-    {
-        "type": "function",
-        "function": {
-            "name": TOOL_NAME,
-            "strict": False,
-            "description": ("Generate an image from a text prompt. The image is sent to the user "
-                            "in the chat and stored in the sandbox at /workspace/uploads, so it "
-                            "can be processed with sandbox tools. Set send_to_chat to false to "
-                            "generate an image without showing it to the user. Set "
-                            "add_to_context to true to attach the generated image to this "
-                            "conversation so you can look at it (requires a vision-capable model)."),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "A text description of the image to generate"
-                    },
-                    "resolution": _RESOLUTION_PARAM,
-                    "send_to_chat": {
-                        "type": "boolean",
-                        "description": ("Whether to send the generated image to the user in the chat. "
-                                        "Defaults to true. Set to false to generate the image privately: "
-                                        "it is still stored in the sandbox, but not shown to the user.")
-                    },
-                    "add_to_context": _ADD_TO_CONTEXT_PARAM,
-                },
-                "required": ["prompt"],
-                "additionalProperties": False
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": SUBAGENT_TOOL_NAME,
-            "strict": False,
-            "description": ("Generate an image from a text prompt and store it in the sandbox at "
-                            "/workspace/uploads, where it can be processed with the sandbox tools. "
-                            "The image is never shown to the user: report its path to the parent "
-                            "assistant, which can share it. Set add_to_context to true to attach "
-                            "the image to this conversation so you can look at it (requires a "
-                            "vision-capable model)."),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "A text description of the image to generate"
-                    },
-                    "resolution": _RESOLUTION_PARAM,
-                    "add_to_context": _ADD_TO_CONTEXT_PARAM,
-                },
-                "required": ["prompt"],
-                "additionalProperties": False
-            }
-        }
-    },
-]
-
-
-def register(tools_list: list[dict], tool_map: dict):
-    tools_list.extend(TOOL_DEFINITIONS)
-    tool_map[TOOL_NAME] = generate_and_send_image
-    tool_map[SUBAGENT_TOOL_NAME] = generate_image_subagent

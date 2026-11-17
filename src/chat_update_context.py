@@ -219,11 +219,6 @@ def create_chat_update_context(
     )
 
 
-def context_tool(func):
-    func._requires_context = True
-    return func
-
-
 def callback_adapter(func):
     import functools
 

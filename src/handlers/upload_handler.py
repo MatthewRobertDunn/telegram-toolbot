@@ -7,7 +7,7 @@ from chat_update_context import ChatUpdateContext
 from handlers.middleware import handler
 from handlers.generation_queue import submit_generation
 from sandbox import manager
-from tools.sandbox_tool import IMAGE_MIME_TYPES
+from tools.sandbox.media import IMAGE_MIME_TYPES
 from upload_cache import record_upload
 
 logger = logging.getLogger(__name__)

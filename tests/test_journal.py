@@ -798,19 +798,18 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await journal_tool.journal_list_topics(ctx),
                          "Mood\nSleep")
 
-    async def test_register_all_seven_tools(self):
-        definitions: list[dict] = []
-        tool_map: dict = {}
-        journal_tool.register(definitions, tool_map)
-        names = [d["function"]["name"] for d in definitions]
-        self.assertEqual(names, ["journal_add", "journal_get",
-                                 "journal_delete", "journal_edit",
-                                 "journal_topic_edit",
-                                 "journal_query", "journal_list_topics"])
-        for name in names:
-            self.assertIn(name, tool_map)
-            self.assertTrue(getattr(tool_map[name], "_requires_context",
-                                    False))
+    def test_all_seven_tools_are_declared(self):
+        from tool_registry import BOTH, all_tools
+        declared = {t.name: t for t in all_tools()
+                    if t.name.startswith('journal_')}
+        self.assertEqual(sorted(declared), [
+            "journal_add", "journal_delete", "journal_edit", "journal_get",
+            "journal_list_topics", "journal_query", "journal_topic_edit"])
+        for name, tool in declared.items():
+            with self.subTest(tool=name):
+                self.assertEqual(tool.scope, BOTH)
+                self.assertEqual(tool.func.__name__, name)
+                self.assertTrue(getattr(tool.func, "_needs_ctx", False))
 
 
 if __name__ == '__main__':

@@ -177,12 +177,20 @@ class TestSubagentVariant(unittest.IsolatedAsyncioTestCase):
         return result, send
 
     def test_schema_has_no_send_switch(self):
-        subagent = next(
-            t for t in image_gen.TOOL_DEFINITIONS
-            if t['function']['name'] == image_gen.SUBAGENT_TOOL_NAME)
-        params = subagent['function']['parameters']['properties']
-        self.assertNotIn('send_to_chat', params)
-        self.assertIn('add_to_context', params)
+        from tool_registry import SUBAGENT, tools_for
+        subagent = next(t for t in tools_for(SUBAGENT)
+                        if t.name == 'generate_image')
+        self.assertNotIn('send_to_chat', subagent.properties)
+        self.assertIn('add_to_context', subagent.properties)
+
+    def test_both_roles_see_the_same_name(self):
+        from tool_registry import PARENT, SUBAGENT, tools_for
+        parent = next(t for t in tools_for(PARENT)
+                      if t.name == 'generate_image')
+        subagent = next(t for t in tools_for(SUBAGENT)
+                        if t.name == 'generate_image')
+        self.assertIn('send_to_chat', parent.properties)
+        self.assertIsNot(parent.func, subagent.func)
 
     async def test_never_posts_and_reports_the_path(self):
         result, send = await self._run()
