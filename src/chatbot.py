@@ -46,6 +46,7 @@ from handlers.memory_handlers import (
     memory_delete_command,
     memory_delete_all_command,
 )
+from handlers.window_handlers import new_window_command
 from tool_registration import register_tools
 from sandbox import manager, start_reaper, stop_reaper
 from skills_store import load_skills
@@ -88,6 +89,7 @@ async def post_init(application: Application):
             BotCommand("undo", "Undo the last message"),
             BotCommand("impersonate", "Impersonate your next message"),
             BotCommand("compact", "Compact the conversation context"),
+            BotCommand("new_window", "Open a new thread in this chat"),
             BotCommand("systemprompt", "Set a custom system prompt"),
             BotCommand("systemprompt_reset", "Reset system prompt to default"),
             BotCommand("model", "Set the model to use"),
@@ -143,35 +145,36 @@ def main():
         'allowed_ids': config.ALLOWED_IDS,
     })
 
-    application.add_handler(CommandHandler('start', callback_adapter(start_restart_command)))
-    application.add_handler(CommandHandler('stop', callback_adapter(stop_command)))
-    application.add_handler(CommandHandler('regenerate', callback_adapter(regenerate_command)))
-    application.add_handler(CommandHandler('retry', callback_adapter(retry_command)))
+    application.add_handler(CommandHandler('compact', callback_adapter(compact_command)))
     # Alias of /retry with its own help text.
     application.add_handler(CommandHandler('continue', callback_adapter(retry_command)))
-    application.add_handler(CommandHandler('undo', callback_adapter(undo_command)))
     application.add_handler(CommandHandler('impersonate', callback_adapter(impersonate_command)))
-    application.add_handler(CommandHandler('compact', callback_adapter(compact_command)))
-    application.add_handler(CommandHandler('systemprompt', callback_adapter(systemprompt_command)))
-    application.add_handler(CommandHandler('systemprompt_reset', callback_adapter(systemprompt_reset_command)))
-    application.add_handler(CommandHandler('model_list', callback_adapter(model_list_command)))
-    application.add_handler(CommandHandler('model', callback_adapter(model_command)))
-    application.add_handler(CommandHandler('model_reset', callback_adapter(model_reset_command)))
-    application.add_handler(CommandHandler('subagent_model', callback_adapter(subagent_model_command)))
-    application.add_handler(CommandHandler('subagent_model_reset', callback_adapter(subagent_model_reset_command)))
-    application.add_handler(CommandHandler('subagent_list', callback_adapter(subagent_list_command)))
-    application.add_handler(CommandHandler('top_p', callback_adapter(top_p_command)))
-    application.add_handler(CommandHandler('top_p_reset', callback_adapter(top_p_reset_command)))
-    application.add_handler(CommandHandler('temperature', callback_adapter(temperature_command)))
-    application.add_handler(CommandHandler('temperature_reset', callback_adapter(temperature_reset_command)))
-    application.add_handler(CommandHandler('timezone', callback_adapter(timezone_command)))
-    application.add_handler(CommandHandler('memory_list', callback_adapter(memory_list_command)))
     application.add_handler(CommandHandler('memory', callback_adapter(memory_command)))
     application.add_handler(CommandHandler('memory_delete', callback_adapter(memory_delete_command)))
     application.add_handler(CommandHandler('memory_delete_all', callback_adapter(memory_delete_all_command)))
-    application.add_handler(CommandHandler('tool_output', callback_adapter(tool_output_command)))
-    application.add_handler(CommandHandler('settings_reset', callback_adapter(settings_reset_command)))
+    application.add_handler(CommandHandler('memory_list', callback_adapter(memory_list_command)))
+    application.add_handler(CommandHandler('model', callback_adapter(model_command)))
+    application.add_handler(CommandHandler('model_list', callback_adapter(model_list_command)))
+    application.add_handler(CommandHandler('model_reset', callback_adapter(model_reset_command)))
+    application.add_handler(CommandHandler('new_window', callback_adapter(new_window_command)))
+    application.add_handler(CommandHandler('regenerate', callback_adapter(regenerate_command)))
+    application.add_handler(CommandHandler('retry', callback_adapter(retry_command)))
     application.add_handler(CommandHandler('sandbox_reset', callback_adapter(sandbox_reset_command)))
+    application.add_handler(CommandHandler('settings_reset', callback_adapter(settings_reset_command)))
+    application.add_handler(CommandHandler('start', callback_adapter(start_restart_command)))
+    application.add_handler(CommandHandler('stop', callback_adapter(stop_command)))
+    application.add_handler(CommandHandler('subagent_list', callback_adapter(subagent_list_command)))
+    application.add_handler(CommandHandler('subagent_model', callback_adapter(subagent_model_command)))
+    application.add_handler(CommandHandler('subagent_model_reset', callback_adapter(subagent_model_reset_command)))
+    application.add_handler(CommandHandler('systemprompt', callback_adapter(systemprompt_command)))
+    application.add_handler(CommandHandler('systemprompt_reset', callback_adapter(systemprompt_reset_command)))
+    application.add_handler(CommandHandler('temperature', callback_adapter(temperature_command)))
+    application.add_handler(CommandHandler('temperature_reset', callback_adapter(temperature_reset_command)))
+    application.add_handler(CommandHandler('timezone', callback_adapter(timezone_command)))
+    application.add_handler(CommandHandler('tool_output', callback_adapter(tool_output_command)))
+    application.add_handler(CommandHandler('top_p', callback_adapter(top_p_command)))
+    application.add_handler(CommandHandler('top_p_reset', callback_adapter(top_p_reset_command)))
+    application.add_handler(CommandHandler('undo', callback_adapter(undo_command)))
     application.add_handler(CommandHandler('user_profile', callback_adapter(user_profile_command)))
     application.add_handler(CommandHandler('user_profile_reset', callback_adapter(user_profile_reset_command)))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), callback_adapter(text_message_handler)))

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -124,6 +125,24 @@ class ConversationPersistenceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('conversation', keys)
         self.assertIn('conversation:thread:2', keys)
         await store.close()
+
+    async def test_last_updated_is_stamped_by_the_db(self):
+        await save_conversation(5, 2,
+                                Conversation([{'role': 'user', 'content': 'x'}]))
+        conn = sqlite3.connect(self.path)
+        try:
+            cols = {row[1]: row
+                    for row in conn.execute('PRAGMA table_info(settings)')}
+            self.assertEqual(cols['last_updated'][3], 1)  # NOT NULL
+            row = conn.execute(
+                "SELECT thread_id, last_updated FROM settings "
+                "WHERE user_id = 5 AND key = 'conversation:thread:2'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        self.assertEqual(row[0], 2)
+        self.assertIsNotNone(row[1])
 
 
 if __name__ == '__main__':
