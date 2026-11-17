@@ -15,10 +15,14 @@ logger = logging.getLogger(__name__)
                  "Returns a full ISO 8601 timestamp with UTC offset, plus "
                  "weekday and IANA timezone name."))
 async def get_current_datetime(ctx: AgentContext) -> str:
-    try:
-        tz_name = ctx.settings.timezone
-    except (KeyError, AttributeError):
+    settings = ctx.user_data.settings
+    if settings is None:
         tz_name = "UTC"
+    else:
+        try:
+            tz_name = settings.timezone
+        except AttributeError:
+            tz_name = "UTC"
     try:
         tz = ZoneInfo(tz_name)
     except (ValueError, ZoneInfoNotFoundError):

@@ -7,7 +7,7 @@ import bootstrap  # noqa: F401 — path setup, env, logging, DB reset
 from bootstrap import next_uid, requires_docker
 from mocks import RecordingBot
 
-from chat_update_context import ChatUpdateContext
+from chat_update_context import ChatUpdateContext, UserData
 from handlers.upload_handler import upload_handler
 from sandbox import manager
 
@@ -30,7 +30,7 @@ def _upload_ctx(user_id: int, media, caption=None) -> ChatUpdateContext:
         chat=message.chat,
         user=message.from_user,
         message=message,  # type: ignore[arg-type]
-        user_data=context.user_data,
+        user_data=UserData(),
         command_text='',
         command_name='')
 

@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 from typing import Any
-from chat_update_context import ChatUpdateContext
+from chat_update_context import ChatUpdateContext, UserData
 
 
 async def download_as_bytearray(*args, **kwargs):
@@ -107,7 +107,7 @@ def create_mock_context(
         chat=message.chat,
         user=message.from_user,
         message=message,  # type: ignore[arg-type]
-        user_data=context.user_data,
+        user_data=UserData(),
         command_text=command_text,
         command_name=command_name,
     )

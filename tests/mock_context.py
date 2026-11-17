@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from chat_update_context import ChatUpdateContext
+from chat_update_context import ChatUpdateContext, UserData
 from conversation import Conversation
 
 
@@ -36,7 +36,7 @@ def mock_ctx(*, user_id: int = 1, bot=None,
         chat=message.chat,
         user=message.from_user,
         message=message,  # type: ignore[arg-type]
-        user_data=context.user_data,
+        user_data=UserData(),
         command_text='',
         command_name='')
     if conversation is not None:
@@ -45,5 +45,5 @@ def mock_ctx(*, user_id: int = 1, bot=None,
         else:
             ctx.conversation = Conversation(list(conversation))
     if settings is not None:
-        ctx.user_data['settings'] = settings
+        ctx.user_data.settings = settings
     return ctx

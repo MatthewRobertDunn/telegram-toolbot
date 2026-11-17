@@ -13,6 +13,19 @@ Two levels of access live here:
     ``AgentContext`` plus the Telegram objects, the ``messaging`` handle
     that can actually post, and the parent's generation bookkeeping.
 
+ ``UserData``
+    Per-user state: settings and sandbox read marks. A single instance
+    lives in PTB's ``context.user_data`` dict
+    (see ``create_chat_update_context``).
+
+ ``ThreadData``
+    Per-chat/thread state: the conversation plus all generation and
+    subagent coordination (queue, tasks, inbox, epoch, wakeup, records).
+    Hung off ``UserData`` as the user's single thread for now; when
+    multi-chat lands these move into ``bot_data['threads']`` keyed by
+    (chat_id, message_thread_id), and ``AgentContext`` will take the
+    thread explicitly instead of reaching it through ``UserData``.
+
 Subagents are given an ``AgentContext`` built by
 ``ChatUpdateContext.new_subagent_context``; see that method for the state
 isolation rules.
@@ -20,6 +33,7 @@ isolation rules.
 
 import asyncio
 import copy
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from telegram import Update, Bot, Chat, User, Message
@@ -30,7 +44,51 @@ from messaging import Messaging
 from skills_store import get_active_skills
 
 if TYPE_CHECKING:
+    from agent_inbox import SubagentInbox
+    from tools.subagent import SubagentRecord
     from user_settings import UserSettings
+
+
+@dataclass
+class ThreadData:
+    """Per-chat/thread state: the conversation and its coordination.
+
+    Everything here belongs to one chat/thread, not to the user: the
+    conversation, the serialized generation machinery (queue, worker and
+    tracked task), the subagent inbox plus its wakeup bookkeeping, the
+    epoch guarding against stale wakeups, and the subagent records that
+    report back to this thread.
+    """
+
+    conversation: Conversation | None = None
+    generation_task: asyncio.Task | None = None
+    generation_worker: asyncio.Task | None = None
+    generation_queue: asyncio.Queue | None = None
+    main_inbox: "SubagentInbox | None" = None
+    main_loop_active: bool = False
+    conversation_epoch: int = 0
+    wakeup_task: asyncio.Task | None = None
+    subagents: dict[str, "SubagentRecord"] = field(default_factory=dict)
+
+
+@dataclass
+class UserData:
+    """Per-user state, shared by every chat/thread of that user.
+
+    Only genuinely user-scoped things live here: settings, and the
+    sandbox read marks (the sandbox itself is per-user, so a file read
+    in any thread counts everywhere). The per-thread state hangs off
+    ``thread_data`` until multi-chat support moves it into
+    ``bot_data['threads']``.
+    """
+
+    settings: "UserSettings | None" = None
+    sandbox_read_files: set[str] = field(default_factory=set)
+    thread_data: ThreadData = field(default_factory=ThreadData)
+
+
+# The single key holding the UserData instance inside PTB's per-user dict.
+_USER_DATA_KEY = '__user_data__'
 
 
 class AgentContext:
@@ -46,27 +104,33 @@ class AgentContext:
     files or typing indicators: the capability is simply absent.
     """
 
-    def __init__(self, *, user_id: int, user_data: dict) -> None:
+    def __init__(self, *, user_id: int, user_data: UserData) -> None:
         self.user_id = user_id
-        # Per-agent state. For a subagent this is its own dict (settings
-        # snapshot + its conversation), never the parent's.
+        # Per-agent state. For a subagent this is its own UserData (settings
+        # snapshot + its own thread), never the parent's.
         self.user_data = user_data
 
     @property
+    def thread_data(self) -> ThreadData:
+        return self.user_data.thread_data
+
+    @property
     def conversation(self) -> "Conversation":
-        return self.user_data['conversation']
+        assert self.thread_data.conversation is not None
+        return self.thread_data.conversation
 
     @conversation.setter
     def conversation(self, value: "Conversation") -> None:
-        self.user_data['conversation'] = value
+        self.thread_data.conversation = value
 
     @property
     def settings(self) -> "UserSettings":
-        return self.user_data['settings']
+        assert self.user_data.settings is not None
+        return self.user_data.settings
 
     @settings.setter
     def settings(self, value: "UserSettings") -> None:
-        self.user_data['settings'] = value
+        self.user_data.settings = value
 
 
 class ChatUpdateContext(AgentContext):
@@ -83,7 +147,7 @@ class ChatUpdateContext(AgentContext):
                  chat: Chat,
                  user: User,
                  message: Message,
-                 user_data: dict,
+                 user_data: UserData,
                  command_text: str,
                  command_name: str) -> None:
         super().__init__(user_id=user.id, user_data=user_data)
@@ -110,23 +174,23 @@ class ChatUpdateContext(AgentContext):
 
     @property
     def generation_task(self) -> asyncio.Task | None:
-        return self.user_data.get('generation_task')
+        return self.thread_data.generation_task
 
     @generation_task.setter
     def generation_task(self, value: asyncio.Task | None) -> None:
-        self.user_data['generation_task'] = value
+        self.thread_data.generation_task = value
 
     @property
     def generation_worker(self) -> "asyncio.Task | None":
-        return self.user_data.get('generation_worker')
+        return self.thread_data.generation_worker
 
     @generation_worker.setter
     def generation_worker(self, value: "asyncio.Task | None") -> None:
-        self.user_data['generation_worker'] = value
+        self.thread_data.generation_worker = value
 
     @property
     def settings_loaded(self) -> bool:
-        return 'settings' in self.user_data
+        return self.user_data.settings is not None
 
     @property
     def model(self) -> str:
@@ -164,16 +228,16 @@ class ChatUpdateContext(AgentContext):
         """Build the isolated context a subagent runs against.
 
         The clone deliberately shares no mutable state with the parent:
-        it gets its own ``user_data`` holding only a settings snapshot and
-        the subagent's own conversation. The parent's coordination state -
-        inbox, wakeup flags, conversation epoch, generation queue, sandbox
-        read marks - is not reachable from here, which is what makes an
-        accidental mutation impossible rather than merely discouraged.
+        it gets its own ``UserData`` holding only a settings snapshot and
+        its own ``ThreadData`` holding the subagent's conversation. The
+        parent thread's coordination state - inbox, wakeup flags,
+        conversation epoch, generation queue, sandbox read marks - is not
+        reachable from here, which is what makes an accidental mutation
+        impossible rather than merely discouraged.
         """
-        user_data: dict = {'conversation': conversation}
-        settings = self.user_data.get('settings')
-        if settings is not None:
-            user_data['settings'] = copy.deepcopy(settings)
+        user_data = UserData(thread_data=ThreadData(conversation=conversation))
+        if self.user_data.settings is not None:
+            user_data.settings = copy.deepcopy(self.user_data.settings)
         return AgentContext(
             user_id=self.user_id,
             user_data=user_data,
@@ -203,8 +267,12 @@ def create_chat_update_context(
     assert user is not None
     message = update.message
     assert message is not None
-    user_data = context.user_data
-    assert user_data is not None
+    user_data_dict = context.user_data
+    assert user_data_dict is not None
+    user_data = user_data_dict.get(_USER_DATA_KEY)
+    if not isinstance(user_data, UserData):
+        user_data = UserData()
+        user_data_dict[_USER_DATA_KEY] = user_data
     text = message.text or message.caption or ''
     return ChatUpdateContext(
         update=update,
