@@ -118,6 +118,10 @@ If you don't need the sandbox, you can disable its tools by removing the `tools.
 | `NVIDIA_API_KEY` | *(falls back to `OPENAI_KEY`)* | Key for NVIDIA Flux image generation |
 | `AI_HORDE_KEY` | *(none — `horde` provider disabled)* | Key for AI Horde image generation (`provider: "horde"`). Anonymous key `0000000000` also works with limits |
 | `AI_HORDE_API_URL` | `https://aihorde.net/api/v2` | AI Horde API endpoint |
+| `NVIDIA_FLUX2_GEN_URL` | `https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b` | NVIDIA FLUX.2-Klein endpoint (`provider: "nvidia-flux2"`) |
+| `CLOUDFLARE_ACCOUNT_ID` | *(none — `cloudflare` provider disabled)* | Cloudflare account ID for Workers AI image generation (`provider: "cloudflare"`) |
+| `CLOUDFLARE_API_TOKEN` | *(none — `cloudflare` provider disabled)* | Cloudflare API token for Workers AI image generation |
+| `CLOUDFLARE_IMAGE_MODEL` | `@cf/leonardo/phoenix-1.0` | Workers AI image model for the `cloudflare` provider |
 | `ALLOWED_USER_IDS` | *(none — open to all)* | Comma-separated Telegram user IDs |
 | `SANDBOX_IMAGE` | `elpechos/toolbot-sandbox:latest` | Docker image used for sandboxes |
 | `SANDBOX_IDLE_STOP_TIMEOUT` | `3600` | Seconds of inactivity before a sandbox is stopped (its files are kept and it is restarted on the next access) |
@@ -207,7 +211,7 @@ The bot uses OpenAI-compatible function calling. These tools are available to th
 | `memory_list` / `memory_get` / `memory_set` / `memory_delete` | The agent's persistent per-user memory |
 | `display_status` | Send a progress message to the chat |
 | `subagent` | Spawn a subagent in a fresh conversation to work on a task (with the same tools and sandbox) and report back |
-| `generate_image` | Generate an image using NVIDIA Flux (`provider: "nvidia"`, default) or AI Horde (`provider: "horde"`) |
+| `generate_image` | Generate an image (default `provider: "nvidia-flux3"`; also `"nvidia-flux2"`, `"cloudflare"`, `"horde"`) |
 
 Subagents get a restricted tool surface. Tools that write to the chat (`send_file` and the `subagent_*` controls) are never offered to them. `read_image` and `generate_image` keep the same name for both agents but swap implementation: the subagent's variant reads or generates without posting and reports the file path for the parent to share. Each subagent runs against its own isolated context copy with no bot, inbox, or generation queue it could touch. Tools declare themselves with `@agent_tool` (see `src/tool_registry.py`), which carries the schema, derives `required` from the signature, and defaults to parent-only.
 

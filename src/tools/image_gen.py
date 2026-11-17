@@ -23,10 +23,13 @@ DEFAULT_RESOLUTION = "1024x1024"
 MAX_ERROR_CHARS = 2000
 
 # Image backends selectable via the tools' ``provider`` parameter.
-PROVIDER_NVIDIA = "nvidia"
+PROVIDER_NVIDIA_FLUX3 = "nvidia-flux3"
+PROVIDER_NVIDIA_FLUX2 = "nvidia-flux2"
 PROVIDER_HORDE = "horde"
-IMAGE_PROVIDERS = (PROVIDER_NVIDIA, PROVIDER_HORDE)
-DEFAULT_PROVIDER = PROVIDER_NVIDIA
+PROVIDER_CLOUDFLARE = "cloudflare"
+IMAGE_PROVIDERS = (PROVIDER_NVIDIA_FLUX3, PROVIDER_NVIDIA_FLUX2,
+                   PROVIDER_HORDE, PROVIDER_CLOUDFLARE)
+DEFAULT_PROVIDER = PROVIDER_NVIDIA_FLUX3
 
 # AI Horde async polling behaviour.
 HORDE_POLL_INTERVAL = 3.0
@@ -57,8 +60,8 @@ def parse_resolution(resolution: str) -> tuple[int, int]:
     return width, height
 
 
-async def _generate_nvidia(prompt: str, width: int = 1024, height: int = 1024,
-                       seed: int = 0, steps: int = 50) -> str:
+async def _generate_nvidia_flux3(prompt: str, width: int = 1024,
+                             height: int = 1024, steps: int = 50) -> str:
     invoke_url = config.IMAGE_GEN_URL
     headers = {
         "Authorization": f"Bearer {config.NVIDIA_API_KEY}",
@@ -68,10 +71,30 @@ async def _generate_nvidia(prompt: str, width: int = 1024, height: int = 1024,
         "prompt": prompt,
         "width": width,
         "height": height,
-        "seed": seed,
         "steps": steps,
     }
     response = requests.post(invoke_url, headers=headers, json=payload)
+    response.raise_for_status()
+    artifact = response.json()["artifacts"][0]
+    if artifact.get("finishReason") == "CONTENT_FILTERED":
+        raise RuntimeError("Generation blocked by content filter")
+    return artifact["base64"]
+
+
+async def _generate_nvidia_flux2(prompt: str, width: int = 1024,
+                                 height: int = 1024, steps: int = 4) -> str:
+    headers = {
+        "Authorization": f"Bearer {config.NVIDIA_API_KEY}",
+        "Accept": "application/json",
+    }
+    payload = {
+        "prompt": prompt,
+        "width": width,
+        "height": height,
+        "steps": steps,
+    }
+    response = requests.post(config.NVIDIA_FLUX2_GEN_URL, headers=headers,
+                             json=payload, timeout=180)
     response.raise_for_status()
     artifact = response.json()["artifacts"][0]
     if artifact.get("finishReason") == "CONTENT_FILTERED":
@@ -158,18 +181,91 @@ async def _generate_horde(prompt: str, width: int = 1024, height: int = 1024,
     return image_data
 
 
+async def _generate_cloudflare(prompt: str, width: int = 1024, height: int = 1024,
+                               seed: int = 0, steps: int = 25,
+                               guidance: float | None = None,
+                               negative_prompt: str | None = None) -> str:
+    """Render via Cloudflare Workers AI (default: Leonardo Phoenix 1.0).
+
+    Phoenix params: ``prompt`` (required), ``guidance`` (2-10, default 2),
+    ``seed`` (>= 0), ``width``/``height`` (0-2048), ``num_steps`` (1-50,
+    default 25), ``negative_prompt``. Phoenix returns raw JPEG bytes
+    (``image/jpeg``); other Workers AI image models return
+    ``{"result": {"image": "<base64>"}}``. Both shapes are accepted and
+    normalised to a base64 string.
+    """
+    if not config.CLOUDFLARE_ACCOUNT_ID:
+        raise RuntimeError(
+            "Cloudflare account ID is not configured "
+            "(set CLOUDFLARE_ACCOUNT_ID)")
+    if not config.CLOUDFLARE_API_TOKEN:
+        raise RuntimeError(
+            "Cloudflare API token is not configured "
+            "(set CLOUDFLARE_API_TOKEN)")
+    if not 1 <= steps <= 50:
+        raise ValueError(f"Invalid num_steps {steps}: must be 1-50")
+    if guidance is not None and not 2 <= guidance <= 10:
+        raise ValueError(f"Invalid guidance {guidance}: must be 2-10")
+    url = (f"https://api.cloudflare.com/client/v4/accounts/"
+           f"{config.CLOUDFLARE_ACCOUNT_ID}/ai/run/"
+           f"{config.CLOUDFLARE_IMAGE_MODEL}")
+    headers = {
+        "Authorization": f"Bearer {config.CLOUDFLARE_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload: dict[str, object] = {
+        "prompt": prompt,
+        "width": width,
+        "height": height,
+        "num_steps": steps,
+    }
+    if seed:
+        payload["seed"] = seed
+    if guidance is not None:
+        payload["guidance"] = guidance
+    if negative_prompt:
+        payload["negative_prompt"] = negative_prompt
+    response = requests.post(url, headers=headers, json=payload, timeout=120)
+    response.raise_for_status()
+    content_type = response.headers.get("Content-Type", "")
+    if "application/json" in content_type:
+        result = response.json().get("result", {})
+        image_data = result.get("image") if isinstance(result, dict) else None
+        if not image_data:
+            raise RuntimeError(
+                "Cloudflare Workers AI returned no image.")
+        # Validate it decodes before returning it to the shared store path.
+        base64.b64decode(image_data)
+        return image_data
+    return base64.b64encode(response.content).decode()
+
+
 async def generate_image(prompt: str, width: int = 1024, height: int = 1024,
                          seed: int = 0, steps: int | None = None,
-                         provider: str = DEFAULT_PROVIDER) -> str:
+                         provider: str = DEFAULT_PROVIDER,
+                         guidance: float | None = None,
+                         negative_prompt: str | None = None) -> str:
     """Render an image with the selected backend, returning base64 PNG data.
 
-    ``steps`` defaults per backend (50 for NVIDIA, 25 for AI Horde, where
-    larger requests need upfront kudos).
+    ``steps`` defaults per backend (25 for Cloudflare Phoenix and AI Horde,
+    where larger requests need upfront kudos, 50 for NVIDIA FLUX-3, 4 for
+    NVIDIA FLUX.2-Klein). ``guidance`` (2-10) and ``negative_prompt`` are
+    Phoenix-only and omitted for the other backends; ``seed`` is ignored
+    for the NVIDIA backends (their endpoints reject it).
     """
-    if provider == PROVIDER_NVIDIA:
-        return await _generate_nvidia(prompt, width=width, height=height,
-                                      seed=seed,
-                                      steps=50 if steps is None else steps)
+    if provider == PROVIDER_NVIDIA_FLUX2:
+        return await _generate_nvidia_flux2(
+            prompt, width=width, height=height,
+            steps=4 if steps is None else steps)
+    if provider == PROVIDER_CLOUDFLARE:
+        return await _generate_cloudflare(
+            prompt, width=width, height=height, seed=seed,
+            steps=25 if steps is None else steps,
+            guidance=guidance, negative_prompt=negative_prompt)
+    if provider == PROVIDER_NVIDIA_FLUX3:
+        return await _generate_nvidia_flux3(prompt, width=width, height=height,
+                                            steps=50 if steps is None
+                                            else steps)
     if provider == PROVIDER_HORDE:
         return await _generate_horde(prompt, width=width, height=height,
                                      seed=seed,
@@ -185,12 +281,14 @@ class GeneratedImage:
     png: bytes
     # None when storing it in the sandbox failed.
     path: str | None
-    # Sniffed from the bytes: NVIDIA returns PNG, AI Horde returns WEBP.
+    # Sniffed from the bytes: NVIDIA returns PNG, Cloudflare JPEG,
+    # AI Horde WEBP.
     mime: str = "image/png"
 
 
 def _sniff_format(data: bytes) -> tuple[str, str]:
-    """Guess (extension, mime) from magic bytes; NVIDIA is PNG, Horde WEBP."""
+    """Guess (extension, mime) from magic bytes; Cloudflare is JPEG,
+    NVIDIA PNG, Horde WEBP."""
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "png", "image/png"
     if data.startswith(b"\xff\xd8\xff"):
@@ -276,9 +374,11 @@ _ADD_TO_CONTEXT_PARAM = {
 _PROVIDER_PARAM = {
     "type": "string",
     "enum": list(IMAGE_PROVIDERS),
-    "description": ("Image backend to use: 'nvidia' (NVIDIA Flux, default) "
-                    "or 'horde' (AI Horde crowdsourced generation). "
-                    "Defaults to 'nvidia'."),
+    "description": ("Image backend to use: 'nvidia-flux3' (NVIDIA FLUX-3, "
+                    "default), 'nvidia-flux2' (NVIDIA FLUX.2-Klein, fast "
+                    "few-step), 'cloudflare' (Cloudflare Workers AI "
+                    "Leonardo Phoenix 1.0) or 'horde' (AI Horde "
+                    "crowdsourced generation). Defaults to 'nvidia-flux3'."),
 }
 
 
@@ -291,8 +391,9 @@ _PROVIDER_PARAM = {
                  "without showing it to the user. Set add_to_context to true "
                  "to attach the generated image to this conversation so you "
                  "can look at it (requires a vision-capable model). "
-                 "Set provider to 'horde' to use the AI Horde backend "
-                 "instead of the default NVIDIA Flux backend."),
+                 "Set provider to 'nvidia-flux2', 'cloudflare' or 'horde' "
+                 "to use that backend instead of the default NVIDIA FLUX-3 "
+                 "backend."),
     parameters={
         "prompt": {
             "type": "string",
@@ -342,8 +443,9 @@ async def generate_and_send_image(
                  "user: report its path to the parent assistant, which can "
                  "share it. Set add_to_context to true to attach the image to "
                  "this conversation so you can look at it (requires a "
-                 "vision-capable model). Set provider to 'horde' to use the "
-                 "AI Horde backend instead of the default NVIDIA Flux backend."),
+                 "vision-capable model). Set provider to 'nvidia-flux2', "
+                 "'cloudflare' or 'horde' to use that backend instead of "
+                 "the default NVIDIA FLUX-3 backend."),
     parameters={
         "prompt": {
             "type": "string",

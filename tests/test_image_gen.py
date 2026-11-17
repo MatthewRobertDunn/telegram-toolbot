@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import sys
 import unittest
@@ -201,8 +202,8 @@ class TestSubagentVariant(unittest.IsolatedAsyncioTestCase):
 
 
 class TestProviderParam(unittest.IsolatedAsyncioTestCase):
-    # The provider parameter selects the image backend; the default stays
-    # NVIDIA so existing behaviour is unchanged.
+    # The provider parameter selects the image backend; the default is
+    # Cloudflare Phoenix.
 
     def test_schema_exposes_provider_for_both_roles(self):
         from tool_registry import PARENT, SUBAGENT, tools_for
@@ -211,7 +212,11 @@ class TestProviderParam(unittest.IsolatedAsyncioTestCase):
                         if t.name == 'generate_image')
             self.assertIn('provider', tool.properties)
             self.assertEqual(tool.properties['provider']['enum'],
-                             ['nvidia', 'horde'])
+                             ['nvidia-flux3', 'nvidia-flux2', 'horde',
+                              'cloudflare'])
+
+    def test_default_provider_is_a_known_provider(self):
+        self.assertIn(image_gen.DEFAULT_PROVIDER, image_gen.IMAGE_PROVIDERS)
 
     async def test_unknown_provider_reported_to_the_model(self):
         result = await image_gen.generate_and_send_image(
@@ -223,7 +228,8 @@ class TestProviderParam(unittest.IsolatedAsyncioTestCase):
         seen = {}
 
         async def fake_generate(prompt, width=1024, height=1024, seed=0,
-                                steps=None, provider='nvidia'):
+                                steps=None, provider='unset',
+                                guidance=None, negative_prompt=None):
             seen['provider'] = provider
             return base64.b64encode(b'\x89PNG').decode()
 
@@ -239,6 +245,166 @@ class TestProviderParam(unittest.IsolatedAsyncioTestCase):
                     await image_gen.generate_and_send_image(
                         mock_ctx(), 'a cat', provider='horde')
         self.assertEqual(seen.get('provider'), 'horde')
+
+
+class TestCloudflareProvider(unittest.IsolatedAsyncioTestCase):
+    # Phoenix params: prompt/width/height/num_steps, plus optional
+    # guidance (2-10), seed and negative_prompt. The endpoint answers
+    # with raw JPEG bytes or with {"result": {"image": "<base64>"}}.
+
+    def _response(self, body: bytes, content_type: str):
+        response = requests.Response()
+        response.status_code = 200
+        response.headers['Content-Type'] = content_type
+        response._content = body
+        response.encoding = 'utf-8'
+        return response
+
+    async def _generate(self, response, **kwargs):
+        with unittest.mock.patch.object(
+                image_gen.config, 'CLOUDFLARE_ACCOUNT_ID', 'acct'), \
+             unittest.mock.patch.object(
+                image_gen.config, 'CLOUDFLARE_API_TOKEN', 'tok'), \
+             unittest.mock.patch.object(
+                image_gen.requests, 'post',
+                return_value=response) as post:
+            result = await image_gen._generate_cloudflare('a cat', **kwargs)
+        return result, post
+
+    async def test_raw_jpeg_bytes_are_base64_encoded(self):
+        result, post = await self._generate(
+            self._response(b'\xff\xd8\xffdata', 'image/jpeg'))
+        self.assertEqual(result, base64.b64encode(b'\xff\xd8\xffdata').decode())
+        payload = post.call_args.kwargs['json']
+        self.assertEqual(payload['num_steps'], 25)
+        self.assertNotIn('guidance', payload)
+        self.assertNotIn('negative_prompt', payload)
+        self.assertNotIn('seed', payload)
+
+    async def test_json_base64_shape_and_optional_params(self):
+        body = ('{"result": {"image": "%s"}}'
+                % base64.b64encode(b'\xff\xd8\xffdata').decode()).encode()
+        result, post = await self._generate(
+            self._response(body, 'application/json'),
+            steps=30, seed=7, guidance=5,
+            negative_prompt='blurry')
+        self.assertEqual(result, base64.b64encode(b'\xff\xd8\xffdata').decode())
+        payload = post.call_args.kwargs['json']
+        self.assertEqual(payload['num_steps'], 30)
+        self.assertEqual(payload['seed'], 7)
+        self.assertEqual(payload['guidance'], 5)
+        self.assertEqual(payload['negative_prompt'], 'blurry')
+
+    async def test_invalid_steps_and_guidance_rejected(self):
+        response = self._response(b'\xff\xd8\xffdata', 'image/jpeg')
+        with self.assertRaises(ValueError):
+            await self._generate(response, steps=0)
+        with self.assertRaises(ValueError):
+            await self._generate(response, guidance=11)
+
+    async def test_missing_credentials_reported(self):
+        with unittest.mock.patch.object(
+                image_gen.config, 'CLOUDFLARE_ACCOUNT_ID', ''), \
+             unittest.mock.patch.object(
+                image_gen.config, 'CLOUDFLARE_API_TOKEN', 'tok'):
+            with self.assertRaises(RuntimeError):
+                await image_gen._generate_cloudflare('a cat')
+
+    async def test_dispatch_uses_cloudflare_defaults(self):
+        seen = {}
+
+        async def fake_cloudflare(prompt, width=1024, height=1024, seed=0,
+                                  steps=25, guidance=None,
+                                  negative_prompt=None):
+            seen.update(steps=steps, guidance=guidance,
+                        negative_prompt=negative_prompt)
+            return base64.b64encode(b'\xff\xd8\xffdata').decode()
+
+        with unittest.mock.patch.object(image_gen, '_generate_cloudflare',
+                                        fake_cloudflare):
+            result = await image_gen.generate_image(
+                'a cat', provider='cloudflare')
+        self.assertEqual(
+            result, base64.b64encode(b'\xff\xd8\xffdata').decode())
+        self.assertEqual(
+            seen, {'steps': 25, 'guidance': None, 'negative_prompt': None})
+
+
+class TestNvidiaProvider(unittest.IsolatedAsyncioTestCase):
+    # The FLUX-3 NIM endpoint rejects a ``seed`` field (HTTP 422
+    # ``extra_forbidden``), so no seed is ever sent.
+
+    async def test_payload_has_no_seed(self):
+        body = base64.b64encode(b'\x89PNG\r\n\x1a\napple').decode()
+        response = requests.Response()
+        response.status_code = 200
+        response.headers['Content-Type'] = 'application/json'
+        response._content = (
+            ('{"artifacts": [%s]}' % json.dumps(
+                {'base64': body, 'finishReason': 'SUCCESS'})).encode())
+        response.encoding = 'utf-8'
+        with unittest.mock.patch.object(
+                image_gen.requests, 'post',
+                return_value=response) as post:
+            result = await image_gen._generate_nvidia_flux3('an apple')
+        self.assertEqual(result, body)
+        self.assertEqual(post.call_args.args[0],
+                         image_gen.config.IMAGE_GEN_URL)
+        payload = post.call_args.kwargs['json']
+        self.assertEqual(payload['steps'], 50)
+        self.assertNotIn('seed', payload)
+
+
+class TestNvidiaFlux2Provider(unittest.IsolatedAsyncioTestCase):
+    # FLUX.2-Klein posts to its own NIM URL with prompt/width/height/steps
+    # and no seed (the endpoint 422s on it). Response shape matches the
+    # FLUX-3 endpoint: {"artifacts": [{"base64": ..., "finishReason": ...}]}.
+
+    def _response(self, artifact: dict):
+        response = requests.Response()
+        response.status_code = 200
+        response.headers['Content-Type'] = 'application/json'
+        response._content = (
+            ('{"artifacts": [%s]}' % json.dumps(artifact)).encode())
+        response.encoding = 'utf-8'
+        return response
+
+    async def test_payload_has_no_seed_and_defaults_to_4_steps(self):
+        body = base64.b64encode(b'\x89PNG\r\n\x1a\nfrog').decode()
+        with unittest.mock.patch.object(
+                image_gen.requests, 'post',
+                return_value=self._response(
+                    {'base64': body, 'finishReason': 'SUCCESS'})) as post:
+            result = await image_gen._generate_nvidia_flux2('a frog')
+        self.assertEqual(result, body)
+        self.assertEqual(post.call_args.args[0],
+                         image_gen.config.NVIDIA_FLUX2_GEN_URL)
+        payload = post.call_args.kwargs['json']
+        self.assertEqual(payload['steps'], 4)
+        self.assertNotIn('seed', payload)
+
+    async def test_content_filter_raises(self):
+        body = base64.b64encode(b'nope').decode()
+        with unittest.mock.patch.object(
+                image_gen.requests, 'post',
+                return_value=self._response(
+                    {'base64': body, 'finishReason': 'CONTENT_FILTERED'})):
+            with self.assertRaises(RuntimeError):
+                await image_gen._generate_nvidia_flux2('a frog')
+
+    async def test_dispatch_defaults_to_4_steps(self):
+        seen = {}
+
+        async def fake_flux2(prompt, width=1024, height=1024, steps=4):
+            seen['steps'] = steps
+            return 'b64'
+
+        with unittest.mock.patch.object(image_gen, '_generate_nvidia_flux2',
+                                        fake_flux2):
+            result = await image_gen.generate_image(
+                'a frog', provider='nvidia-flux2')
+        self.assertEqual(result, 'b64')
+        self.assertEqual(seen.get('steps'), 4)
 
 
 class TestSniffFormat(unittest.IsolatedAsyncioTestCase):

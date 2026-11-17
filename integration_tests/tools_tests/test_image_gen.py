@@ -30,7 +30,7 @@ class TestImageGenTool(unittest.IsolatedAsyncioTestCase):
             add_to_context=True)
         assert isinstance(result, ToolCallResult)
         assert result.image is not None
-        self.assertEqual(result.image.mime, "image/png")
+        self.assertIn(result.image.mime, ("image/png", "image/jpeg"))
         self.assertTrue(result.image.data)
 
 

@@ -15,12 +15,19 @@ NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", os.environ.get("OPENAI_API_KEY
 # well as the AI_HOARD_KEY spelling already present in some .env files.
 AI_HORDE_KEY = os.environ.get("AI_HORDE_KEY", os.environ.get("AI_HOARD_KEY", ""))
 AI_HORDE_API_URL = os.environ.get("AI_HORDE_API_URL", "https://aihorde.net/api/v2")
+CLOUDFLARE_ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+CLOUDFLARE_IMAGE_MODEL = os.environ.get(
+    "CLOUDFLARE_IMAGE_MODEL", "@cf/leonardo/phoenix-1.0")
 LLM_MODEL = os.environ.get("LLM_MODEL", "auto:smart")
 # Optional operator override for the model used by the `subagent` tool.
 # Unset means use the user's current model (their /model setting).
 SUBAGENT_MODEL = os.environ.get("SUBAGENT_MODEL") or None
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://192.168.0.2:3001/v1")
 IMAGE_GEN_URL = os.environ.get("IMAGE_GEN_URL", f"https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux-3-image-klein")
+NVIDIA_FLUX2_GEN_URL = os.environ.get(
+    "NVIDIA_FLUX2_GEN_URL",
+    "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b")
 temperature = 1.0
 top_p = 0.95
 api_retry_time = 600
