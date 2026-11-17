@@ -100,32 +100,17 @@ def publish(ctx):
              "LC_ALL=C systemctl status tbot --user -l --no-pager")
 
 
-def _find_env_file():
-    """The local .env to deploy, if any: the project root's, else src's.
-
-    src/ is accepted as a *source* only, for a checkout whose secrets file
-    predates the root layout; the deployed copy always goes to the root.
-    """
-
-    for relative in [".env", os.path.join("src", ".env")]:
-        path = os.path.join(ROOT, relative)
-        if os.path.isfile(path):
-            return path
-    return None
-
-
 @pk.task
 def publish_env(ctx):
-    """Copy the local .env to the server, if there is one."""
+    """Copy the project-root .env to the server, if there is one."""
 
-    env_path = _find_env_file()
-    if env_path is None:
-        print("No .env file found; nothing to copy.")
+    env_path = os.path.join(ROOT, ".env")
+    if not os.path.isfile(env_path):
+        print("No .env at the project root; nothing to copy.")
         return
 
-    # Always land on the project-root .env: that is the file config.py
-    # reads. Mirroring the local layout would put a src/.env copy where
-    # nothing looks at it.
+    # The server reads this one file (see config.py), so there is nowhere
+    # else for it to go.
     remote_path = f"{REMOTE_DIR}/.env"
 
     ctx.call("scp", env_path, f"{DEPLOY_HOST}:{remote_path}")
