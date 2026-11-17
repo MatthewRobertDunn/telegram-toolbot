@@ -14,9 +14,8 @@ def handler(func):
         user_id = ctx.user_id
         allowed = ctx.context.bot_data.get('allowed_ids', [])
         if allowed and user_id not in allowed:
-            await ctx.bot.send_message(
-                chat_id=ctx.chat_id,
-                text=f'You are not authorized to use this chatbot. Your user ID is {user_id}.')
+            await ctx.messaging.send_message(
+                f'You are not authorized to use this chatbot. Your user ID is {user_id}.')
             return
         await init_conversation(ctx)
         return await func(ctx)

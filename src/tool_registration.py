@@ -1,30 +1,40 @@
+"""Loads the tool modules, in the order their tools are offered."""
+
+import importlib
 import logging
 
-from tools.web import register as register_web
-from tools.datetime_tool import register as register_datetime
-from tools.python_runner import register as register_python_runner
-from tools.memory_tool import register as register_memory
-from tools.journal_tool import register as register_journal
-from tools.status_tool import register as register_status
-from tools.subagent import register as register_subagent
-from tools.image_gen import register as register_image_gen
-from tools.sandbox_tool import register as register_sandbox_tool
-from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
+import tool_registry
 
 logger = logging.getLogger(__name__)
 
+# Declaration order is the order the model sees its tools in. It is fixed
+# here rather than derived from a package scan so the tool list is stable
+# from run to run.
+#
+# tools.status_tool is deliberately absent: it is not offered at the moment
+# (see the module for why).
+TOOL_MODULES = (
+    'tools.web',
+    'tools.datetime_tool',
+    'tools.python_runner',
+    'tools.memory_tool',
+    'tools.journal_tool',
+    'tools.image_gen',
+    'tools.subagent',
+    'tools.sandbox.shell',
+    'tools.sandbox.files',
+    'tools.sandbox.search',
+    'tools.sandbox.media',
+)
 
-def register_tools():
-    logger.info("Registering tools...")
-    register_web(TOOL_DEFINITIONS, TOOL_MAP)
-    register_datetime(TOOL_DEFINITIONS, TOOL_MAP)
-    register_python_runner(TOOL_DEFINITIONS, TOOL_MAP)
-    register_memory(TOOL_DEFINITIONS, TOOL_MAP)
-    register_journal(TOOL_DEFINITIONS, TOOL_MAP)
-    # Control tools for both roles live in the global registry; each agent
-    # loop is only offered its own subset (see tools.subagent getters).
-    register_subagent(TOOL_DEFINITIONS, TOOL_MAP)
-    # This tool doesn't seem that useful for now, so we don't register it. It can be added back in later if needed.
-    # register_status(TOOL_DEFINITIONS, TOOL_MAP)
-    register_image_gen(TOOL_DEFINITIONS, TOOL_MAP)
-    register_sandbox_tool(TOOL_DEFINITIONS, TOOL_MAP)
+
+def load_tools() -> None:
+    """Import every tool module, running their @agent_tool declarations."""
+    for name in TOOL_MODULES:
+        importlib.import_module(name)
+
+
+def register_tools() -> None:
+    """Populate and validate the registry. Called once at startup."""
+    tool_registry.load()
+    logger.info("Registered %d tools", len(tool_registry.all_tools()))

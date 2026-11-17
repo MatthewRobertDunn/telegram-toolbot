@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 
-from .draft_streamer import DraftStreamer
+from .draft_streamer import DraftSink
 
 # Some backends stream reasoning inline in the content field (instead of
 # the reasoning_content field), ending in a bare close tag; split there so
@@ -45,7 +45,7 @@ def _split_thinking(text: str) -> tuple[str, str]:
     return text.strip(), ''
 
 
-async def consume_stream(stream, streamer: DraftStreamer,
+async def consume_stream(stream, streamer: DraftSink,
                          strip_thinking: bool) -> ConsumeStreamResult:
     """Read a chat completion stream, forwarding content to live drafts.
 

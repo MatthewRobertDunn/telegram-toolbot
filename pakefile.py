@@ -74,6 +74,16 @@ def publish(ctx):
              "--exclude", "__pycache__", "--exclude", ".env",
              "-cf", tar_path, "src")
     ctx.call("scp", tar_path, f"{DEPLOY_HOST}:/tmp/")
+    # Replace the remote tree rather than extracting over it: a module
+    # removed or renamed locally would otherwise linger on the server and
+    # keep being imported. Nothing else lives in src, and no secret does:
+    # the app reads the project-root .env (see config.py). The chmod undoes
+    # read-only directory modes left by earlier archives (see
+    # --no-same-permissions below); without write permission matty cannot
+    # empty them.
+    ctx.call("ssh", DEPLOY_HOST,
+             f"chmod -R u+w {REMOTE_DIR}/src 2>/dev/null;"
+             f" rm -rf {REMOTE_DIR}/src")
     # Ignore archived modes: bsdtar maps Windows attributes (e.g. OneDrive's
     # read-only flag on dirs) into the tarball, which once left the server
     # tree read-only and broke later deploys. Fresh dirs/files from umask.
@@ -90,30 +100,18 @@ def publish(ctx):
              "LC_ALL=C systemctl status tbot --user -l --no-pager")
 
 
-def _find_env_file():
-    """The local .env to deploy, if any: the project root's, else src's."""
-
-    for relative in [".env", os.path.join("src", ".env")]:
-        path = os.path.join(ROOT, relative)
-        if os.path.isfile(path):
-            return path
-    return None
-
-
 @pk.task
 def publish_env(ctx):
-    """Copy the local .env to the server, if there is one."""
+    """Copy the project-root .env to the server, if there is one."""
 
-    env_path = _find_env_file()
-    if env_path is None:
-        print("No .env file found; nothing to copy.")
+    env_path = os.path.join(ROOT, ".env")
+    if not os.path.isfile(env_path):
+        print("No .env at the project root; nothing to copy.")
         return
 
-    # Mirror the local layout on the server; load_dotenv() finds the
-    # .env from either place. Forward slashes: the remote side is Linux
-    # and scp would misread Windows backslash paths.
-    relative = os.path.relpath(env_path, ROOT).replace(os.sep, "/")
-    remote_path = f"{REMOTE_DIR}/{relative}"
+    # The server reads this one file (see config.py), so there is nowhere
+    # else for it to go.
+    remote_path = f"{REMOTE_DIR}/.env"
 
     ctx.call("scp", env_path, f"{DEPLOY_HOST}:{remote_path}")
     print(f"Copied {env_path} to {DEPLOY_HOST}:{remote_path}")

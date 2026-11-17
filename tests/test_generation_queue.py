@@ -93,10 +93,20 @@ class TestGenerateResponse(unittest.TestCase):
         cancelled = mock.AsyncMock(return_value='never seen')
         cancelled.cancelled.return_value = True
         cancelled.close.return_value = None
+
+        async def cancel_inner(coro):
+            """Leave the tracked task cancelled, like a /stop."""
+            try:
+                await coro
+            except asyncio.CancelledError:
+                pass
+            inner = ctx.generation_task
+            inner.cancelled = lambda: True  # type: ignore[method-assign]
+            raise asyncio.CancelledError
+
+        ctx.messaging.run_with_typing = cancel_inner
         with mock.patch.object(gq, 'run_llm', cancelled):
-            with mock.patch.object(gq, 'run_with_typing',
-                                   _cancel_inner):
-                asyncio.run(gq.generate_response(ctx, 'hello'))
+            asyncio.run(gq.generate_response(ctx, 'hello'))
         roles = [m['role'] for m in ctx.conversation.messages
                  if m['role'] != 'system']
         self.assertEqual(roles, ['user'])
@@ -116,18 +126,6 @@ class TestGenerateResponse(unittest.TestCase):
         asyncio.run(gq.submit_task(ctx, boom()))
         asyncio.run(gq.submit_task(ctx, after()))
         self.assertEqual(order, ['ran'])
-
-
-async def _cancel_inner(ctx, coro):
-    """Stand-in for run_with_typing that leaves the tracked task cancelled."""
-    task = asyncio.current_task()
-    try:
-        await coro
-    except asyncio.CancelledError:
-        pass
-    inner = ctx.generation_task
-    inner.cancelled = lambda: True  # type: ignore[method-assign]
-    raise asyncio.CancelledError
 
 
 class TestStopCommand(unittest.TestCase):

@@ -8,7 +8,8 @@ import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from chat_update_context import ChatUpdateContext, context_tool
+from chat_update_context import AgentContext
+from tool_registry import BOTH, agent_tool
 
 from journal_store import (
     JournalEntry,
@@ -21,14 +22,14 @@ from journal_store import (
 logger = logging.getLogger(__name__)
 
 
-def _user_timezone(ctx: ChatUpdateContext) -> str:
+def _user_timezone(ctx: AgentContext) -> str:
     try:
         return ctx.settings.timezone
     except (KeyError, AttributeError):
         return "UTC"
 
 
-def _now_in_user_timezone(ctx: ChatUpdateContext) -> tuple[str, int]:
+def _now_in_user_timezone(ctx: AgentContext) -> tuple[str, int]:
     name = _user_timezone(ctx)
     try:
         tz = ZoneInfo(name)
@@ -100,8 +101,29 @@ def _format_entry(record: JournalEntry) -> str:
             f"Entry: {record.entry}")
 
 
-@context_tool
-async def journal_add(ctx: ChatUpdateContext, topic: str, entry: str) -> str:
+@agent_tool(
+    scope=BOTH,
+    description=(
+        "Creates a new journal entry in the authenticated user's "
+        "journal. Use this whenever the user shares information that "
+        "should be retained, such as health, mood, symptoms, sleep, "
+        "experiences or personal reflections. Prefer an existing "
+        "topic from journal_list_topics; do not create unnecessary "
+        "variations of existing topics. Preserve the user's meaning "
+        "and relevant details; do not invent information. The "
+        "creation timestamp is generated automatically in the user's "
+        "timezone."),
+    parameters={
+        "topic": {
+            "type": "string",
+            "description": "Category or subject, max 128 characters.",
+        },
+        "entry": {
+            "type": "string",
+            "description": "Journal entry content, plain text.",
+        },
+    })
+async def journal_add(ctx: AgentContext, topic: str, entry: str) -> str:
     if not isinstance(topic, str) or not topic.strip():
         return "Error: Topic cannot be empty"
     if not isinstance(entry, str) or not entry.strip():
@@ -123,8 +145,21 @@ async def journal_add(ctx: ChatUpdateContext, topic: str, entry: str) -> str:
     return f"Created journal entry id:{record.id} created:{record.created} topic:{record.topic}"
 
 
-@context_tool
-async def journal_get(ctx: ChatUpdateContext,
+@agent_tool(
+    scope=BOTH,
+    description=("Retrieves one or more journal entries by their IDs. Use "
+                 "this to inspect entries, verify their contents before "
+                 "editing them, or retrieve their full contents after a "
+                 "search. Only entries belonging to the authenticated user "
+                 "can be retrieved."),
+    parameters={
+        "ids": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "description": "Array of entry IDs to retrieve (max 50).",
+        },
+    })
+async def journal_get(ctx: AgentContext,
                       ids: list[int | float | str]) -> str:
     if not isinstance(ids, (list, tuple)):
         return "Error: ids must be an array of entry IDs."
@@ -164,8 +199,16 @@ async def journal_get(ctx: ChatUpdateContext,
     return out
 
 
-@context_tool
-async def journal_delete(ctx: ChatUpdateContext, id: int | float | str) -> str:
+@agent_tool(
+    scope=BOTH,
+    description="Permanently deletes a journal entry.",
+    parameters={
+        "id": {
+            "type": "integer",
+            "description": "ID of the entry to delete.",
+        },
+    })
+async def journal_delete(ctx: AgentContext, id: int | float | str) -> str:
     try:
         entry_id = _coerce_id(id)
     except ValueError as e:
@@ -182,8 +225,40 @@ async def journal_delete(ctx: ChatUpdateContext, id: int | float | str) -> str:
     return f"Journal entry {entry_id} deleted"
 
 
-@context_tool
-async def journal_edit(ctx: ChatUpdateContext, id: int | float | str,
+@agent_tool(
+    scope=BOTH,
+    description=(
+        "Performs exact string replacements in a journal entry. "
+        "Retrieve the entry with journal_get first if you do not already have its "
+        "current contents. Matching is exact and case-sensitive. "
+        "The edit will FAIL if `oldString` is not found in the "
+        "entry. The edit will FAIL if `oldString` is found multiple "
+        "times in the entry: either provide a larger string with "
+        "more surrounding context to make it unique or use "
+        "`replaceAll` to change every instance. The original "
+        "creation timestamp is preserved. Use an empty `newString` "
+        "to delete a section of text."),
+    parameters={
+        "id": {
+            "type": "integer",
+            "description": "ID of the entry to modify.",
+        },
+        "oldString": {
+            "type": "string",
+            "description": "The text to replace",
+        },
+        "newString": {
+            "type": "string",
+            "description": ("The text to replace it with (must be different "
+                            "from oldString)"),
+        },
+        "replaceAll": {
+            "type": "boolean",
+            "description": ("Replace all occurrences of oldString "
+                            "(default false)"),
+        },
+    })
+async def journal_edit(ctx: AgentContext, id: int | float | str,
                        oldString: str, newString: str,
                        replaceAll: bool | None = None) -> str:
     try:
@@ -220,9 +295,32 @@ async def journal_edit(ctx: ChatUpdateContext, id: int | float | str,
     return f"Journal entry {entry_id} updated"
 
 
-@context_tool
-async def journal_topic_edit(ctx: ChatUpdateContext, id: int | float | str,
-                              oldTopic: str, newTopic: str) -> str:
+@agent_tool(
+    scope=BOTH,
+    description=(
+        "Changes the topic of a journal entry. "
+        "Retrieve the entry with journal_get first if you do not "
+        "already know its current topic. oldTopic must match the "
+        "entry's current topic exactly; the edit fails otherwise. "
+        "Prefer an existing topic from journal_list_topics; do not "
+        "create unnecessary variations of existing topics."),
+    parameters={
+        "id": {
+            "type": "integer",
+            "description": "ID of the entry to modify.",
+        },
+        "oldTopic": {
+            "type": "string",
+            "description": "The current topic (must match exactly)",
+        },
+        "newTopic": {
+            "type": "string",
+            "description": ("The new topic (must be different from oldTopic, "
+                            "max 128 characters)"),
+        },
+    })
+async def journal_topic_edit(ctx: AgentContext, id: int | float | str,
+                             oldTopic: str, newTopic: str) -> str:
     try:
         entry_id = _coerce_id(id)
     except ValueError as e:
@@ -254,16 +352,61 @@ async def journal_topic_edit(ctx: ChatUpdateContext, id: int | float | str,
     return f"Journal entry {entry_id} topic updated"
 
 
-@context_tool
-async def journal_query(ctx: ChatUpdateContext,
-                         cursor: str | None = None,
-                         query: str | None = None,
-                         topic: str | None = None,
-                         sortDescending: bool | None = None,
-                         limit: int | float | str | None = None) -> str:
+@agent_tool(
+    scope=BOTH,
+    description=(
+        "Searches the authenticated user's journal by text "
+        "and topic. This is the primary tool for recalling recorded "
+        "information: past experiences, mood over time, symptoms, "
+        "sleep or wellbeing patterns. All parameters are optional; "
+        "call with no parameters to retrieve recent entries. "
+        "Results are newest-first by default; set sortDescending to "
+        "false for oldest-first. cursor is an optional exclusive "
+        "paging cursor, ISO 8601 with timezone: with newest-first "
+        "it returns only entries created before cursor, with "
+        "oldest-first only entries created after cursor. At most "
+        "limit entries are returned (default 50, maximum 50). When "
+        "more matching entries exist beyond the returned page, the "
+        "response ends with a follow-up line telling you which date "
+        "to pass as cursor next; keep the other parameters the same. "
+        "Full-text search matches "
+        "words, not meanings: "
+        "use concise terms or quoted phrases for exact phrases. "
+        "Timestamps must be ISO 8601 with an explicit timezone or "
+        "UTC indicator."),
+    parameters={
+        "cursor": {
+            "type": "string",
+            "description": ("Optional exclusive paging cursor, ISO 8601 "
+                            "with timezone."),
+        },
+        "query": {
+            "type": "string",
+            "description": "Optional full-text search query.",
+        },
+        "topic": {
+            "type": "string",
+            "description": "Optional exact topic filter (case-insensitive).",
+        },
+        "sortDescending": {
+            "type": "boolean",
+            "description": ("Newest-first when true (default), oldest-first "
+                            "when false."),
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Max entries to return, 1 to 50 (default 50).",
+        },
+    })
+async def journal_query(ctx: AgentContext,
+                        cursor: str | None = None,
+                        query: str | None = None,
+                        topic: str | None = None,
+                        sortDescending: bool | None = None,
+                        limit: int | float | str | None = None) -> str:
     try:
         cursor_dt = (_parse_iso_timestamp(cursor, "cursor")
-                    if isinstance(cursor, str) and cursor.strip() else None)
+                     if isinstance(cursor, str) and cursor.strip() else None)
     except ValueError as e:
         return str(e)
     if sortDescending is None:
@@ -311,8 +454,15 @@ async def journal_query(ctx: ChatUpdateContext,
     return out
 
 
-@context_tool
-async def journal_list_topics(ctx: ChatUpdateContext) -> str:
+@agent_tool(
+    scope=BOTH,
+    description=(
+        "Returns the distinct topics in the authenticated user's "
+        "journal, one per line, sorted alphabetically. Use this to "
+        "discover existing categories before creating or searching "
+        "entries, and prefer an existing topic over coining a new "
+        "variation."))
+async def journal_list_topics(ctx: AgentContext) -> str:
     try:
         async with create_journal_store() as store:
             topics = await store.list_topics(user_id=ctx.user_id)
@@ -322,247 +472,3 @@ async def journal_list_topics(ctx: ChatUpdateContext) -> str:
     if not topics:
         return "No journal topics yet."
     return "\n".join(topics)
-
-
-JOURNAL_ADD = "journal_add"
-JOURNAL_GET = "journal_get"
-JOURNAL_DELETE = "journal_delete"
-JOURNAL_EDIT = "journal_edit"
-JOURNAL_TOPIC_EDIT = "journal_topic_edit"
-JOURNAL_QUERY = "journal_query"
-JOURNAL_LIST_TOPICS = "journal_list_topics"
-
-TOOL_DEFINITIONS: list[dict] = [
-    {
-        "type": "function",
-        "function": {
-            "name": JOURNAL_ADD,
-            "strict": False,
-            "description": (
-                "Creates a new journal entry in the authenticated user's "
-                "journal. Use this whenever the user shares information that "
-                "should be retained, such as health, mood, symptoms, sleep, "
-                "experiences or personal reflections. Prefer an existing "
-                "topic from journal_list_topics; do not create unnecessary "
-                "variations of existing topics. Preserve the user's meaning "
-                "and relevant details; do not invent information. The "
-                "creation timestamp is generated automatically in the user's "
-                "timezone."),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "topic": {
-                        "type": "string",
-                        "description": "Category or subject, max 128 characters."
-                    },
-                    "entry": {
-                        "type": "string",
-                        "description": "Journal entry content, plain text."
-                    }
-                },
-                "required": ["topic", "entry"],
-                "additionalProperties": False
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": JOURNAL_GET,
-            "strict": False,
-            "description": (
-                "Retrieves one or more journal entries by their IDs. Use this to "
-                "inspect entries, verify their contents before editing them, or "
-                "retrieve their full contents after a search. Only entries "
-                "belonging to the authenticated user can be retrieved."),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "ids": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "Array of entry IDs to retrieve (max 50)."
-                    }
-                },
-                "required": ["ids"],
-                "additionalProperties": False
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": JOURNAL_DELETE,
-            "strict": False,
-            "description": (
-                "Permanently deletes a journal entry."),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "integer",
-                        "description": "ID of the entry to delete."
-                    }
-                },
-                "required": ["id"],
-                "additionalProperties": False
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": JOURNAL_EDIT,
-            "strict": False,
-            "description": (
-                "Performs exact string replacements in a journal entry. "
-                "Retrieve the entry with journal_get first if you do not already have its "
-                "current contents. Matching is exact and case-sensitive. "
-                "The edit will FAIL if `oldString` is not found in the "
-                "entry. The edit will FAIL if `oldString` is found multiple "
-                "times in the entry: either provide a larger string with "
-                "more surrounding context to make it unique or use "
-                "`replaceAll` to change every instance. The original "
-                "creation timestamp is preserved. Use an empty `newString` "
-                "to delete a section of text."),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "integer",
-                        "description": "ID of the entry to modify."
-                    },
-                    "oldString": {
-                        "type": "string",
-                        "description": "The text to replace"
-                    },
-                    "newString": {
-                        "type": "string",
-                        "description": "The text to replace it with (must be different from oldString)"
-                    },
-                    "replaceAll": {
-                        "type": "boolean",
-                        "description": "Replace all occurrences of oldString (default false)"
-                    }
-                },
-                "required": ["id", "oldString", "newString"],
-                "additionalProperties": False
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": JOURNAL_TOPIC_EDIT,
-            "strict": False,
-            "description": (
-                "Changes the topic of a journal entry. "
-                "Retrieve the entry with journal_get first if you do not "
-                "already know its current topic. oldTopic must match the "
-                "entry's current topic exactly; the edit fails otherwise. "
-                "Prefer an existing topic from journal_list_topics; do not "
-                "create unnecessary variations of existing topics."),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "integer",
-                        "description": "ID of the entry to modify."
-                    },
-                    "oldTopic": {
-                        "type": "string",
-                        "description": "The current topic (must match exactly)"
-                    },
-                    "newTopic": {
-                        "type": "string",
-                        "description": "The new topic (must be different from oldTopic, max 128 characters)"
-                    }
-                },
-                "required": ["id", "oldTopic", "newTopic"],
-                "additionalProperties": False
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": JOURNAL_QUERY,
-            "strict": False,
-            "description": (
-                "Searches the authenticated user's journal by text "
-                "and topic. This is the primary tool for recalling recorded "
-                "information: past experiences, mood over time, symptoms, "
-                "sleep or wellbeing patterns. All parameters are optional; "
-                "call with no parameters to retrieve recent entries. "
-                "Results are newest-first by default; set sortDescending to "
-                "false for oldest-first. cursor is an optional exclusive "
-                "paging cursor, ISO 8601 with timezone: with newest-first "
-                "it returns only entries created before cursor, with "
-                "oldest-first only entries created after cursor. At most "
-                "limit entries are returned (default 50, maximum 50). When "
-                "more matching entries exist beyond the returned page, the "
-                "response ends with a follow-up line telling you which date "
-                "to pass as cursor next; keep the other parameters the same. "
-                "Full-text search matches "
-                "words, not meanings: "
-                "use concise terms or quoted phrases for exact phrases. "
-                "Timestamps must be ISO 8601 with an explicit timezone or "
-                "UTC indicator."),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "cursor": {
-                        "type": "string",
-                        "description": "Optional exclusive paging cursor, ISO 8601 with timezone."
-                    },
-                    "query": {
-                        "type": "string",
-                        "description": "Optional full-text search query."
-                    },
-                    "topic": {
-                        "type": "string",
-                        "description": "Optional exact topic filter (case-insensitive)."
-                    },
-                    "sortDescending": {
-                        "type": "boolean",
-                        "description": "Newest-first when true (default), oldest-first when false."
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max entries to return, 1 to 50 (default 50)."
-                    }
-                },
-                "additionalProperties": False
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": JOURNAL_LIST_TOPICS,
-            "strict": False,
-            "description": (
-                "Returns the distinct topics in the authenticated user's "
-                "journal, one per line, sorted alphabetically. Use this to "
-                "discover existing categories before creating or searching "
-                "entries, and prefer an existing topic over coining a new "
-                "variation."),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": False
-            }
-        }
-    },
-]
-
-
-def register(tools_list: list[dict], tool_map: dict):
-    tools_list.extend(TOOL_DEFINITIONS)
-    tool_map[JOURNAL_ADD] = journal_add
-    tool_map[JOURNAL_GET] = journal_get
-    tool_map[JOURNAL_DELETE] = journal_delete
-    tool_map[JOURNAL_EDIT] = journal_edit
-    tool_map[JOURNAL_TOPIC_EDIT] = journal_topic_edit
-    tool_map[JOURNAL_QUERY] = journal_query
-    tool_map[JOURNAL_LIST_TOPICS] = journal_list_topics

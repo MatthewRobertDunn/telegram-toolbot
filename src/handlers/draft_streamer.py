@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import random
+from typing import Protocol
 
 import config
 from chat_update_context import ChatUpdateContext
@@ -16,6 +17,31 @@ DRAFT_MIN_INTERVAL = 0.8
 DRAFT_MAX_TEXT = 8000  # rich draft cap is 32768 UTF-8 chars; stay well below
 THINKING_DRAFT = "<tg-thinking>Thinking...</tg-thinking>"
 PLAIN_DRAFT_MAX = 4096
+
+
+class DraftSink(Protocol):
+    """What the stream consumer needs to forward partial output."""
+
+    async def start(self) -> None: ...
+    def new_round(self) -> None: ...
+    async def update(self, delta: str) -> None: ...
+    async def flush(self, force: bool = False) -> None: ...
+
+
+class NullDraftSink:
+    """A sink for agents that cannot stream drafts (subagents)."""
+
+    async def start(self) -> None:
+        pass
+
+    def new_round(self) -> None:
+        pass
+
+    async def update(self, delta: str) -> None:
+        pass
+
+    async def flush(self, force: bool = False) -> None:
+        pass
 
 
 class DraftStreamer:

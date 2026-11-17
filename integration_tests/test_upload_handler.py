@@ -15,7 +15,7 @@ from sandbox import manager
 def _upload_ctx(user_id: int, media, caption=None) -> ChatUpdateContext:
     bot = RecordingBot()
     context = SimpleNamespace(
-        bot=bot, bot_data={"allowed_ids": []}, user_data={}, chat_data={})
+        bot=bot, bot_data={"allowed_ids": []}, user_data={})
     message = SimpleNamespace(
         text=None, caption=caption, message_id=4321,
         chat=SimpleNamespace(id=user_id, type="private"),
@@ -31,7 +31,6 @@ def _upload_ctx(user_id: int, media, caption=None) -> ChatUpdateContext:
         user=message.from_user,
         message=message,  # type: ignore[arg-type]
         user_data=context.user_data,
-        chat_data=None,
         command_text='',
         command_name='')
 

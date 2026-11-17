@@ -12,9 +12,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from handlers import run_llm as run_llm_mod
 from agent_inbox import SubagentInbox, SubagentMessage
-from conversation import ConversationMessageType
+from chat_update_context import (AgentContext,
+                                 ChatUpdateContext)
+from conversation import Conversation, ConversationMessageType
+from messaging import Messaging
 from mock_context import mock_ctx
-from tool_definitions import TOOL_DEFINITIONS, TOOL_MAP
+from tool_registry import PARENT, SUBAGENT
+from tool_registration import register_tools
 from tools import subagent as subagent_mod
 from tools.subagent import (
     MAX_RECORDS,
@@ -105,7 +109,9 @@ class TestToolSets(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        subagent_mod.register(TOOL_DEFINITIONS, TOOL_MAP)
+        # Register the real tool surface once; get_*_tool_defs read the
+        # registry.
+        register_tools()
 
     def test_parent_tools_include_send_to_parent(self):
         names = {t['function']['name'] for t in get_parent_tool_defs()}
@@ -120,18 +126,93 @@ class TestToolSets(unittest.TestCase):
     def test_subagent_tools_have_no_subagent_controls(self):
         names = {t['function']['name'] for t in get_subagent_tool_defs()}
         self.assertIn('subagent_send_to_parent', names)
+        # Shared toolbox: file, sandbox, web, journal and memory work.
+        for name in ('bash', 'read', 'write', 'web_search', 'python',
+                     'journal_add', 'memory_set'):
+            self.assertIn(name, names)
+        # Chat-writing tools are never offered: they would have no way to
+        # act (a subagent context has no messaging handle).
         for name in ('subagent_start', 'subagent_list', 'subagent_stop',
-                     'subagent_steer'):
+                     'subagent_steer', 'send_file'):
             self.assertNotIn(name, names)
+        # The tools that would post keep their name but swap
+        # implementation, so the subagent still has them.
+        self.assertIn('read_image', names)
+        self.assertIn('generate_image', names)
+        self.assertNotIn('read_image_subagent', names)
+        self.assertNotIn('generate_image_subagent', names)
 
     def test_map_filtered_to_offered_definitions(self):
         # A model hallucinating a non-offered tool cannot execute it.
-        active = run_llm_mod._tool_map_for(get_subagent_tool_defs())
+        active = run_llm_mod._tool_map_for(get_subagent_tool_defs(),
+                                           SUBAGENT)
         self.assertIn('subagent_send_to_parent', active)
         for name in ('subagent_start', 'subagent_list', 'subagent_stop',
                      'subagent_steer'):
             self.assertNotIn(name, active)
-        self.assertEqual(run_llm_mod._tool_map_for([]), {})
+        self.assertEqual(run_llm_mod._tool_map_for([], PARENT), {})
+
+    def test_each_role_executes_its_own_implementation(self):
+        parent = run_llm_mod._tool_map_for(get_parent_tool_defs(), PARENT)
+        subagent = run_llm_mod._tool_map_for(get_subagent_tool_defs(),
+                                             SUBAGENT)
+        for name in ('read_image', 'generate_image'):
+            with self.subTest(tool=name):
+                self.assertIsNot(parent[name], subagent[name])
+
+
+class TestSubagentContextWiring(unittest.IsolatedAsyncioTestCase):
+    # Subagents run on their own silent context; their mail and wakeups go
+    # through the parent's interactive one.
+
+    async def test_run_llm_gets_an_isolated_silent_context(self):
+        parent = _ctx()
+        record = SubagentRecord(id='sub1', description='Job',
+                                conversation=Conversation(), parent=parent)
+        captured: dict = {}
+
+        async def fake_run_llm(ctx, **kwargs):
+            captured['ctx'] = ctx
+            captured['kwargs'] = kwargs
+            return 'done'
+
+        with unittest.mock.patch.object(subagent_mod, 'run_llm',
+                                        fake_run_llm), \
+            unittest.mock.patch.object(subagent_mod, '_notify_parent',
+                                       unittest.mock.AsyncMock()):
+            await subagent_mod._run_subagent(parent, record, model='sub-m')
+
+        sub_ctx = captured['ctx']
+        self.assertIsInstance(sub_ctx, AgentContext)
+        self.assertNotIsInstance(sub_ctx, ChatUpdateContext)
+        self.assertFalse(hasattr(sub_ctx, 'messaging'))
+        self.assertIs(sub_ctx.conversation, record.conversation)
+        self.assertIsNot(sub_ctx.user_data, parent.user_data)
+        self.assertEqual(captured['kwargs']['model'], 'sub-m')
+        self.assertEqual(record.status, 'done')
+        self.assertEqual(record.result, 'done')
+
+    async def test_send_to_parent_uses_the_parent_context(self):
+        parent = _ctx()
+        record = SubagentRecord(id='sub1', description='Job',
+                                conversation=Conversation(), parent=parent)
+        sub_ctx = parent.new_subagent_context(record.conversation)
+        token = subagent_mod._current_subagent.set(record)
+        try:
+            with unittest.mock.patch.object(
+                    subagent_mod, '_notify_parent',
+                    unittest.mock.AsyncMock()) as notify:
+                result = await subagent_send_to_parent(sub_ctx, 'half done')
+        finally:
+            subagent_mod._current_subagent.reset(token)
+        self.assertIn('sent', result.lower())
+        parent_arg, message = notify.call_args.args
+        # Not the silent context: running the parent loop against it would
+        # write into the subagent's history and post nothing.
+        self.assertIs(parent_arg, parent)
+        self.assertEqual(message.id, 'sub1')
+        self.assertEqual(message.description, 'Job')
+        self.assertEqual(message.result, 'half done')
 
 
 class TestManager(unittest.IsolatedAsyncioTestCase):
@@ -146,7 +227,7 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
         with unittest.mock.patch.object(subagent_mod, 'run_llm', hanging), \
             unittest.mock.patch.object(subagent_mod, '_notify_parent',
                                        unittest.mock.AsyncMock()), \
-            unittest.mock.patch.object(subagent_mod, 'send_message',
+            unittest.mock.patch.object(Messaging, 'send_message',
                                        unittest.mock.AsyncMock(
                                            return_value=[])):
             started = await subagent_start(ctx, 'Task', 'Do it')
@@ -194,17 +275,14 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
 
     async def test_send_to_parent_shared_with_parent_tools(self):
         # The parent loop offers it too: role confusion degrades to a
-        # working tool instead of an 'Unknown tool' error. (Based on the
-        # module lists, not the global registry: independent of test
-        # ordering.)
-        from tools.subagent import CONTROL_TOOL_MAP, PARENT_TOOL_DEFINITIONS
-        names = {t['function']['name'] for t in PARENT_TOOL_DEFINITIONS}
-        self.assertIn('subagent_send_to_parent', names)
-        self.assertIn('subagent_send_to_parent', CONTROL_TOOL_MAP)
-        with unittest.mock.patch.object(run_llm_mod, 'TOOL_MAP',
-                                        CONTROL_TOOL_MAP):
-            active = run_llm_mod._tool_map_for(list(PARENT_TOOL_DEFINITIONS))
-        self.assertIn('subagent_send_to_parent', active)
+        # working tool instead of an 'Unknown tool' error.
+        parent = {t['function']['name'] for t in get_parent_tool_defs()}
+        self.assertIn('subagent_send_to_parent', parent)
+        for role in (PARENT, SUBAGENT):
+            active = run_llm_mod._tool_map_for(
+                get_subagent_tool_defs() if role == SUBAGENT
+                else get_parent_tool_defs(), role)
+            self.assertIn('subagent_send_to_parent', active)
 
     async def test_cancel_all(self):
         ctx = _ctx()
@@ -215,10 +293,7 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
 
         with unittest.mock.patch.object(subagent_mod, 'run_llm', hanging), \
             unittest.mock.patch.object(subagent_mod, '_notify_parent',
-                                       unittest.mock.AsyncMock()), \
-            unittest.mock.patch.object(subagent_mod, 'send_message',
-                                       unittest.mock.AsyncMock(
-                                           return_value=[])):
+                                       unittest.mock.AsyncMock()):
             await subagent_start(ctx, 'A', 'x')
             await subagent_start(ctx, 'B', 'y')
             self.assertEqual(len(ctx.user_data['subagents']), 2)
@@ -337,9 +412,7 @@ class TestSubagentLimits(unittest.IsolatedAsyncioTestCase):
 
         with unittest.mock.patch.object(subagent_mod, 'run_llm', hanging), \
             unittest.mock.patch.object(subagent_mod, '_notify_parent',
-                                       unittest.mock.AsyncMock()), \
-            unittest.mock.patch.object(subagent_mod, 'send_message',
-                                unittest.mock.AsyncMock(return_value=[])):
+                                       unittest.mock.AsyncMock()):
             for _ in range(MAX_SUBAGENTS):
                 await subagent_start(ctx, 'T', 'x')
             denied = await subagent_start(ctx, 'T', 'one too many')
@@ -356,7 +429,7 @@ class TestSubagentLimits(unittest.IsolatedAsyncioTestCase):
         for i in range(MAX_RECORDS):
             subs[f'old{i}'] = SubagentRecord(
                 id=f'old{i}', description='old',
-                conversation=Conversation(), status='done')
+                conversation=Conversation(), status='done', parent=ctx)
 
         async def hanging(*args, **kwargs):
             await asyncio.sleep(60)
@@ -364,9 +437,7 @@ class TestSubagentLimits(unittest.IsolatedAsyncioTestCase):
 
         with unittest.mock.patch.object(subagent_mod, 'run_llm', hanging), \
             unittest.mock.patch.object(subagent_mod, '_notify_parent',
-                                       unittest.mock.AsyncMock()), \
-            unittest.mock.patch.object(subagent_mod, 'send_message',
-                                unittest.mock.AsyncMock(return_value=[])):
+                                       unittest.mock.AsyncMock()):
             await subagent_start(ctx, 'New', 'x')
             cancel_all_subagents(ctx)
         self.assertEqual(len(subs), MAX_RECORDS)
@@ -381,9 +452,9 @@ class TestSubagentLimits(unittest.IsolatedAsyncioTestCase):
         with unittest.mock.patch.object(subagent_mod, 'run_llm', boom), \
             unittest.mock.patch.object(subagent_mod, '_notify_parent',
                                        unittest.mock.AsyncMock()) as notify, \
-            unittest.mock.patch.object(subagent_mod, 'send_message',
-                                unittest.mock.AsyncMock(
-                                    return_value=[])) as send:
+            unittest.mock.patch.object(Messaging, 'send_message',
+                                       unittest.mock.AsyncMock(
+                                           return_value=[])) as send:
             await subagent_start(ctx, 'Label', 'Task')
             record = next(iter(ctx.user_data['subagents'].values()))
             await record.task
@@ -410,7 +481,7 @@ class TestSubagentListDurations(unittest.IsolatedAsyncioTestCase):
         ctx = _ctx()
         rec = SubagentRecord(
             id='abc123', description='Research',
-            conversation=Conversation(),
+            conversation=Conversation(), parent=ctx,
             started_at=time.monotonic() - 83)
         ctx.user_data['subagents'] = {'abc123': rec}
         text = await subagent_list(ctx)
@@ -423,7 +494,7 @@ class TestSubagentListDurations(unittest.IsolatedAsyncioTestCase):
         ctx = _ctx()
         rec = SubagentRecord(
             id='abc123', description='Research',
-            conversation=Conversation(),
+            conversation=Conversation(), parent=ctx,
             started_at=time.monotonic() - 125)
         rec.finish('done')
         # Pin the end so the assertion is deterministic.
@@ -441,7 +512,7 @@ class TestAnnounceTools(unittest.IsolatedAsyncioTestCase):
         async def fake_tool(ctx):
             return 'tool output'
 
-        setattr(fake_tool, '_requires_context', True)
+        setattr(fake_tool, '_needs_ctx', True)
         tool_defs = [{'type': 'function',
                       'function': {'name': 't', 'parameters': {}}}]
         chunk_tool = SimpleNamespace(choices=[SimpleNamespace(
@@ -470,10 +541,10 @@ class TestAnnounceTools(unittest.IsolatedAsyncioTestCase):
             show_tool_output=True, model='m', temperature=1.0, top_p=0.95)
         send = unittest.mock.AsyncMock(return_value=[9])
         with unittest.mock.patch.object(
-                run_llm_mod, 'TOOL_MAP', {'t': fake_tool}), \
+                run_llm_mod, 'functions_for', lambda role: {'t': fake_tool}), \
             unittest.mock.patch.object(
                 run_llm_mod, 'client', fake_client), \
-            unittest.mock.patch.object(run_llm_mod, 'send_json', send):
+            unittest.mock.patch.object(Messaging, 'send_json', send):
             result = await run_llm_mod.run_llm(
                 ctx, conversation=Conversation(), tools=tool_defs,
                 announce_tools=announce)
@@ -503,10 +574,9 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
         inbox = SubagentInbox()
         inbox.put_nowait(message)
         send = unittest.mock.AsyncMock(return_value=[9])
-        with unittest.mock.patch.object(
-                run_llm_mod, 'send_collapsible', send):
-            drained = await run_llm_mod._drain_inbox(
-                ctx, conversation, inbox, announce)
+        ctx.messaging.send_collapsible = send
+        drained = await run_llm_mod._drain_inbox(
+            ctx, conversation, inbox, ctx if announce else None)
         return drained, conversation, send
 
     @staticmethod
@@ -519,7 +589,7 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
             self._report(), True)
         self.assertEqual(drained, 1)
         send.assert_awaited_once()
-        summary, body = send.call_args.args[1], send.call_args.args[2]
+        summary, body = send.call_args.args[0], send.call_args.args[1]
         # Collapsible receipt: summary names sender + state, body is full.
         self.assertIn('Subagent **abc** *Job* — finished', summary)
         self.assertEqual(body, 'report')
@@ -537,7 +607,7 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
             self._report('x' * 2000), True)
         self.assertEqual(drained, 1)
         send.assert_awaited_once()
-        body = send.call_args.args[2]
+        body = send.call_args.args[1]
         # No truncation: the details block collapses the full report.
         self.assertIn('x' * 2000, body)
         # The conversation turn keeps the full report for the model.
@@ -548,7 +618,7 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
             SubagentMessage(id='abc', state='stopped',
                             description='Job'), True)
         self.assertEqual(drained, 1)
-        summary, body = send.call_args.args[1], send.call_args.args[2]
+        summary, body = send.call_args.args[0], send.call_args.args[1]
         self.assertIn('stopped', summary)
         self.assertEqual(body, '(stopped)')
 
@@ -557,7 +627,7 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
             SubagentMessage(id='parent', state='running',
                             result='note'), True)
         self.assertEqual(drained, 1)
-        summary, body = send.call_args.args[1], send.call_args.args[2]
+        summary, body = send.call_args.args[0], send.call_args.args[1]
         self.assertEqual(summary, 'Parent note')
         self.assertEqual(body, 'note')
 
@@ -566,7 +636,7 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
             SubagentMessage(id='abc', state='running',
                             description='Job', result='halfway'), True)
         self.assertEqual(drained, 1)
-        summary = send.call_args.args[1]
+        summary = send.call_args.args[0]
         self.assertIn('Subagent **abc** *Job*', summary)
         self.assertNotIn('— running', summary)
 
@@ -609,10 +679,8 @@ class TestAgentMessageUndo(unittest.IsolatedAsyncioTestCase):
                             description='Job', result='report').format(),
             message_type=ConversationMessageType.AGENT_MESSAGE)
         ctx.conversation.add_assistant('noted')
-        with unittest.mock.patch.object(
-                conversation_handlers, 'send_message',
-                unittest.mock.AsyncMock(return_value=[1])):
-            await conversation_handlers.undo_turn(ctx)
+        ctx.messaging.send_message = unittest.mock.AsyncMock(return_value=[1])
+        await conversation_handlers.undo_turn(ctx)
         roles = [(m.get('role'), m.get('content'))
                  for m in ctx.conversation.messages]
         # The human exchange is gone; nothing of the agent tail survives

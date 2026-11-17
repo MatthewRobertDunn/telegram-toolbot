@@ -8,6 +8,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import requests
+from conversation import Conversation
+from messaging import Messaging
 from tools import image_gen
 from tool_result import ToolCallResult
 from mock_context import mock_ctx
@@ -71,48 +73,47 @@ class TestSendToChat(unittest.IsolatedAsyncioTestCase):
     STORED_PATH = '/workspace/uploads/generated_1.png'
 
     async def _run(self, store_error=None, **kwargs):
-        sent: list = []
-
         async def fake_generate(*args, **_):
             return base64.b64encode(b'\x89PNG').decode()
-
-        async def fake_send_image(ctx, data):
-            sent.append(data)
 
         async def fake_store(user_id, data, name):
             if store_error is not None:
                 return None, store_error
             return self.STORED_PATH, None
 
+        send = unittest.mock.AsyncMock()
         with unittest.mock.patch.object(image_gen, 'generate_image', fake_generate):
-            with unittest.mock.patch.object(image_gen, 'send_image', fake_send_image):
+            with unittest.mock.patch.object(Messaging, 'send_image', send):
                 with unittest.mock.patch.object(
                         image_gen.manager, 'store_file', fake_store):
                     result = await image_gen.generate_and_send_image(
                         mock_ctx(), 'a cat', **kwargs)
         assert isinstance(result, str)
-        return result, sent
+        return result, send
 
     async def test_send_to_chat_branches(self):
         # By default the image is sent to the chat...
-        result, sent = await self._run()
-        self.assertEqual(len(sent), 1)
+        result, send = await self._run()
+        send.assert_awaited_once()
+        call = send.await_args
+        assert call is not None
+        self.assertEqual(call.args[0], b'\x89PNG')
         self.assertIn('sent to chat and stored', result)
         self.assertIn(self.STORED_PATH, result)
 
         # ...and send_to_chat=False keeps it private instead. Either way
         # the image is stored in the sandbox for further processing.
-        result, sent = await self._run(send_to_chat=False)
-        self.assertEqual(sent, [])
+        result, send = await self._run(send_to_chat=False)
+        send.assert_not_awaited()
         self.assertIn(f'stored in the sandbox at {self.STORED_PATH}', result)
         self.assertNotIn('sent to chat', result)
 
     async def test_store_error_reports_delivery(self):
-        result, sent = await self._run(store_error='disk full')
+        result, send = await self._run(store_error='disk full')
         self.assertEqual(result, 'Image sent to chat (prompt: a cat)')
 
     async def test_store_error_without_sending(self):
-        result, sent = await self._run(store_error='disk full', send_to_chat=False)
+        result, send = await self._run(store_error='disk full', send_to_chat=False)
         self.assertEqual(result, 'Image generated (prompt: a cat)')
 
 
@@ -127,14 +128,12 @@ class TestAttachToContext(unittest.IsolatedAsyncioTestCase):
         async def fake_generate(*args, **_):
             return base64.b64encode(b'\x89PNG').decode()
 
-        async def fake_send_image(ctx, data):
-            pass
-
         async def fake_store(user_id, data, name):
             return self.STORED_PATH, None
 
         with unittest.mock.patch.object(image_gen, 'generate_image', fake_generate):
-            with unittest.mock.patch.object(image_gen, 'send_image', fake_send_image):
+            with unittest.mock.patch.object(Messaging, 'send_image',
+                                            unittest.mock.AsyncMock()):
                 with unittest.mock.patch.object(
                         image_gen.manager, 'store_file', fake_store):
                     return await image_gen.generate_and_send_image(
@@ -151,6 +150,54 @@ class TestAttachToContext(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.image.data, b'\x89PNG')
         self.assertEqual(result.image.mime, 'image/png')
         self.assertIn(self.STORED_PATH, result.text)
+
+
+class TestSubagentVariant(unittest.IsolatedAsyncioTestCase):
+    # The subagent variant shares the business logic but has no
+    # send_to_chat parameter and never posts: a silent context has no
+    # messaging handle at all.
+
+    STORED_PATH = '/workspace/uploads/generated_1.png'
+
+    async def _run(self):
+        async def fake_generate(*args, **_):
+            return base64.b64encode(b'\x89PNG').decode()
+
+        async def fake_store(user_id, data, name):
+            return self.STORED_PATH, None
+
+        send = unittest.mock.AsyncMock()
+        ctx = mock_ctx().new_subagent_context(Conversation())
+        with unittest.mock.patch.object(image_gen, 'generate_image', fake_generate):
+            with unittest.mock.patch.object(Messaging, 'send_image', send):
+                with unittest.mock.patch.object(
+                        image_gen.manager, 'store_file', fake_store):
+                    result = await image_gen.generate_image_subagent(
+                        ctx, 'a cat')
+        return result, send
+
+    def test_schema_has_no_send_switch(self):
+        from tool_registry import SUBAGENT, tools_for
+        subagent = next(t for t in tools_for(SUBAGENT)
+                        if t.name == 'generate_image')
+        self.assertNotIn('send_to_chat', subagent.properties)
+        self.assertIn('add_to_context', subagent.properties)
+
+    def test_both_roles_see_the_same_name(self):
+        from tool_registry import PARENT, SUBAGENT, tools_for
+        parent = next(t for t in tools_for(PARENT)
+                      if t.name == 'generate_image')
+        subagent = next(t for t in tools_for(SUBAGENT)
+                        if t.name == 'generate_image')
+        self.assertIn('send_to_chat', parent.properties)
+        self.assertIsNot(parent.func, subagent.func)
+
+    async def test_never_posts_and_reports_the_path(self):
+        result, send = await self._run()
+        send.assert_not_awaited()
+        assert isinstance(result, str)
+        self.assertIn(f'stored in the sandbox at {self.STORED_PATH}', result)
+        self.assertNotIn('sent to chat', result)
 
 
 if __name__ == '__main__':

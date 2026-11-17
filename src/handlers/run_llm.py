@@ -6,12 +6,11 @@ from typing import Any
 import config
 from agent_inbox import (PARENT_ID, TERMINAL_STATES, SubagentInbox,
                          SubagentMessage)
-from tool_definitions import TOOL_MAP
-from chat_update_context import ChatUpdateContext
+from tool_registry import functions_for, role_for
+from chat_update_context import AgentContext, ChatUpdateContext
 from conversation import Conversation, ConversationMessageType
-from .draft_streamer import DraftStreamer
+from .draft_streamer import DraftSink, DraftStreamer, NullDraftSink
 from .consume_stream import ConsumeStreamResult, consume_stream
-from messaging import send_collapsible, send_json
 from tool_result import ToolCallResult
 from openai import AsyncOpenAI
 
@@ -27,7 +26,7 @@ NO_RESPONSE_MESSAGE = "Problem getting response from model."
 NO_CONTENT_MESSAGE = "Model response had no content."
 
 
-async def execute_tool_call(ctx: ChatUpdateContext, tool_call,
+async def execute_tool_call(ctx: AgentContext, tool_call,
                            tool_map: dict) -> str | ToolCallResult:
     name = tool_call.function.name
     arguments = json.loads(tool_call.function.arguments)
@@ -35,7 +34,7 @@ async def execute_tool_call(ctx: ChatUpdateContext, tool_call,
     if func is None:
         return f"Unknown tool: {name}"
     try:
-        if getattr(func, '_requires_context', False):
+        if getattr(func, '_needs_ctx', False):
             result = await func(ctx, **arguments)
         else:
             result = await func(**arguments)
@@ -65,10 +64,10 @@ def _receipt_summary(message: SubagentMessage) -> str:
     return summary
 
 
-async def _drain_inbox(ctx: ChatUpdateContext,
+async def _drain_inbox(ctx: AgentContext,
                        conversation: Conversation,
                        inbox: SubagentInbox | None,
-                       announce: bool = False) -> int:
+                       chat: ChatUpdateContext | None = None) -> int:
     """Move queued agent messages into the conversation as user turns.
 
     Only called at the top of an agent loop iteration and just before a
@@ -77,11 +76,11 @@ async def _drain_inbox(ctx: ChatUpdateContext,
     Returns the number of messages drained.
 
     Display text is built here from the structured fields (never threaded
-    through as pre-rendered strings). When announce is set (and
-    show_tool_output is on), each message is also posted to Telegram as a
-    collapsible rich-text receipt (see _receipt_summary), with its
-    message ids linked to the injected turn - so /undo deletes the post
-    along with the turn. Subagent loops pass announce=False to stay
+    through as pre-rendered strings). When ``chat`` is given (the parent
+    loop only) and show_tool_output is on, each message is also posted to
+    Telegram as a collapsible rich-text receipt (see _receipt_summary),
+    with its message ids linked to the injected turn - so /undo deletes
+    the post along with the turn. Subagent loops pass no chat and stay
     silent: their inbox traffic is not user-chat material.
     """
     if inbox is None:
@@ -94,28 +93,29 @@ async def _drain_inbox(ctx: ChatUpdateContext,
             break
         user_message = conversation.add_user(
             message.format(), message_type=ConversationMessageType.AGENT_MESSAGE)
-        if announce and ctx.settings.show_tool_output:
-            for message_id in await send_collapsible(
-                    ctx, _receipt_summary(message),
+        if chat is not None and chat.settings.show_tool_output:
+            for message_id in await chat.messaging.send_collapsible(
+                    _receipt_summary(message),
                     message.result or f"({message.state})"):
                 user_message.add_telegram_message_id(message_id)
         drained += 1
     return drained
 
 
-def _tool_map_for(tool_defs: list[dict]) -> dict:
+def _tool_map_for(tool_defs: list[dict], role: str) -> dict:
     """The executable map matching the offered definitions.
 
-    Derived from the global TOOL_MAP on demand, so a model that
-    hallucinates a non-offered tool name cannot execute it: it simply
-    is not in the map.
+    Derived from the role's registry view on demand, so a model that
+    hallucinates a non-offered tool name cannot execute it: it simply is
+    not in the map. The role matters because one name can have an
+    implementation per audience (``read_image``).
     """
     offered = {t.get("function", {}).get("name") for t in tool_defs}
-    return {name: func for name, func in TOOL_MAP.items()
+    return {name: func for name, func in functions_for(role).items()
             if name in offered}
 
 
-async def run_llm(ctx: ChatUpdateContext,
+async def run_llm(ctx: AgentContext,
                   model: str | None = None,
                   reasoning_effort: str | None = None,
                   extra_body: dict | None = None,
@@ -125,6 +125,12 @@ async def run_llm(ctx: ChatUpdateContext,
                   stream_drafts: bool = True,
                   announce_tools: bool = True) -> str:
     """Run a model conversation to completion, executing tool calls as needed.
+
+    ``ctx`` may be either kind of context: the interactive parent context or
+    a subagent's silent one. Chat interaction (drafts, tool announcements,
+    inbox receipts) is type-checked here and simply does not happen without
+    an interactive context; everything else (history, tools, inbox) is
+    identical for both agents.
 
     tools=None means no tools are offered to the model (used for nested
     calls such as context compaction). Pass an explicit tool list otherwise;
@@ -146,13 +152,22 @@ async def run_llm(ctx: ChatUpdateContext,
     effective_model = model if model is not None else settings.model
 
     offer_tools = tools is not None and len(tools) > 0
-    active_map = _tool_map_for(tools) if tools else {}
+    active_map = _tool_map_for(tools, role_for(ctx)) if tools else {}
 
-    streamer = DraftStreamer(ctx, enabled=stream_drafts)
+    # Only an interactive context can stream drafts or announce tool calls.
+    chat = ctx if isinstance(ctx, ChatUpdateContext) else None
+    streamer: DraftSink
+    if chat is not None and stream_drafts:
+        streamer = DraftStreamer(chat)
+    else:
+        streamer = NullDraftSink()
     await streamer.start()
 
+    # Tool-call and inbox announcements are parent-only.
+    announce_chat = chat if announce_tools else None
+
     while True:
-        await _drain_inbox(ctx, conversation, inbox, announce_tools)
+        await _drain_inbox(ctx, conversation, inbox, announce_chat)
         time_to_wait = 1
         t0 = asyncio.get_event_loop().time()
         message: ConsumeStreamResult | None = None
@@ -200,17 +215,17 @@ async def run_llm(ctx: ChatUpdateContext,
                 # Anything that arrived while this round was in flight gets
                 # another turn instead of a stale reply (see _drain_inbox).
                 if await _drain_inbox(ctx, conversation, inbox,
-                                       announce_tools):
+                                      announce_chat):
                     continue
                 return message.content
             elif message.reasoning_content:
                 if await _drain_inbox(ctx, conversation, inbox,
-                                      announce_tools):
+                                      announce_chat):
                     continue
                 return message.reasoning_content
             else:
                 if await _drain_inbox(ctx, conversation, inbox,
-                                      announce_tools):
+                                      announce_chat):
                     continue
                 return NO_CONTENT_MESSAGE
             
@@ -237,9 +252,9 @@ async def run_llm(ctx: ChatUpdateContext,
             name = tc.function.name
             args = tc.function.arguments
             logger.info("tool call: %s(%s)", name, args)
-            if announce_tools and ctx.settings.show_tool_output:
-                for message_id in await send_json(
-                        ctx, f"Tool call: `{name}`", args):
+            if announce_chat is not None and ctx.settings.show_tool_output:
+                for message_id in await announce_chat.messaging.send_json(
+                        f"Tool call: `{name}`", args):
                     assistant_message.add_telegram_message_id(message_id)
             result = await execute_tool_call(ctx, tc, active_map)
             if isinstance(result, ToolCallResult):
