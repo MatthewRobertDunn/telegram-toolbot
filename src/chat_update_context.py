@@ -21,10 +21,9 @@ Two levels of access live here:
  ``ThreadData``
     Per-chat/thread state: the conversation plus all generation and
     subagent coordination (queue, tasks, inbox, epoch, wakeup, records).
-    Hung off ``UserData`` as the user's single thread for now; when
-    multi-chat lands these move into ``bot_data['threads']`` keyed by
-    (chat_id, message_thread_id), and ``AgentContext`` will take the
-    thread explicitly instead of reaching it through ``UserData``.
+    Stored in PTB's ``context.user_data`` dict keyed by
+    ``message_thread_id`` (``None`` for unthreaded chats), so each thread
+    gets its own isolated state while sharing the user's ``UserData``.
 
 Subagents are given an ``AgentContext`` built by
 ``ChatUpdateContext.new_subagent_context``; see that method for the state
@@ -77,18 +76,19 @@ class UserData:
 
     Only genuinely user-scoped things live here: settings, and the
     sandbox read marks (the sandbox itself is per-user, so a file read
-    in any thread counts everywhere). The per-thread state hangs off
-    ``thread_data`` until multi-chat support moves it into
-    ``bot_data['threads']``.
+    in any thread counts everywhere).
     """
 
     settings: "UserSettings | None" = None
     sandbox_read_files: set[str] = field(default_factory=set)
-    thread_data: ThreadData = field(default_factory=ThreadData)
 
 
 # The single key holding the UserData instance inside PTB's per-user dict.
 _USER_DATA_KEY = '__user_data__'
+
+# The key holding the per-thread state map inside PTB's per-user dict:
+# thread id (message_thread_id, None when unthreaded) -> ThreadData.
+_THREADS_KEY = '__threads__'
 
 
 class AgentContext:
@@ -104,15 +104,14 @@ class AgentContext:
     files or typing indicators: the capability is simply absent.
     """
 
-    def __init__(self, *, user_id: int, user_data: UserData) -> None:
+    def __init__(self, *, user_id: int, user_data: UserData,
+                 thread_data: ThreadData) -> None:
         self.user_id = user_id
         # Per-agent state. For a subagent this is its own UserData (settings
-        # snapshot + its own thread), never the parent's.
+        # snapshot) plus its own ThreadData (its conversation), never the
+        # parent's.
         self.user_data = user_data
-
-    @property
-    def thread_data(self) -> ThreadData:
-        return self.user_data.thread_data
+        self.thread_data = thread_data
 
     @property
     def conversation(self) -> "Conversation":
@@ -148,9 +147,11 @@ class ChatUpdateContext(AgentContext):
                  user: User,
                  message: Message,
                  user_data: UserData,
+                 thread_data: ThreadData,
                  command_text: str,
                  command_name: str) -> None:
-        super().__init__(user_id=user.id, user_data=user_data)
+        super().__init__(user_id=user.id, user_data=user_data,
+                         thread_data=thread_data)
         self.update = update
         self.context = context
         self.bot = bot
@@ -231,16 +232,18 @@ class ChatUpdateContext(AgentContext):
         it gets its own ``UserData`` holding only a settings snapshot and
         its own ``ThreadData`` holding the subagent's conversation. The
         parent thread's coordination state - inbox, wakeup flags,
-        conversation epoch, generation queue, sandbox read marks - is not
-        reachable from here, which is what makes an accidental mutation
-        impossible rather than merely discouraged.
+        conversation epoch, generation queue, subagents - and its sandbox
+        read marks are not reachable from here (fresh empty set), which is
+        what makes an accidental mutation impossible rather than merely
+        discouraged.
         """
-        user_data = UserData(thread_data=ThreadData(conversation=conversation))
+        user_data = UserData()
         if self.user_data.settings is not None:
             user_data.settings = copy.deepcopy(self.user_data.settings)
         return AgentContext(
             user_id=self.user_id,
             user_data=user_data,
+            thread_data=ThreadData(conversation=conversation),
         )
 
 
@@ -273,6 +276,17 @@ def create_chat_update_context(
     if not isinstance(user_data, UserData):
         user_data = UserData()
         user_data_dict[_USER_DATA_KEY] = user_data
+    threads = user_data_dict.get(_THREADS_KEY)
+    if not isinstance(threads, dict):
+        threads = {}
+        user_data_dict[_THREADS_KEY] = threads
+    # Unthreaded chats have no thread id, so they share the None thread.
+    effective = update.effective_message
+    thread_id = getattr(effective, 'message_thread_id', None)
+    thread_data = threads.get(thread_id)
+    if not isinstance(thread_data, ThreadData):
+        thread_data = ThreadData()
+        threads[thread_id] = thread_data
     text = message.text or message.caption or ''
     return ChatUpdateContext(
         update=update,
@@ -282,6 +296,7 @@ def create_chat_update_context(
         user=user,
         message=message,
         user_data=user_data,
+        thread_data=thread_data,
         command_text=_parse_command_text(text),
         command_name=_parse_command_name(text),
     )

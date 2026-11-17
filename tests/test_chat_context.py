@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from agent_inbox import SubagentInbox
 from chat_update_context import (AgentContext,
-                                 ChatUpdateContext)
+                                 ChatUpdateContext,
+                                 create_chat_update_context)
 from conversation import Conversation
 from mock_context import mock_ctx
 
@@ -35,6 +36,18 @@ def _parent() -> ChatUpdateContext:
 
 def _child(ctx: ChatUpdateContext) -> AgentContext:
     return ctx.new_subagent_context(Conversation())
+
+
+def _ptb_pair(store: dict, thread_id) -> ChatUpdateContext:
+    """Build a context through the real factory, as PTB would per update."""
+    message = SimpleNamespace(text='hi', caption=None,
+                              message_thread_id=thread_id)
+    chat = SimpleNamespace(id=7, type='private')
+    user = SimpleNamespace(id=1, first_name='T', last_name='U')
+    update = SimpleNamespace(effective_chat=chat, effective_user=user,
+                             message=message, effective_message=message)
+    context = SimpleNamespace(user_data=store, bot=None, bot_data={})
+    return create_chat_update_context(update, context)  # type: ignore[arg-type]
 
 
 class TestContextHierarchy(unittest.TestCase):
@@ -125,6 +138,25 @@ class TestSubagentContextIsolation(unittest.TestCase):
         parent.user_data.sandbox_read_files = {'/workspace/a.txt'}
         child = _child(parent)
         self.assertEqual(child.user_data.sandbox_read_files, set())
+
+
+class TestThreadKeyedStorage(unittest.TestCase):
+
+    def test_same_thread_returns_shared_state(self):
+        store: dict = {}
+        first = _ptb_pair(store, None)
+        second = _ptb_pair(store, None)
+        self.assertIs(first.thread_data, second.thread_data)
+        self.assertIs(first.user_data, second.user_data)
+
+    def test_different_threads_are_isolated_but_share_the_user(self):
+        store: dict = {}
+        plain = _ptb_pair(store, None)
+        topic = _ptb_pair(store, 2)
+        self.assertIsNot(plain.thread_data, topic.thread_data)
+        self.assertIs(plain.user_data, topic.user_data)
+        plain.thread_data.conversation = Conversation()
+        self.assertIsNone(topic.thread_data.conversation)
 
 
 if __name__ == '__main__':
