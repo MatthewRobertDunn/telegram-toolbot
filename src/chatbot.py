@@ -46,7 +46,7 @@ from handlers.memory_handlers import (
     memory_delete_command,
     memory_delete_all_command,
 )
-from handlers.window_handlers import new_window_command
+from handlers.window_handlers import window_new_command
 from tool_registration import register_tools
 from sandbox import manager, start_reaper, stop_reaper
 from skills_store import load_skills
@@ -89,7 +89,7 @@ async def post_init(application: Application):
             BotCommand("undo", "Undo the last message"),
             BotCommand("impersonate", "Impersonate your next message"),
             BotCommand("compact", "Compact the conversation context"),
-            BotCommand("new_window", "Open a new thread in this chat"),
+            BotCommand("window_new", "Open a new thread in this chat"),
             BotCommand("systemprompt", "Set a custom system prompt"),
             BotCommand("systemprompt_reset", "Reset system prompt to default"),
             BotCommand("model", "Set the model to use"),
@@ -156,7 +156,6 @@ def main():
     application.add_handler(CommandHandler('model', callback_adapter(model_command)))
     application.add_handler(CommandHandler('model_list', callback_adapter(model_list_command)))
     application.add_handler(CommandHandler('model_reset', callback_adapter(model_reset_command)))
-    application.add_handler(CommandHandler('new_window', callback_adapter(new_window_command)))
     application.add_handler(CommandHandler('regenerate', callback_adapter(regenerate_command)))
     application.add_handler(CommandHandler('retry', callback_adapter(retry_command)))
     application.add_handler(CommandHandler('sandbox_reset', callback_adapter(sandbox_reset_command)))
@@ -177,6 +176,7 @@ def main():
     application.add_handler(CommandHandler('undo', callback_adapter(undo_command)))
     application.add_handler(CommandHandler('user_profile', callback_adapter(user_profile_command)))
     application.add_handler(CommandHandler('user_profile_reset', callback_adapter(user_profile_reset_command)))
+    application.add_handler(CommandHandler('window_new', callback_adapter(window_new_command)))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), callback_adapter(text_message_handler)))
     application.add_handler(MessageHandler(filters.ATTACHMENT, callback_adapter(upload_handler)))
 
