@@ -22,27 +22,25 @@ def _ctx():
 class TestSubagentListCommand(unittest.IsolatedAsyncioTestCase):
 
     async def _run(self, ctx):
-        with unittest.mock.patch.object(
-                handlers_mod, 'send_message',
-                unittest.mock.AsyncMock(return_value=[1])) as send:
-            await handlers_mod.subagent_list_command(ctx)
-        return send
+        ctx.messaging.send_message = unittest.mock.AsyncMock(return_value=[1])
+        await handlers_mod.subagent_list_command(ctx)
+        return ctx.messaging.send_message
 
     async def test_empty(self):
         send = await self._run(_ctx())
         send.assert_awaited_once()
-        self.assertIn('No subagents', send.call_args.args[1])
+        self.assertIn('No subagents', send.call_args.args[0])
 
     async def test_lists_running_subagent(self):
         ctx = _ctx()
         ctx.user_data['subagents'] = {
             'abc123': SubagentRecord(
                 id='abc123', description='Research task',
-                conversation=Conversation(), status='running'),
+                conversation=Conversation(), status='running', parent=ctx),
         }
         send = await self._run(ctx)
         send.assert_awaited_once()
-        text = send.call_args.args[1]
+        text = send.call_args.args[0]
         self.assertIn('abc123', text)
         self.assertIn('Research task', text)
         self.assertIn('running', text)

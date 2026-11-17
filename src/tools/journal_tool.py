@@ -8,7 +8,8 @@ import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from chat_update_context import ChatUpdateContext, context_tool
+from chat_update_context import AgentContext, context_tool
+from tool_scope import subagent_tool
 
 from journal_store import (
     JournalEntry,
@@ -21,14 +22,14 @@ from journal_store import (
 logger = logging.getLogger(__name__)
 
 
-def _user_timezone(ctx: ChatUpdateContext) -> str:
+def _user_timezone(ctx: AgentContext) -> str:
     try:
         return ctx.settings.timezone
     except (KeyError, AttributeError):
         return "UTC"
 
 
-def _now_in_user_timezone(ctx: ChatUpdateContext) -> tuple[str, int]:
+def _now_in_user_timezone(ctx: AgentContext) -> tuple[str, int]:
     name = _user_timezone(ctx)
     try:
         tz = ZoneInfo(name)
@@ -100,8 +101,9 @@ def _format_entry(record: JournalEntry) -> str:
             f"Entry: {record.entry}")
 
 
+@subagent_tool
 @context_tool
-async def journal_add(ctx: ChatUpdateContext, topic: str, entry: str) -> str:
+async def journal_add(ctx: AgentContext, topic: str, entry: str) -> str:
     if not isinstance(topic, str) or not topic.strip():
         return "Error: Topic cannot be empty"
     if not isinstance(entry, str) or not entry.strip():
@@ -123,8 +125,9 @@ async def journal_add(ctx: ChatUpdateContext, topic: str, entry: str) -> str:
     return f"Created journal entry id:{record.id} created:{record.created} topic:{record.topic}"
 
 
+@subagent_tool
 @context_tool
-async def journal_get(ctx: ChatUpdateContext,
+async def journal_get(ctx: AgentContext,
                       ids: list[int | float | str]) -> str:
     if not isinstance(ids, (list, tuple)):
         return "Error: ids must be an array of entry IDs."
@@ -164,8 +167,9 @@ async def journal_get(ctx: ChatUpdateContext,
     return out
 
 
+@subagent_tool
 @context_tool
-async def journal_delete(ctx: ChatUpdateContext, id: int | float | str) -> str:
+async def journal_delete(ctx: AgentContext, id: int | float | str) -> str:
     try:
         entry_id = _coerce_id(id)
     except ValueError as e:
@@ -182,8 +186,9 @@ async def journal_delete(ctx: ChatUpdateContext, id: int | float | str) -> str:
     return f"Journal entry {entry_id} deleted"
 
 
+@subagent_tool
 @context_tool
-async def journal_edit(ctx: ChatUpdateContext, id: int | float | str,
+async def journal_edit(ctx: AgentContext, id: int | float | str,
                        oldString: str, newString: str,
                        replaceAll: bool | None = None) -> str:
     try:
@@ -220,8 +225,9 @@ async def journal_edit(ctx: ChatUpdateContext, id: int | float | str,
     return f"Journal entry {entry_id} updated"
 
 
+@subagent_tool
 @context_tool
-async def journal_topic_edit(ctx: ChatUpdateContext, id: int | float | str,
+async def journal_topic_edit(ctx: AgentContext, id: int | float | str,
                               oldTopic: str, newTopic: str) -> str:
     try:
         entry_id = _coerce_id(id)
@@ -254,8 +260,9 @@ async def journal_topic_edit(ctx: ChatUpdateContext, id: int | float | str,
     return f"Journal entry {entry_id} topic updated"
 
 
+@subagent_tool
 @context_tool
-async def journal_query(ctx: ChatUpdateContext,
+async def journal_query(ctx: AgentContext,
                          cursor: str | None = None,
                          query: str | None = None,
                          topic: str | None = None,
@@ -311,8 +318,9 @@ async def journal_query(ctx: ChatUpdateContext,
     return out
 
 
+@subagent_tool
 @context_tool
-async def journal_list_topics(ctx: ChatUpdateContext) -> str:
+async def journal_list_topics(ctx: AgentContext) -> str:
     try:
         async with create_journal_store() as store:
             topics = await store.list_topics(user_id=ctx.user_id)

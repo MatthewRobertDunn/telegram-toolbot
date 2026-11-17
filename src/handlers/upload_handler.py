@@ -6,7 +6,6 @@ from typing import Any
 from chat_update_context import ChatUpdateContext
 from handlers.middleware import handler
 from handlers.generation_queue import submit_generation
-from messaging import send_message
 from sandbox import manager
 from tools.sandbox_tool import IMAGE_MIME_TYPES
 from upload_cache import record_upload
@@ -43,8 +42,7 @@ async def upload_handler(ctx: ChatUpdateContext):
         data = bytes(await file.download_as_bytearray())
     except Exception as e:
         logger.exception("error downloading upload: %s", e)
-        await send_message(
-            ctx,
+        await ctx.messaging.send_message(
             "Error processing file, encountered an error while downloading "
             f"the file: {e}")
         return
@@ -52,7 +50,7 @@ async def upload_handler(ctx: ChatUpdateContext):
     name = getattr(media, "file_name", None) or _fallback_name(media, file)
     path, error = await manager.store_file(ctx.user_id, data, name)
     if error is not None:
-        await send_message(ctx, error)
+        await ctx.messaging.send_message(error)
         return
     assert path is not None  # store_file returns exactly one of the two
     logger.info("Stored upload %s (%d bytes) for user %d",

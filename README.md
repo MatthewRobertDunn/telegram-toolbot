@@ -207,6 +207,8 @@ The bot uses OpenAI-compatible function calling. These tools are available to th
 | `subagent` | Spawn a subagent in a fresh conversation to work on a task (with the same tools and sandbox) and report back |
 | `generate_image` | Generate an image using NVIDIA Flux |
 
+Subagents get a restricted tool surface. Tools that write to the chat (`send_file`, `read_image`, `generate_image`, and the `subagent_*` controls) are never offered to them; the silent variants (`read_image_subagent`, `generate_image_subagent`) read or generate without posting, and report the file path for the parent to share. Each subagent runs against its own isolated context copy with no bot, inbox, or generation queue it could touch, and tools declare their audience with `@parent_tool` / `@subagent_tool` / `@subagent_only_tool` (see `src/tool_scope.py`).
+
 ---
 
 ## Security & privacy

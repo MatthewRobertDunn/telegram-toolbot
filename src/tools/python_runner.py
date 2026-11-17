@@ -1,14 +1,16 @@
 import logging
 
-from chat_update_context import ChatUpdateContext, context_tool
+from chat_update_context import AgentContext, context_tool
 from sandbox import manager
+from tool_scope import subagent_tool
 from .sandbox_tool import _cap_output
 
 logger = logging.getLogger(__name__)
 
 
+@subagent_tool
 @context_tool
-async def run_python_code(ctx: ChatUpdateContext, code: str) -> str:
+async def run_python_code(ctx: AgentContext, code: str) -> str:
     if not code.strip():
         return "Error: empty code."
     result = await manager.exec(

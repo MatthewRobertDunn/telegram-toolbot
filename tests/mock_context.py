@@ -24,7 +24,7 @@ def mock_ctx(*, user_id: int = 1, bot=None,
         show_tool_output) for tests that reach for ctx.settings.
     """
     context = SimpleNamespace(
-        bot=bot, bot_data={}, user_data={}, chat_data={})
+        bot=bot, bot_data={}, user_data={})
     message = SimpleNamespace(
         text='', caption=None,
         chat=SimpleNamespace(id=user_id, type='private'),
@@ -37,7 +37,6 @@ def mock_ctx(*, user_id: int = 1, bot=None,
         user=message.from_user,
         message=message,  # type: ignore[arg-type]
         user_data=context.user_data,
-        chat_data=None,
         command_text='',
         command_name='')
     if conversation is not None:

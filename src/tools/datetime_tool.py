@@ -2,13 +2,15 @@ import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from chat_update_context import ChatUpdateContext, context_tool
+from chat_update_context import AgentContext, context_tool
+from tool_scope import subagent_tool
 
 logger = logging.getLogger(__name__)
 
 
+@subagent_tool
 @context_tool
-async def get_current_datetime(ctx: ChatUpdateContext) -> str:
+async def get_current_datetime(ctx: AgentContext) -> str:
     try:
         tz_name = ctx.settings.timezone
     except (KeyError, AttributeError):

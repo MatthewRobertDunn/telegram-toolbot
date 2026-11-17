@@ -28,7 +28,6 @@ from chat_update_context import ChatUpdateContext
 from settings_store import save_conversation
 from tools.subagent import get_parent_tool_defs
 from .run_llm import run_llm
-from messaging import run_with_typing, send_message
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +116,7 @@ async def generate_response(ctx: ChatUpdateContext, content: str | None = None,
     try:
         while True:
             ctx.generation_task = inner = asyncio.create_task(
-                run_with_typing(ctx, _generate_until_idle(ctx)))
+                ctx.messaging.run_with_typing(_generate_until_idle(ctx)))
             try:
                 gpt_response = await inner
             except asyncio.CancelledError:
@@ -132,7 +131,7 @@ async def generate_response(ctx: ChatUpdateContext, content: str | None = None,
             finally:
                 ctx.generation_task = None
 
-            message_ids = await send_message(ctx, gpt_response, parse_mode='LLM')
+            message_ids = await ctx.messaging.send_message(gpt_response, parse_mode='LLM')
             ctx.conversation.add_assistant(gpt_response,
                                            telegram_message_ids=message_ids)
             if get_main_inbox(ctx).empty():

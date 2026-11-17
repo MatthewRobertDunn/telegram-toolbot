@@ -1,5 +1,5 @@
 from chat_update_context import ChatUpdateContext, context_tool
-from messaging import send_message
+from tool_scope import parent_tool
 
 TOOL_NAME = "display_status"
 TOOL_DEFINITIONS: list[dict] = [
@@ -25,9 +25,10 @@ TOOL_DEFINITIONS: list[dict] = [
 ]
 
 
+@parent_tool
 @context_tool
 async def display_status(ctx: ChatUpdateContext, message: str) -> str:
-    await send_message(ctx, message, parse_mode="LLM")
+    await ctx.messaging.send_message(message, parse_mode="LLM")
     return "Status displayed."
 
 

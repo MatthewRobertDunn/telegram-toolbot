@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from handlers import run_llm as run_llm_mod
 from conversation import Conversation
+from messaging import Messaging
 from mock_context import mock_ctx
 
 SETTINGS = SimpleNamespace(
@@ -199,7 +200,7 @@ class TestToolCallAnnouncements(unittest.IsolatedAsyncioTestCase):
                     [_chunk('done')],
                 ])):
             with unittest.mock.patch.object(
-                    run_llm_mod, 'send_json', send):
+                    Messaging, 'send_json', send):
                 await run_llm_mod.run_llm(ctx, tools=tool_defs)
         assistant = next(m for m in ctx.conversation.messages
                          if m.get('tool_calls'))
@@ -207,8 +208,8 @@ class TestToolCallAnnouncements(unittest.IsolatedAsyncioTestCase):
                          {'telegram_message_ids': [101, 102]})
         call = send.await_args
         assert call is not None
-        self.assertEqual(call.args[1], 'Tool call: `web_search`')
-        self.assertEqual(call.args[2], '{"query": "cheese"}')
+        self.assertEqual(call.args[0], 'Tool call: `web_search`')
+        self.assertEqual(call.args[1], '{"query": "cheese"}')
 
 
 if __name__ == '__main__':

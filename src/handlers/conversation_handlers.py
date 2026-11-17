@@ -17,7 +17,6 @@ from handlers.generation_queue import (
 from handlers.impersonate_prompt import IMPERSONATE_PROMPT
 from handlers.run_llm import (NO_CONTENT_MESSAGE, NO_RESPONSE_MESSAGE,
                               run_llm)
-from messaging import send_message, run_with_typing
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +44,7 @@ async def delete_from_telegram(ctx: ChatUpdateContext, message_ids) -> None:
     """Delete the Telegram messages with those ids, logging failures."""
     for message_id in message_ids or []:
         try:
-            await ctx.bot.delete_message(ctx.chat_id, message_id)
+            await ctx.messaging.delete_message(message_id)
         except Exception as e:
             logger.warning("Could not delete telegram message %s: %s",
                            message_id, e)
@@ -132,7 +131,7 @@ async def run_undo(ctx: ChatUpdateContext) -> None:
             # This job itself was cancelled (bot shutdown).
             inner.cancel()
             raise
-        await send_message(ctx, 'Undo stopped.')
+        await ctx.messaging.send_message('Undo stopped.')
     finally:
         ctx.generation_task = None
 
@@ -141,7 +140,7 @@ async def undo_turn(ctx: ChatUpdateContext) -> None:
     """The undo itself, runs as its own task."""
     messages = ctx.conversation.messages
     if not messages or messages[-1].get('role') == 'system':
-        message_ids = await send_message(ctx, "Nothing to undo.")
+        message_ids = await ctx.messaging.send_message("Nothing to undo.")
         asyncio.create_task(_schedule_command_clear(
             ctx, [_command_message_id(ctx), *message_ids]))
         return
@@ -171,8 +170,7 @@ async def undo_turn(ctx: ChatUpdateContext) -> None:
             await delete_from_telegram(ctx, stored_message_ids(message))
 
         role = str(last.get('role') or 'message').capitalize()
-        message_ids = await send_message(
-            ctx,
+        message_ids = await ctx.messaging.send_message(
             f"Removed message ({role}):\n"
             f"{message_preview(last, context=messages + removed)}")
         asyncio.create_task(_schedule_command_clear(
@@ -194,16 +192,14 @@ async def undo_turn(ctx: ChatUpdateContext) -> None:
     if len(removed_messages) == 1:
         last = removed_messages[0]
         role = str(last.get('role') or 'message').capitalize()
-        message_ids = await send_message(
-            ctx,
+        message_ids = await ctx.messaging.send_message(
             f"Removed message ({role}):\n"
             f"{message_preview(last, context=messages + removed_messages)}")
     else:
-        message_ids = await send_message(
-            ctx,
+        message_ids = await ctx.messaging.send_message(
             f"Removed {len(removed_messages)} message(s).\n"
             + "\n".join(f"- {message_preview(m)}"
-                         for m in removed_messages))
+                        for m in removed_messages))
 
     asyncio.create_task(_schedule_command_clear(
         ctx, [_command_message_id(ctx), *message_ids]))
@@ -241,7 +237,7 @@ async def run_regeneration(ctx: ChatUpdateContext) -> None:
             # This job itself was cancelled (bot shutdown).
             inner.cancel()
             raise
-        await send_message(ctx, 'Regeneration stopped.')
+        await ctx.messaging.send_message('Regeneration stopped.')
     finally:
         ctx.generation_task = None
 
@@ -254,7 +250,7 @@ async def regeneration_turn(ctx: ChatUpdateContext) -> None:
     while messages and messages[-1].get('role') == 'tool':
         messages.pop()
     if not messages or messages[-1].get('role') == 'system':
-        message_ids = await send_message(ctx, "Nothing to regenerate yet.")
+        message_ids = await ctx.messaging.send_message("Nothing to regenerate yet.")
         asyncio.create_task(_schedule_command_clear(
             ctx, [_command_message_id(ctx), *message_ids]))
         return
@@ -299,7 +295,7 @@ async def retry_command(ctx: ChatUpdateContext):
     in-flight work instead of refusing."""
     messages = ctx.conversation.messages
     if not any(message.get('role') != 'system' for message in messages):
-        await send_message(ctx, "Nothing to retry yet.")
+        await ctx.messaging.send_message("Nothing to retry yet.")
         return
 
     # content=None: the queued item runs the model without appending a
@@ -320,7 +316,7 @@ async def impersonate_command(ctx: ChatUpdateContext):
     in ctx.generation_task, so /stop stops it like any other work."""
     messages = ctx.conversation.messages
     if not any(message.get('role') != 'system' for message in messages):
-        message_ids = await send_message(ctx, "Nothing to impersonate yet.")
+        message_ids = await ctx.messaging.send_message("Nothing to impersonate yet.")
         asyncio.create_task(_schedule_command_clear(
             ctx, [_command_message_id(ctx), *message_ids]))
         return
@@ -335,7 +331,7 @@ async def run_impersonation(ctx: ChatUpdateContext) -> None:
     ctx.generation_task, so /stop cancels it just like a reply
     generation."""
     ctx.generation_task = inner = asyncio.create_task(
-        run_with_typing(ctx, impersonate_turn(ctx)))
+        ctx.messaging.run_with_typing(impersonate_turn(ctx)))
     try:
         await inner
     except asyncio.CancelledError:
@@ -343,7 +339,7 @@ async def run_impersonation(ctx: ChatUpdateContext) -> None:
             # This job itself was cancelled (bot shutdown).
             inner.cancel()
             raise
-        await send_message(ctx, 'Impersonation stopped.')
+        await ctx.messaging.send_message('Impersonation stopped.')
     finally:
         ctx.generation_task = None
 
@@ -360,15 +356,14 @@ async def impersonate_turn(ctx: ChatUpdateContext) -> None:
     response = (await run_llm(ctx, conversation=clone)
                 or '').strip()
     if not response or response in (NO_RESPONSE_MESSAGE, NO_CONTENT_MESSAGE):
-        await send_message(
-            ctx, 'Impersonation failed: the model produced nothing usable.')
+        await ctx.messaging.send_message('Impersonation failed: the model produced nothing usable.')
         return
 
     # The real conversation gets the bare text as a user turn, tagged as
     # an impersonation so /regenerate can redo this flow. The posted
     # message ids are attached, so /undo and /regenerate can delete it
     # from the chat too.
-    message_ids = await send_message(ctx, response, parse_mode='LLM')
+    message_ids = await ctx.messaging.send_message(response, parse_mode='LLM')
     ctx.conversation.add_user(
         response, telegram_message_ids=message_ids,
         message_type=ConversationMessageType.IMPERSONATION)
@@ -383,9 +378,7 @@ async def compact_command(ctx: ChatUpdateContext):
             if keep_tokens < 1:
                 raise ValueError
         except ValueError:
-            await send_message(
-                ctx,
-                f'Usage: `/{ctx.command_name} [tokens of recent history to keep]`')
+            await ctx.messaging.send_message(f'Usage: `/{ctx.command_name} [tokens of recent history to keep]`')
             return
 
     await submit_task(ctx, run_compaction(ctx, keep_tokens))
@@ -396,11 +389,10 @@ async def run_compaction(ctx: ChatUpdateContext, keep_tokens: int) -> None:
     the token savings. The task is tracked in ctx.generation_task, so
     /stop cancels it just like a reply generation."""
     async def on_start() -> None:
-        await send_message(ctx, 'Starting Compaction...')
+        await ctx.messaging.send_message('Starting Compaction...')
 
     ctx.generation_task = inner = asyncio.create_task(
-        run_with_typing(
-            ctx,
+        ctx.messaging.run_with_typing(
             compact_context(ctx,
                             keep_tokens=keep_tokens,
                             on_start=on_start)))
@@ -411,13 +403,12 @@ async def run_compaction(ctx: ChatUpdateContext, keep_tokens: int) -> None:
             # This job itself was cancelled (bot shutdown).
             inner.cancel()
             raise
-        await send_message(ctx, 'Compaction stopped.')
+        await ctx.messaging.send_message('Compaction stopped.')
     except CompactionError as e:
-        await send_message(ctx, str(e))
+        await ctx.messaging.send_message(str(e))
     else:
-        await send_message(ctx, result.summary, parse_mode='LLM')
-        await send_message(
-            ctx,
+        await ctx.messaging.send_message(result.summary, parse_mode='LLM')
+        await ctx.messaging.send_message(
             f'Compaction complete: {result.tokens_before:,} tokens '
             f'-> {result.tokens_after:,} tokens')
     finally:

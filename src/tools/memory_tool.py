@@ -1,32 +1,37 @@
 import json
 
-from chat_update_context import ChatUpdateContext, context_tool
+from chat_update_context import AgentContext, context_tool
 from context_store import create_memory_store
+from tool_scope import subagent_tool
 
 
+@subagent_tool
 @context_tool
-async def memory_get_keys(ctx: ChatUpdateContext) -> str:
+async def memory_get_keys(ctx: AgentContext) -> str:
     async with create_memory_store() as memory:
         keys = await memory.get_all_keys(ctx.user_id)
     return json.dumps(keys) if keys else "I don't remember anything yet."
 
 
+@subagent_tool
 @context_tool
-async def memory_get_values(ctx: ChatUpdateContext, keys: list[str]) -> str:
+async def memory_get_values(ctx: AgentContext, keys: list[str]) -> str:
     async with create_memory_store() as memory:
         result = await memory.get_values(ctx.user_id, keys)
     return json.dumps(result)
 
 
+@subagent_tool
 @context_tool
-async def memory_set_value(ctx: ChatUpdateContext, key: str, value: str) -> str:
+async def memory_set_value(ctx: AgentContext, key: str, value: str) -> str:
     async with create_memory_store() as memory:
         await memory.set(ctx.user_id, key, value)
     return f"Remembered '{key}'."
 
 
+@subagent_tool
 @context_tool
-async def memory_delete_values(ctx: ChatUpdateContext, keys: list[str]) -> str:
+async def memory_delete_values(ctx: AgentContext, keys: list[str]) -> str:
     async with create_memory_store() as memory:
         await memory.delete_values(ctx.user_id, keys)
     return f"Forgot memories: {json.dumps(keys)}"

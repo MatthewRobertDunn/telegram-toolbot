@@ -3,9 +3,11 @@ import json
 import logging
 import posixpath
 import shlex
+from dataclasses import dataclass
 
-from chat_update_context import ChatUpdateContext, context_tool
+from chat_update_context import AgentContext, ChatUpdateContext, context_tool
 from sandbox import manager
+from tool_scope import parent_tool, subagent_only_tool, subagent_tool
 from .sandbox_tool_definitions import TOOL_DEFINITIONS, WORKSPACE_ROOT
 from tool_result import ImageAttachment, ToolCallResult
 from upload_cache import was_recently_uploaded
@@ -26,11 +28,11 @@ def _resolve_path(path: str) -> str:
 
 # The "_sandbox_read_files" user_data key tracks the files read so far.
 # Private to this module; its tests may reach in, nothing else should use it.
-def _mark_read(ctx: ChatUpdateContext, path: str) -> None:
+def _mark_read(ctx: AgentContext, path: str) -> None:
     ctx.user_data.setdefault("_sandbox_read_files", set()).add(path)
 
 
-def _ensure_read(ctx: ChatUpdateContext, path: str, tool: str) -> str | None:
+def _ensure_read(ctx: AgentContext, path: str, tool: str) -> str | None:
     if path not in ctx.user_data.get("_sandbox_read_files", set()):
         return (f"Error: file has not been read. Use the read tool on "
                 f"{path} before using the {tool} tool on it.")
@@ -64,8 +66,9 @@ async def _run_helper(user_id: int, helper: str, args: list[str],
                 "error": f"helper returned invalid JSON: {result['stdout'][:200]}"}
 
 
+@subagent_tool
 @context_tool
-async def bash(ctx: ChatUpdateContext, command: str) -> str:
+async def bash(ctx: AgentContext, command: str) -> str:
     if not command.strip():
         return "Error: empty command."
     result = await manager.exec(ctx.user_id, command)
@@ -83,8 +86,9 @@ async def bash(ctx: ChatUpdateContext, command: str) -> str:
     return "\n".join(output)
 
 
+@subagent_tool
 @context_tool
-async def read(ctx: ChatUpdateContext, filePath: str,
+async def read(ctx: AgentContext, filePath: str,
                offset: int | None = None, limit: int | None = None) -> str:
     path = _resolve_path(filePath)
     args = ["--path", path]
@@ -132,8 +136,9 @@ async def read(ctx: ChatUpdateContext, filePath: str,
     return "\n".join(output)
 
 
+@subagent_tool
 @context_tool
-async def write(ctx: ChatUpdateContext, filePath: str, content: str) -> str:
+async def write(ctx: AgentContext, filePath: str, content: str) -> str:
     path = _resolve_path(filePath)
     check = await manager.exec(
         ctx.user_id, f"test -e {shlex.quote(path)}")
@@ -154,8 +159,9 @@ async def write(ctx: ChatUpdateContext, filePath: str, content: str) -> str:
     return "Wrote file successfully."
 
 
+@subagent_tool
 @context_tool
-async def edit(ctx: ChatUpdateContext, filePath: str, oldString: str,
+async def edit(ctx: AgentContext, filePath: str, oldString: str,
                newString: str, replaceAll: bool | None = None) -> str:
     path = _resolve_path(filePath)
     error = _ensure_read(ctx, path, "edit")
@@ -194,8 +200,9 @@ def _parse_rg_json(stdout: str) -> list[dict]:
     return matches
 
 
+@subagent_tool
 @context_tool
-async def grep(ctx: ChatUpdateContext, pattern: str,
+async def grep(ctx: AgentContext, pattern: str,
                path: str | None = None, include: str | None = None) -> str:
     if not pattern:
         return "Error: pattern is required"
@@ -233,8 +240,9 @@ async def grep(ctx: ChatUpdateContext, pattern: str,
     return "\n".join(output)
 
 
+@subagent_tool
 @context_tool
-async def glob(ctx: ChatUpdateContext, pattern: str,
+async def glob(ctx: AgentContext, pattern: str,
                path: str | None = None) -> str:
     args = ["--pattern", pattern]
     if path:
@@ -252,8 +260,9 @@ async def glob(ctx: ChatUpdateContext, pattern: str,
     return "\n".join(output)
 
 
+@subagent_tool
 @context_tool
-async def patch(ctx: ChatUpdateContext, patchText: str) -> str:
+async def patch(ctx: AgentContext, patchText: str) -> str:
     result = await manager.exec(
         ctx.user_id, "apply-patch-py", stdin_data=patchText.encode())
     if result["timeout"]:
@@ -280,9 +289,21 @@ IMAGE_MIME_TYPES = {
 }
 
 
-@context_tool
-async def read_image(ctx: ChatUpdateContext, filePath: str,
-                     send_to_chat: bool = True) -> str | ToolCallResult:
+@dataclass
+class LoadedImage:
+    """An image read out of the sandbox."""
+    data: bytes
+    mime: str
+    path: str
+
+
+async def _load_image(ctx: AgentContext,
+                      filePath: str) -> LoadedImage | str:
+    """Shared business logic: read an image out of the sandbox.
+
+    Returns the bytes plus their resolved path, or an error string fit for
+    the model. Showing the image to the user is the caller's job.
+    """
     path = _resolve_path(filePath)
     mime = IMAGE_MIME_TYPES.get(posixpath.splitext(path)[1].lower())
     if mime is None:
@@ -305,15 +326,33 @@ async def read_image(ctx: ChatUpdateContext, filePath: str,
         data = base64.b64decode(encoded["stdout"].strip())
     except ValueError:
         return "Error: could not read the image contents."
+    return LoadedImage(data=data, mime=mime, path=path)
+
+
+def _image_result(text: str, image: LoadedImage) -> ToolCallResult:
+    return ToolCallResult(
+        text=(f"{text}: {image.path} ({len(image.data):,} bytes). "
+              "The image is attached to this result."),
+        image=ImageAttachment(data=image.data, mime=image.mime),
+    )
+
+
+@parent_tool
+@context_tool
+async def read_image(ctx: ChatUpdateContext, filePath: str,
+                     send_to_chat: bool = True) -> str | ToolCallResult:
+    loaded = await _load_image(ctx, filePath)
+    if isinstance(loaded, str):
+        return loaded
 
     # send_to_chat lets the model decide whether the image is sent to the chat.
     # A recently uploaded file is already visible in the chat window from the
     # user's own send, so displaying it again would be redundant.
-    recently_uploaded = was_recently_uploaded(ctx.user_id, path)
+    recently_uploaded = was_recently_uploaded(ctx.user_id, loaded.path)
     shown = send_to_chat and not recently_uploaded
     if shown:
         try:
-            await ctx.bot.send_photo(ctx.chat_id, photo=data)
+            await ctx.messaging.send_image(loaded.data)
         except Exception as e:
             logger.warning("Could not send image to chat: %s", e)
 
@@ -322,13 +361,20 @@ async def read_image(ctx: ChatUpdateContext, filePath: str,
                  "recently uploaded this file there)")
     else:
         label = "Image shown in the chat" if shown else "Image read"
-    return ToolCallResult(
-        text=(f"{label}: {path} ({len(data):,} bytes). "
-              "The image is attached to this result."),
-        image=ImageAttachment(data=data, mime=mime),
-    )
+    return _image_result(label, loaded)
 
 
+@subagent_only_tool
+@context_tool
+async def read_image_subagent(ctx: AgentContext,
+                              filePath: str) -> str | ToolCallResult:
+    loaded = await _load_image(ctx, filePath)
+    if isinstance(loaded, str):
+        return loaded
+    return _image_result("Image read (not shown to the user)", loaded)
+
+
+@parent_tool
 @context_tool
 async def send_file(ctx: ChatUpdateContext, filePath: str) -> str:
     path = _resolve_path(filePath)
@@ -349,7 +395,7 @@ async def send_file(ctx: ChatUpdateContext, filePath: str) -> str:
     except ValueError:
         return "Error: could not decode the file contents."
     filename = posixpath.basename(path)
-    await ctx.bot.send_document(ctx.chat_id, document=data, filename=filename)
+    await ctx.messaging.send_document(data, filename)
     return f"Sent {filename} ({len(data):,} bytes)."
 
 
@@ -362,6 +408,7 @@ GLOB = "glob"
 PATCH = "patch"
 SEND_FILE = "send_file"
 READ_IMAGE = "read_image"
+READ_IMAGE_SUBAGENT = "read_image_subagent"
 
 
 def register(tools_list: list[dict], tool_map: dict):
@@ -375,3 +422,4 @@ def register(tools_list: list[dict], tool_map: dict):
     tool_map[PATCH] = patch
     tool_map[SEND_FILE] = send_file
     tool_map[READ_IMAGE] = read_image
+    tool_map[READ_IMAGE_SUBAGENT] = read_image_subagent

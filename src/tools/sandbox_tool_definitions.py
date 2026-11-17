@@ -380,4 +380,31 @@ TOOL_DEFINITIONS: list[dict] = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_image_subagent",
+            "strict": False,
+            "description": (
+                "Read an image file (png, jpg, jpeg, gif, webp) from the "
+                "sandbox and attach it to your conversation so you can see "
+                "it. Requires a vision-capable model. The image is not shown "
+                "to the user: report its path to the parent assistant if it "
+                "should be shared. Use this instead of the read tool for "
+                "image files; the read tool rejects binary files. Images "
+                "larger than 5 MB cannot be displayed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filePath": {
+                        "type": "string",
+                        "description": "The path to the image file to view."
+                    }
+                },
+                "required": ["filePath"],
+                "additionalProperties": False
+            }
+        }
+    },
 ]

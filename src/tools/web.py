@@ -2,7 +2,10 @@ import re
 import aiohttp
 from ddgs import DDGS
 
+from tool_scope import subagent_tool
 
+
+@subagent_tool
 async def web_search(query: str, max_results: int = 5) -> str:
     try:
         results = DDGS().text(query, max_results=max_results)
@@ -16,6 +19,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
         return f"Web search error: {e}"
 
 
+@subagent_tool
 async def web_fetch(url: str, max_chars: int = 100000) -> str:
     if not re.match(r'^https?://', url):
         return f"Invalid URL: {url}. Must start with http:// or https://"
