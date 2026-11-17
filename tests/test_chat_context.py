@@ -14,8 +14,10 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+from agent_inbox import SubagentInbox
 from chat_update_context import (AgentContext,
-                                 ChatUpdateContext)
+                                 ChatUpdateContext,
+                                 create_chat_update_context)
 from conversation import Conversation
 from mock_context import mock_ctx
 
@@ -27,13 +29,25 @@ SETTINGS = SimpleNamespace(
 def _parent() -> ChatUpdateContext:
     ctx = mock_ctx(settings=SETTINGS,
                    conversation=[{'role': 'system', 'content': 'sys'}])
-    ctx.user_data['main_inbox'] = object()
-    ctx.user_data['conversation_epoch'] = 3
+    ctx.thread_data.main_inbox = SubagentInbox()
+    ctx.thread_data.conversation_epoch = 3
     return ctx
 
 
 def _child(ctx: ChatUpdateContext) -> AgentContext:
     return ctx.new_subagent_context(Conversation())
+
+
+def _ptb_pair(store: dict, thread_id) -> ChatUpdateContext:
+    """Build a context through the real factory, as PTB would per update."""
+    message = SimpleNamespace(text='hi', caption=None,
+                              message_thread_id=thread_id)
+    chat = SimpleNamespace(id=7, type='private')
+    user = SimpleNamespace(id=1, first_name='T', last_name='U')
+    update = SimpleNamespace(effective_chat=chat, effective_user=user,
+                             message=message, effective_message=message)
+    context = SimpleNamespace(user_data=store, bot=None, bot_data={})
+    return create_chat_update_context(update, context)  # type: ignore[arg-type]
 
 
 class TestContextHierarchy(unittest.TestCase):
@@ -60,19 +74,23 @@ class TestSubagentContextIsolation(unittest.TestCase):
         self.assertFalse(hasattr(child, 'update'))
         self.assertFalse(hasattr(child, 'context'))
 
-    def test_user_data_is_its_own_dict(self):
+    def test_user_data_is_its_own_object(self):
         parent = _parent()
         child = _child(parent)
         self.assertIsNot(child.user_data, parent.user_data)
-        child.user_data['scratch'] = 1
-        self.assertNotIn('scratch', parent.user_data)
+        self.assertIsNot(child.thread_data, parent.thread_data)
+        child.thread_data.conversation_epoch = 99
+        self.assertNotEqual(99, parent.thread_data.conversation_epoch)
 
     def test_parent_coordination_state_is_unreachable(self):
         child = _child(_parent())
-        for key in ('main_inbox', 'wakeup_task', 'main_loop_active',
-                    'conversation_epoch', 'generation_queue',
-                    'generation_task', 'subagents'):
-            self.assertNotIn(key, child.user_data)
+        self.assertIsNone(child.thread_data.main_inbox)
+        self.assertIsNone(child.thread_data.wakeup_task)
+        self.assertFalse(child.thread_data.main_loop_active)
+        self.assertEqual(child.thread_data.conversation_epoch, 0)
+        self.assertIsNone(child.thread_data.generation_queue)
+        self.assertIsNone(child.thread_data.generation_task)
+        self.assertEqual(child.thread_data.subagents, {})
 
     def test_conversation_is_the_subagents_own(self):
         parent = _parent()
@@ -97,7 +115,7 @@ class TestSubagentContextIsolation(unittest.TestCase):
     def test_real_user_settings_are_copied(self):
         from user_settings import UserSettings
         parent = _parent()
-        parent.user_data['settings'] = UserSettings.default()
+        parent.user_data.settings = UserSettings.default()
         parent.settings.model = 'parent-model'
         child = _child(parent)
         self.assertEqual(child.settings.model, 'parent-model')
@@ -112,13 +130,33 @@ class TestSubagentContextIsolation(unittest.TestCase):
         public = {name for name in dir(_child(_parent()))
                   if not name.startswith('_')}
         self.assertEqual(
-            public, {'user_id', 'user_data', 'conversation', 'settings'})
+            public, {'user_id', 'user_data', 'thread_data',
+                     'conversation', 'settings'})
 
     def test_sandbox_read_tracking_starts_empty(self):
         parent = _parent()
-        parent.user_data['_sandbox_read_files'] = {'/workspace/a.txt'}
+        parent.user_data.sandbox_read_files = {'/workspace/a.txt'}
         child = _child(parent)
-        self.assertFalse(child.user_data.get('_sandbox_read_files'))
+        self.assertEqual(child.user_data.sandbox_read_files, set())
+
+
+class TestThreadKeyedStorage(unittest.TestCase):
+
+    def test_same_thread_returns_shared_state(self):
+        store: dict = {}
+        first = _ptb_pair(store, None)
+        second = _ptb_pair(store, None)
+        self.assertIs(first.thread_data, second.thread_data)
+        self.assertIs(first.user_data, second.user_data)
+
+    def test_different_threads_are_isolated_but_share_the_user(self):
+        store: dict = {}
+        plain = _ptb_pair(store, None)
+        topic = _ptb_pair(store, 2)
+        self.assertIsNot(plain.thread_data, topic.thread_data)
+        self.assertIs(plain.user_data, topic.user_data)
+        plain.thread_data.conversation = Conversation()
+        self.assertIsNone(topic.thread_data.conversation)
 
 
 if __name__ == '__main__':

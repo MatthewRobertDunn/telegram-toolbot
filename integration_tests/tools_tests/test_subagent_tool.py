@@ -42,11 +42,12 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
             result = await subagent_start(ctx, "Research task", "Do the thing")
 
         self.assertIn("Started subagent", result)
-        subs = ctx.user_data['subagents']
+        subs = ctx.thread_data.subagents
         self.assertEqual(len(subs), 1)
         record = next(iter(subs.values()))
         self.assertEqual(record.description, "Research task")
         self.assertEqual(record.status, "running")
+        assert record.task is not None
         self.assertFalse(record.task.done())
         record.task.cancel()
         try:
@@ -66,7 +67,8 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
                 subagent_mod, '_notify_parent',
                 unittest.mock.AsyncMock()) as notify:
             await subagent_start(ctx, "Label", "Task")
-            record = next(iter(ctx.user_data['subagents'].values()))
+            record = next(iter(ctx.thread_data.subagents.values()))
+            assert record.task is not None
             await record.task
 
         self.assertEqual(record.status, "done")
@@ -90,7 +92,7 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
                 subagent_mod, '_notify_parent',
                 unittest.mock.AsyncMock()):
             result = await subagent_start(ctx, "Label", "Task")
-            sid = next(iter(ctx.user_data['subagents']))
+            sid = next(iter(ctx.thread_data.subagents))
             self.assertIn(sid, result)
 
             listed = await subagent_list(ctx)
@@ -98,12 +100,13 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
 
             sent = await subagent_steer(ctx, sid, "steer left")
             self.assertIn("queued", sent)
-            record = ctx.user_data['subagents'][sid]
+            record = ctx.thread_data.subagents[sid]
             queued = await record.inbox.get()
             self.assertIn("steer left", queued.result)
 
             stopped = await subagent_stop(ctx, sid)
             self.assertIn("Stopped", stopped)
+            assert record.task is not None
             try:
                 await record.task
             except asyncio.CancelledError:
@@ -135,7 +138,8 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
                         subagent_mod, '_notify_parent',
                         unittest.mock.AsyncMock()):
                     await subagent_start(ctx, "Label", "Task")
-                    record = next(iter(ctx.user_data['subagents'].values()))
+                    record = next(iter(ctx.thread_data.subagents.values()))
+                    assert record.task is not None
                     await record.task
                 self.assertEqual(captured["model"], expected)
 

@@ -43,7 +43,11 @@ class WorkItem:
 
 
 def generation_queue(ctx: ChatUpdateContext) -> asyncio.Queue:
-    return ctx.user_data.setdefault('generation_queue', asyncio.Queue())
+    queue = ctx.thread_data.generation_queue
+    if queue is None:
+        queue = asyncio.Queue()
+        ctx.thread_data.generation_queue = queue
+    return queue
 
 
 async def submit_task(ctx: ChatUpdateContext, job: Awaitable) -> None:

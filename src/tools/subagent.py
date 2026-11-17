@@ -101,7 +101,7 @@ def format_duration(seconds: float) -> str:
 
 
 def get_subagents(ctx: ChatUpdateContext) -> dict[str, SubagentRecord]:
-    return ctx.user_data.setdefault('subagents', {})
+    return ctx.thread_data.subagents
 
 
 def cancel_all_subagents(ctx: ChatUpdateContext) -> None:
@@ -111,13 +111,12 @@ def cancel_all_subagents(ctx: ChatUpdateContext) -> None:
     so there is no parent left to notify. Stale inbox mail is dropped and
     any scheduled wakeup is cancelled (epoch-guarded anyway).
     """
-    subs = ctx.user_data.get('subagents') or {}
-    for record in subs.values():
+    for record in ctx.thread_data.subagents.values():
         record.notified = True
         if record.task is not None and not record.task.done():
             record.task.cancel()
         record.finish("stopped")
-    ctx.user_data['subagents'] = {}
+    ctx.thread_data.subagents = {}
     clear_main_inbox(ctx)
     wakeup = take_wakeup_task(ctx)
     if wakeup is not None and not wakeup.done():

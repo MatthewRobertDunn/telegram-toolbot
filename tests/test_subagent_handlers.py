@@ -33,7 +33,7 @@ class TestSubagentListCommand(unittest.IsolatedAsyncioTestCase):
 
     async def test_lists_running_subagent(self):
         ctx = _ctx()
-        ctx.user_data['subagents'] = {
+        ctx.thread_data.subagents = {
             'abc123': SubagentRecord(
                 id='abc123', description='Research task',
                 conversation=Conversation(), status='running', parent=ctx),

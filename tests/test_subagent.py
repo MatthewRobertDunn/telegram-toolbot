@@ -231,16 +231,16 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
                                        unittest.mock.AsyncMock(
                                            return_value=[])):
             started = await subagent_start(ctx, 'Task', 'Do it')
-            sid = next(iter(ctx.user_data['subagents']))
+            sid = next(iter(ctx.thread_data.subagents))
             self.assertIn(sid, started)
 
             listed = await subagent_list(ctx)
             self.assertIn(sid, listed)
             self.assertIn('Task', listed)
 
-            record = ctx.user_data['subagents'][sid]
+            record = ctx.thread_data.subagents[sid]
             self.assertIs(get_main_inbox(ctx),
-                          ctx.user_data['main_inbox'])
+                          ctx.thread_data.main_inbox)
 
             result = await subagent_steer(ctx, sid, 'go left')
             self.assertIn('queued', result)
@@ -260,7 +260,7 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
         for bad in ('', '   '):
             result = await subagent_start(ctx, bad, 'Do it')
             self.assertIn('Error', result)
-        self.assertEqual(ctx.user_data.get('subagents', {}), {})
+        self.assertEqual(ctx.thread_data.subagents, {})
 
     async def test_send_to_parent_queues_for_main(self):
         ctx = _ctx()
@@ -296,9 +296,9 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
                                        unittest.mock.AsyncMock()):
             await subagent_start(ctx, 'A', 'x')
             await subagent_start(ctx, 'B', 'y')
-            self.assertEqual(len(ctx.user_data['subagents']), 2)
+            self.assertEqual(len(ctx.thread_data.subagents), 2)
             cancel_all_subagents(ctx)
-            self.assertEqual(ctx.user_data['subagents'], {})
+            self.assertEqual(ctx.thread_data.subagents, {})
 
 
 def _fake_bot():
@@ -328,11 +328,12 @@ class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
                 ctx, SubagentMessage(id='x', state='running',
                                      description='T', result='first done'))
             # Let the wakeup task run to completion.
-            await ctx.user_data['wakeup_task']
+            assert ctx.thread_data.wakeup_task is not None
+            await ctx.thread_data.wakeup_task
             await subagent_mod._notify_parent(
                 ctx, SubagentMessage(id='x', state='running',
                                      description='T', result='second done'))
-            wakeup = ctx.user_data.get('wakeup_task')
+            wakeup = ctx.thread_data.wakeup_task
             if wakeup is not None:
                 await wakeup
         # First notify wakes; the second arrives while the loop is active
@@ -418,7 +419,7 @@ class TestSubagentLimits(unittest.IsolatedAsyncioTestCase):
             denied = await subagent_start(ctx, 'T', 'one too many')
             self.assertIn('too many', denied)
             self.assertEqual(
-                len(ctx.user_data['subagents']), MAX_SUBAGENTS)
+                len(ctx.thread_data.subagents), MAX_SUBAGENTS)
             cancel_all_subagents(ctx)
 
     async def test_finished_records_pruned(self):
@@ -456,7 +457,8 @@ class TestSubagentLimits(unittest.IsolatedAsyncioTestCase):
                                        unittest.mock.AsyncMock(
                                            return_value=[])) as send:
             await subagent_start(ctx, 'Label', 'Task')
-            record = next(iter(ctx.user_data['subagents'].values()))
+            record = next(iter(ctx.thread_data.subagents.values()))
+            assert record.task is not None
             await record.task
         self.assertEqual(record.status, 'failed')
         self.assertTrue(record.notified)
@@ -483,7 +485,7 @@ class TestSubagentListDurations(unittest.IsolatedAsyncioTestCase):
             id='abc123', description='Research',
             conversation=Conversation(), parent=ctx,
             started_at=time.monotonic() - 83)
-        ctx.user_data['subagents'] = {'abc123': rec}
+        ctx.thread_data.subagents = {'abc123': rec}
         text = await subagent_list(ctx)
         self.assertIn('abc123', text)
         self.assertIn('running 1m23s', text)
@@ -499,7 +501,7 @@ class TestSubagentListDurations(unittest.IsolatedAsyncioTestCase):
         rec.finish('done')
         # Pin the end so the assertion is deterministic.
         rec.ended_at = rec.started_at + 125
-        ctx.user_data['subagents'] = {'abc123': rec}
+        ctx.thread_data.subagents = {'abc123': rec}
         text = await subagent_list(ctx)
         self.assertIn('ran 2m05s', text)
 
@@ -537,7 +539,7 @@ class TestAnnounceTools(unittest.IsolatedAsyncioTestCase):
             completions=SimpleNamespace(create=fake_create)))
         ctx = _ctx()
         ctx.bot = _fake_bot()
-        ctx.user_data['settings'] = SimpleNamespace(
+        ctx.user_data.settings = SimpleNamespace(  # type: ignore[assignment]
             show_tool_output=True, model='m', temperature=1.0, top_p=0.95)
         send = unittest.mock.AsyncMock(return_value=[9])
         with unittest.mock.patch.object(
@@ -567,7 +569,7 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
         from conversation import Conversation
         ctx = _ctx()
         ctx.bot = _fake_bot()
-        ctx.user_data['settings'] = SimpleNamespace(
+        ctx.user_data.settings = SimpleNamespace(  # type: ignore[assignment]
             show_tool_output=show_tool_output, model='m',
             temperature=1.0, top_p=0.95)
         conversation = Conversation()

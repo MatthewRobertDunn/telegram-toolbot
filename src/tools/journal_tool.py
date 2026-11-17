@@ -23,9 +23,12 @@ logger = logging.getLogger(__name__)
 
 
 def _user_timezone(ctx: AgentContext) -> str:
+    settings = ctx.user_data.settings
+    if settings is None:
+        return "UTC"
     try:
-        return ctx.settings.timezone
-    except (KeyError, AttributeError):
+        return settings.timezone
+    except AttributeError:
         return "UTC"
 
 
