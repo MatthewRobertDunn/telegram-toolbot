@@ -74,11 +74,25 @@ def publish(ctx):
              "--exclude", "__pycache__", "--exclude", ".env",
              "-cf", tar_path, "src")
     ctx.call("scp", tar_path, f"{DEPLOY_HOST}:/tmp/")
+    # Replace the remote tree rather than extracting over it: a module
+    # removed or renamed locally would otherwise linger on the server and
+    # keep being imported. src/.env is the one file publish_env can place
+    # inside src, so it is carried across the swap. The chmod undoes
+    # read-only directory modes left by earlier archives (see
+    # --no-same-permissions below); without write permission matty cannot
+    # empty them.
+    ctx.call("ssh", DEPLOY_HOST,
+             f"chmod -R u+w {REMOTE_DIR}/src 2>/dev/null;"
+             f" if [ -f {REMOTE_DIR}/src/.env ]; then"
+             f" mv {REMOTE_DIR}/src/.env /tmp/tbot_src.env; fi;"
+             f" rm -rf {REMOTE_DIR}/src")
     # Ignore archived modes: bsdtar maps Windows attributes (e.g. OneDrive's
     # read-only flag on dirs) into the tarball, which once left the server
     # tree read-only and broke later deploys. Fresh dirs/files from umask.
     ctx.call("ssh", DEPLOY_HOST,
-             f"tar --no-same-permissions -C {REMOTE_DIR} -xf /tmp/tbot_src.tar")
+             f"tar --no-same-permissions -C {REMOTE_DIR} -xf /tmp/tbot_src.tar"
+             f" && if [ -f /tmp/tbot_src.env ]; then"
+             f" mv /tmp/tbot_src.env {REMOTE_DIR}/src/.env; fi")
     ctx.call("ssh", DEPLOY_HOST, "rm -f /tmp/tbot_src.tar")
 
 
