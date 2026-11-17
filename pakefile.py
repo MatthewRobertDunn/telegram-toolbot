@@ -76,23 +76,19 @@ def publish(ctx):
     ctx.call("scp", tar_path, f"{DEPLOY_HOST}:/tmp/")
     # Replace the remote tree rather than extracting over it: a module
     # removed or renamed locally would otherwise linger on the server and
-    # keep being imported. src/.env is the one file publish_env can place
-    # inside src, so it is carried across the swap. The chmod undoes
+    # keep being imported. Nothing else lives in src, and no secret does:
+    # the app reads the project-root .env (see config.py). The chmod undoes
     # read-only directory modes left by earlier archives (see
     # --no-same-permissions below); without write permission matty cannot
     # empty them.
     ctx.call("ssh", DEPLOY_HOST,
              f"chmod -R u+w {REMOTE_DIR}/src 2>/dev/null;"
-             f" if [ -f {REMOTE_DIR}/src/.env ]; then"
-             f" mv {REMOTE_DIR}/src/.env /tmp/tbot_src.env; fi;"
              f" rm -rf {REMOTE_DIR}/src")
     # Ignore archived modes: bsdtar maps Windows attributes (e.g. OneDrive's
     # read-only flag on dirs) into the tarball, which once left the server
     # tree read-only and broke later deploys. Fresh dirs/files from umask.
     ctx.call("ssh", DEPLOY_HOST,
-             f"tar --no-same-permissions -C {REMOTE_DIR} -xf /tmp/tbot_src.tar"
-             f" && if [ -f /tmp/tbot_src.env ]; then"
-             f" mv /tmp/tbot_src.env {REMOTE_DIR}/src/.env; fi")
+             f"tar --no-same-permissions -C {REMOTE_DIR} -xf /tmp/tbot_src.tar")
     ctx.call("ssh", DEPLOY_HOST, "rm -f /tmp/tbot_src.tar")
 
 
@@ -105,7 +101,11 @@ def publish(ctx):
 
 
 def _find_env_file():
-    """The local .env to deploy, if any: the project root's, else src's."""
+    """The local .env to deploy, if any: the project root's, else src's.
+
+    src/ is accepted as a *source* only, for a checkout whose secrets file
+    predates the root layout; the deployed copy always goes to the root.
+    """
 
     for relative in [".env", os.path.join("src", ".env")]:
         path = os.path.join(ROOT, relative)
@@ -123,11 +123,10 @@ def publish_env(ctx):
         print("No .env file found; nothing to copy.")
         return
 
-    # Mirror the local layout on the server; load_dotenv() finds the
-    # .env from either place. Forward slashes: the remote side is Linux
-    # and scp would misread Windows backslash paths.
-    relative = os.path.relpath(env_path, ROOT).replace(os.sep, "/")
-    remote_path = f"{REMOTE_DIR}/{relative}"
+    # Always land on the project-root .env: that is the file config.py
+    # reads. Mirroring the local layout would put a src/.env copy where
+    # nothing looks at it.
+    remote_path = f"{REMOTE_DIR}/.env"
 
     ctx.call("scp", env_path, f"{DEPLOY_HOST}:{remote_path}")
     print(f"Copied {env_path} to {DEPLOY_HOST}:{remote_path}")
