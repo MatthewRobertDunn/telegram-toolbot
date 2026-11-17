@@ -11,6 +11,10 @@ load_dotenv(_ENV_FILE if os.path.isfile(_ENV_FILE) else None)
 API_TOKEN = os.environ.get("TELEGRAM_API_TOKEN", "")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
+# AI Horde image generation backend. Accepts the documented AI_HORDE_KEY as
+# well as the AI_HOARD_KEY spelling already present in some .env files.
+AI_HORDE_KEY = os.environ.get("AI_HORDE_KEY", os.environ.get("AI_HOARD_KEY", ""))
+AI_HORDE_API_URL = os.environ.get("AI_HORDE_API_URL", "https://aihorde.net/api/v2")
 LLM_MODEL = os.environ.get("LLM_MODEL", "auto:smart")
 # Optional operator override for the model used by the `subagent` tool.
 # Unset means use the user's current model (their /model setting).

@@ -200,5 +200,111 @@ class TestSubagentVariant(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('sent to chat', result)
 
 
+class TestProviderParam(unittest.IsolatedAsyncioTestCase):
+    # The provider parameter selects the image backend; the default stays
+    # NVIDIA so existing behaviour is unchanged.
+
+    def test_schema_exposes_provider_for_both_roles(self):
+        from tool_registry import PARENT, SUBAGENT, tools_for
+        for role in (PARENT, SUBAGENT):
+            tool = next(t for t in tools_for(role)
+                        if t.name == 'generate_image')
+            self.assertIn('provider', tool.properties)
+            self.assertEqual(tool.properties['provider']['enum'],
+                             ['nvidia', 'horde'])
+
+    async def test_unknown_provider_reported_to_the_model(self):
+        result = await image_gen.generate_and_send_image(
+            mock_ctx(), 'a cat', provider='bogus')
+        assert isinstance(result, str)
+        self.assertIn("Unknown image provider 'bogus'", result)
+
+    async def test_provider_reaches_the_backend(self):
+        seen = {}
+
+        async def fake_generate(prompt, width=1024, height=1024, seed=0,
+                                steps=None, provider='nvidia'):
+            seen['provider'] = provider
+            return base64.b64encode(b'\x89PNG').decode()
+
+        async def fake_store(user_id, data, name):
+            return '/workspace/uploads/generated_1.png', None
+
+        with unittest.mock.patch.object(image_gen, 'generate_image',
+                                        fake_generate):
+            with unittest.mock.patch.object(Messaging, 'send_image',
+                                            unittest.mock.AsyncMock()):
+                with unittest.mock.patch.object(image_gen.manager,
+                                               'store_file', fake_store):
+                    await image_gen.generate_and_send_image(
+                        mock_ctx(), 'a cat', provider='horde')
+        self.assertEqual(seen.get('provider'), 'horde')
+
+
+class TestSniffFormat(unittest.IsolatedAsyncioTestCase):
+    # Backends disagree on containers (NVIDIA PNG, Horde WEBP); the stored
+    # filename and context attachment must match the actual bytes.
+
+    def test_known_magics(self):
+        self.assertEqual(
+            image_gen._sniff_format(b'\x89PNG\r\n\x1a\nrest'),
+            ('png', 'image/png'))
+        self.assertEqual(image_gen._sniff_format(b'\xff\xd8\xffrest'),
+                         ('jpg', 'image/jpeg'))
+        self.assertEqual(
+            image_gen._sniff_format(b'RIFF\x00\x00\x00\x00WEBP rest'),
+            ('webp', 'image/webp'))
+
+    def test_unknown_defaults_to_png(self):
+        self.assertEqual(image_gen._sniff_format(b'\x89PNG'),
+                         ('png', 'image/png'))
+
+    async def test_webp_stored_with_webp_extension_and_mime(self):
+        async def fake_generate(*args, **_):
+            return base64.b64encode(b'RIFF\x00\x00\x00\x00WEBPdata').decode()
+
+        names = []
+
+        async def fake_store(user_id, data, name):
+            names.append(name)
+            return '/workspace/uploads/' + name, None
+
+        with unittest.mock.patch.object(image_gen, 'generate_image',
+                                        fake_generate):
+            with unittest.mock.patch.object(Messaging, 'send_image',
+                                            unittest.mock.AsyncMock()):
+                with unittest.mock.patch.object(Messaging, 'send_document',
+                                                unittest.mock.AsyncMock()):
+                    with unittest.mock.patch.object(image_gen.manager,
+                                                   'store_file', fake_store):
+                        result = await image_gen.generate_and_send_image(
+                            mock_ctx(), 'a cat', add_to_context=True)
+        assert isinstance(result, ToolCallResult)
+        assert result.image is not None
+        self.assertEqual(result.image.mime, 'image/webp')
+        self.assertTrue(names[0].endswith('.webp'), names)
+
+    async def test_webp_sent_as_document_not_photo(self):
+        async def fake_generate(*args, **_):
+            return base64.b64encode(b'RIFF\x00\x00\x00\x00WEBPdata').decode()
+
+        async def fake_store(user_id, data, name):
+            return '/workspace/uploads/' + name, None
+
+        photo = unittest.mock.AsyncMock()
+        doc = unittest.mock.AsyncMock()
+        with unittest.mock.patch.object(image_gen, 'generate_image',
+                                        fake_generate):
+            with unittest.mock.patch.object(Messaging, 'send_image', photo):
+                with unittest.mock.patch.object(Messaging, 'send_document',
+                                                doc):
+                    with unittest.mock.patch.object(image_gen.manager,
+                                                   'store_file', fake_store):
+                        await image_gen.generate_and_send_image(
+                            mock_ctx(), 'a cat')
+        photo.assert_not_awaited()
+        doc.assert_awaited_once()
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1,5 +1,7 @@
 import base64
+import asyncio
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -19,6 +21,17 @@ DIM_STEP = 16
 DEFAULT_RESOLUTION = "1024x1024"
 # Cap on the endpoint error body echoed back to the model as the tool result.
 MAX_ERROR_CHARS = 2000
+
+# Image backends selectable via the tools' ``provider`` parameter.
+PROVIDER_NVIDIA = "nvidia"
+PROVIDER_HORDE = "horde"
+IMAGE_PROVIDERS = (PROVIDER_NVIDIA, PROVIDER_HORDE)
+DEFAULT_PROVIDER = PROVIDER_NVIDIA
+
+# AI Horde async polling behaviour.
+HORDE_POLL_INTERVAL = 3.0
+HORDE_TIMEOUT = 300.0
+HORDE_CLIENT_AGENT = "telegram-toolbot/1.0"
 
 
 def parse_resolution(resolution: str) -> tuple[int, int]:
@@ -44,7 +57,8 @@ def parse_resolution(resolution: str) -> tuple[int, int]:
     return width, height
 
 
-async def generate_image(prompt: str, width: int = 1024, height: int = 1024, seed: int = 0, steps: int = 50) -> str:
+async def _generate_nvidia(prompt: str, width: int = 1024, height: int = 1024,
+                       seed: int = 0, steps: int = 50) -> str:
     invoke_url = config.IMAGE_GEN_URL
     headers = {
         "Authorization": f"Bearer {config.NVIDIA_API_KEY}",
@@ -65,36 +79,155 @@ async def generate_image(prompt: str, width: int = 1024, height: int = 1024, see
     return artifact["base64"]
 
 
+def _horde_headers() -> dict[str, str]:
+    return {
+        "apikey": config.AI_HORDE_KEY,
+        "Client-Agent": HORDE_CLIENT_AGENT,
+        "Content-Type": "application/json",
+    }
+
+
+def _horde_base_url() -> str:
+    return config.AI_HORDE_API_URL.rstrip("/")
+
+
+async def _generate_horde(prompt: str, width: int = 1024, height: int = 1024,
+                          seed: int = 0, steps: int = 25) -> str:
+    """Render via the AI Horde crowdsourced backend (async submit + poll).
+
+    Defaults to 25 steps: larger requests need the account to already hold
+    the kudos upfront (HTTP 403 ``KudosUpfront`` otherwise).
+    """
+    if not config.AI_HORDE_KEY:
+        raise RuntimeError(
+            "AI Horde API key is not configured "
+            "(set AI_HORDE_KEY)")
+    base_url = _horde_base_url()
+    headers = _horde_headers()
+    params: dict[str, object] = {
+        "width": width,
+        "height": height,
+        "steps": steps,
+        "cfg_scale": 7,
+        "sampler_name": "k_euler",
+        "n": 1,
+    }
+    if seed:
+        params["seed"] = str(seed)
+    payload = {
+        "prompt": prompt,
+        "params": params,
+        "nsfw": False,
+        "models": [],
+        "r2": False,
+    }
+    response = requests.post(f"{base_url}/generate/async", headers=headers,
+                             json=payload, timeout=30)
+    response.raise_for_status()
+    request_id = response.json()["id"]
+
+    start = time.monotonic()
+    while True:
+        if time.monotonic() - start > HORDE_TIMEOUT:
+            raise TimeoutError("AI Horde image generation timed out.")
+        status_resp = requests.get(f"{base_url}/generate/check/{request_id}",
+                                   headers=headers, timeout=30)
+        status_resp.raise_for_status()
+        status = status_resp.json()
+        if status.get("finished", 0) >= 1:
+            break
+        if status.get("faulted"):
+            raise RuntimeError("AI Horde reported a generation fault.")
+        await asyncio.sleep(HORDE_POLL_INTERVAL)
+
+    result_resp = requests.get(f"{base_url}/generate/status/{request_id}",
+                               headers=headers, timeout=30)
+    result_resp.raise_for_status()
+    generations = result_resp.json().get("generations", [])
+    if not generations:
+        raise RuntimeError("AI Horde returned no images.")
+    image_data = generations[0]["img"]
+    if image_data.startswith("data:"):
+        image_data = image_data.split(",", 1)[1]
+    if image_data.startswith("http://") or image_data.startswith("https://"):
+        image_resp = requests.get(image_data, timeout=60)
+        image_resp.raise_for_status()
+        return base64.b64encode(image_resp.content).decode()
+    # Validate it decodes before returning it to the shared store path.
+    base64.b64decode(image_data)
+    return image_data
+
+
+async def generate_image(prompt: str, width: int = 1024, height: int = 1024,
+                         seed: int = 0, steps: int | None = None,
+                         provider: str = DEFAULT_PROVIDER) -> str:
+    """Render an image with the selected backend, returning base64 PNG data.
+
+    ``steps`` defaults per backend (50 for NVIDIA, 25 for AI Horde, where
+    larger requests need upfront kudos).
+    """
+    if provider == PROVIDER_NVIDIA:
+        return await _generate_nvidia(prompt, width=width, height=height,
+                                      seed=seed,
+                                      steps=50 if steps is None else steps)
+    if provider == PROVIDER_HORDE:
+        return await _generate_horde(prompt, width=width, height=height,
+                                     seed=seed,
+                                     steps=25 if steps is None else steps)
+    raise ValueError(
+        f"Unknown image provider '{provider}'. "
+        f"Supported providers: {', '.join(IMAGE_PROVIDERS)}")
+
+
 @dataclass
 class GeneratedImage:
     """A rendered image and where it landed in the sandbox."""
     png: bytes
     # None when storing it in the sandbox failed.
     path: str | None
+    # Sniffed from the bytes: NVIDIA returns PNG, AI Horde returns WEBP.
+    mime: str = "image/png"
+
+
+def _sniff_format(data: bytes) -> tuple[str, str]:
+    """Guess (extension, mime) from magic bytes; NVIDIA is PNG, Horde WEBP."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png", "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg", "image/jpeg"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "webp", "image/webp"
+    return "png", "image/png"
 
 
 async def _generate_image(ctx: AgentContext, prompt: str,
-                          resolution: str) -> GeneratedImage | str:
+                          resolution: str,
+                          provider: str = DEFAULT_PROVIDER) -> GeneratedImage | str:
     """Shared business logic: render the image and store it in the sandbox.
 
     Returns the bytes plus their sandbox path, or an error string fit for
     the model. Sending the image to the chat is the caller's job.
     """
+    if provider not in IMAGE_PROVIDERS:
+        return (f"Unknown image provider '{provider}'. "
+                f"Supported providers: {', '.join(IMAGE_PROVIDERS)}")
     try:
         width, height = parse_resolution(resolution)
     except ValueError as e:
         logger.warning("Invalid image resolution requested: %s", e)
         return str(e)
     try:
-        b64 = await generate_image(prompt, width=width, height=height)
+        b64 = await generate_image(prompt, width=width, height=height,
+                                   provider=provider)
         image_bytes = base64.b64decode(b64)
+        ext, mime = _sniff_format(image_bytes)
         path, error = await manager.store_file(
-            ctx.user_id, image_bytes, f"generated_{int(time.time())}.png")
+            ctx.user_id, image_bytes, f"generated_{int(time.time())}.{ext}")
         if error is not None:
             logger.error("Error storing generated image in sandbox: %s",
                          error)
-            return GeneratedImage(png=image_bytes, path=None)
-        return GeneratedImage(png=image_bytes, path=path)
+            return GeneratedImage(png=image_bytes, path=None, mime=mime)
+        return GeneratedImage(png=image_bytes, path=path, mime=mime)
     except requests.HTTPError as e:
         # The endpoint's error body (e.g. a content-policy rejection or a bad
         # parameter) is the useful part for the model, so pass it back.
@@ -122,7 +255,7 @@ def _as_result(text: str, image: GeneratedImage,
         return text
     return ToolCallResult(
         text=text,
-        image=ImageAttachment(data=image.png, mime="image/png"))
+        image=ImageAttachment(data=image.png, mime=image.mime))
 
 
 _RESOLUTION_PARAM = {
@@ -140,6 +273,14 @@ _ADD_TO_CONTEXT_PARAM = {
                     "vision-capable model."),
 }
 
+_PROVIDER_PARAM = {
+    "type": "string",
+    "enum": list(IMAGE_PROVIDERS),
+    "description": ("Image backend to use: 'nvidia' (NVIDIA Flux, default) "
+                    "or 'horde' (AI Horde crowdsourced generation). "
+                    "Defaults to 'nvidia'."),
+}
+
 
 @agent_tool(
     name="generate_image",
@@ -149,13 +290,16 @@ _ADD_TO_CONTEXT_PARAM = {
                  "tools. Set send_to_chat to false to generate an image "
                  "without showing it to the user. Set add_to_context to true "
                  "to attach the generated image to this conversation so you "
-                 "can look at it (requires a vision-capable model)."),
+                 "can look at it (requires a vision-capable model). "
+                 "Set provider to 'horde' to use the AI Horde backend "
+                 "instead of the default NVIDIA Flux backend."),
     parameters={
         "prompt": {
             "type": "string",
             "description": "A text description of the image to generate",
         },
         "resolution": _RESOLUTION_PARAM,
+        "provider": _PROVIDER_PARAM,
         "send_to_chat": {
             "type": "boolean",
             "description": ("Whether to send the generated image to the user "
@@ -168,13 +312,23 @@ _ADD_TO_CONTEXT_PARAM = {
 async def generate_and_send_image(
         ctx: ChatUpdateContext, prompt: str,
         resolution: str = DEFAULT_RESOLUTION,
+        provider: str = DEFAULT_PROVIDER,
         send_to_chat: bool = True,
         add_to_context: bool = False) -> str | ToolCallResult:
-    result = await _generate_image(ctx, prompt, resolution)
+    result = await _generate_image(ctx, prompt, resolution, provider)
     if isinstance(result, str):
         return result
     if send_to_chat:
-        await ctx.messaging.send_image(result.png)
+        if result.mime in ("image/png", "image/jpeg"):
+            await ctx.messaging.send_image(result.png)
+        else:
+            # sendPhoto only reliably takes PNG/JPEG; anything else the
+            # backend returns (e.g. Horde's WEBP) goes as a document.
+            if result.path is not None:
+                filename = os.path.basename(result.path)
+            else:
+                filename = f"generated.{result.mime.split('/')[-1]}"
+            await ctx.messaging.send_document(result.png, filename)
     return _as_result(_describe(result, prompt, sent=send_to_chat),
                       result, add_to_context)
 
@@ -188,20 +342,23 @@ async def generate_and_send_image(
                  "user: report its path to the parent assistant, which can "
                  "share it. Set add_to_context to true to attach the image to "
                  "this conversation so you can look at it (requires a "
-                 "vision-capable model)."),
+                 "vision-capable model). Set provider to 'horde' to use the "
+                 "AI Horde backend instead of the default NVIDIA Flux backend."),
     parameters={
         "prompt": {
             "type": "string",
             "description": "A text description of the image to generate",
         },
         "resolution": _RESOLUTION_PARAM,
+        "provider": _PROVIDER_PARAM,
         "add_to_context": _ADD_TO_CONTEXT_PARAM,
     })
 async def generate_image_subagent(
         ctx: AgentContext, prompt: str,
         resolution: str = DEFAULT_RESOLUTION,
+        provider: str = DEFAULT_PROVIDER,
         add_to_context: bool = False) -> str | ToolCallResult:
-    result = await _generate_image(ctx, prompt, resolution)
+    result = await _generate_image(ctx, prompt, resolution, provider)
     if isinstance(result, str):
         return result
     return _as_result(_describe(result, prompt, sent=False),
