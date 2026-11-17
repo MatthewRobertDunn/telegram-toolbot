@@ -36,5 +36,6 @@ async def init_conversation(ctx: ChatUpdateContext):
         ctx.settings = await load_settings(ctx.user_id)
     if ctx.thread_data.conversation is None:
         logger.info('Initializing conversation for user %d', ctx.user_id)
-        ctx.conversation = await load_conversation(ctx.user_id) or Conversation()
+        ctx.conversation = await load_conversation(
+            ctx.user_id, ctx.message_thread_id) or Conversation()
     ctx.conversation.set_system_head(ctx.system_prompt)

@@ -153,6 +153,8 @@ class TestThreadKeyedStorage(unittest.TestCase):
         store: dict = {}
         plain = _ptb_pair(store, None)
         topic = _ptb_pair(store, 2)
+        self.assertIsNone(plain.message_thread_id)
+        self.assertEqual(topic.message_thread_id, 2)
         self.assertIsNot(plain.thread_data, topic.thread_data)
         self.assertIs(plain.user_data, topic.user_data)
         plain.thread_data.conversation = Conversation()

@@ -45,6 +45,21 @@ class AsyncSQLiteStore:
             (user_id, key, value))
         await db.commit()
 
+    async def set_with_thread(self, user_id: int, key: str, value: str,
+                              thread_id: int | None) -> None:
+        """Write a row carrying thread bookkeeping.
+
+        Settings-table only: the kv table has no thread_id/last_updated
+        columns. last_updated is refreshed to now on every write.
+        """
+        db = await self._get_conn()
+        await db.execute(
+            f'INSERT OR REPLACE INTO {self.table_name} '
+            '(user_id, key, value, thread_id, last_updated) '
+            'VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)',
+            (user_id, key, value, thread_id))
+        await db.commit()
+
     async def delete(self, user_id: int, key: str) -> None:
         db = await self._get_conn()
         await db.execute(
@@ -103,6 +118,8 @@ SETTINGS_SCHEMA = '''
         user_id INTEGER NOT NULL,
         key TEXT NOT NULL,
         value TEXT NOT NULL,
+        thread_id INTEGER DEFAULT NULL,
+        last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (user_id, key)
     )
 '''

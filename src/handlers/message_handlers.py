@@ -29,7 +29,8 @@ async def group_text_message_handler(ctx: ChatUpdateContext):
         # later mention will see it in the history). No queue involved:
         # nothing is being submitted to the model, so persist directly.
         ctx.conversation.add_user(f"{name}: {text}")
-        await save_conversation(ctx.user_id, ctx.conversation)
+        await save_conversation(ctx.user_id, ctx.message_thread_id,
+                                ctx.conversation)
         return
 
     await submit_generation(ctx, f"{name}: {text}",

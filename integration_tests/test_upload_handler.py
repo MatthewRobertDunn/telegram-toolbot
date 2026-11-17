@@ -32,6 +32,7 @@ def _upload_ctx(user_id: int, media, caption=None) -> ChatUpdateContext:
         message=message,  # type: ignore[arg-type]
         user_data=UserData(),
         thread_data=ThreadData(),
+        message_thread_id=None,
         command_text='',
         command_name='')
 

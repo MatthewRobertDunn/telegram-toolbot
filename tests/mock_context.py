@@ -15,13 +15,16 @@ from conversation import Conversation
 
 def mock_ctx(*, user_id: int = 1, bot=None,
              conversation: list | Conversation | None = None,
-             settings=None) -> ChatUpdateContext:
+             settings=None,
+             message_thread_id: int | None = None) -> ChatUpdateContext:
     """Build a ChatUpdateContext over stubs.
 
     bot: the fake bot tests want to capture sends with.
     conversation: preset conversation history.
     settings: the LLM settings namespace (model/temperature/top_p/
         show_tool_output) for tests that reach for ctx.settings.
+    message_thread_id: the forum topic the update arrived in (None when
+        unthreaded).
     """
     context = SimpleNamespace(
         bot=bot, bot_data={}, user_data={})
@@ -38,6 +41,7 @@ def mock_ctx(*, user_id: int = 1, bot=None,
         message=message,  # type: ignore[arg-type]
         user_data=UserData(),
         thread_data=ThreadData(),
+        message_thread_id=message_thread_id,
         command_text='',
         command_name='')
     if conversation is not None:
