@@ -39,7 +39,7 @@ def _now_in_user_timezone(ctx: AgentContext) -> tuple[str, int]:
     except (ValueError, ZoneInfoNotFoundError):
         logger.warning("Unknown timezone '%s', falling back to UTC", name)
         tz = timezone.utc
-    now = datetime.now(tz)
+    now = datetime.now(tz).replace(microsecond=0)
     return now.isoformat(), int(now.timestamp() * 1000)
 
 
