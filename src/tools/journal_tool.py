@@ -140,7 +140,8 @@ async def journal_add(ctx: AgentContext, topic: str, entry: str) -> str:
     except Exception as e:
         logger.warning("journal_add failed: %s", e)
         return f"Error: Could not save journal entry: {e}"
-    return f"Created journal entry id:{record.id} created:{record.created} topic:{record.topic}"
+    return (f"Created journal entry id:{record.id} created:{record.created} topic:{record.topic}. "
+            "Ensure the entry contains no data already captured by the timestamp; edit if needed.")
 
 
 @agent_tool(
