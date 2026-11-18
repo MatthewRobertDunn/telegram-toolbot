@@ -46,7 +46,7 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetched.user_id, 1)
         self.assertEqual(fetched.created, created)
         self.assertEqual(fetched.created_epoch_ms, _ms(created))
-        self.assertEqual(fetched.topic, "Mood")
+        self.assertEqual(fetched.topic, "mood")
         self.assertEqual(fetched.entry, "Felt okay today.")
         second = await self.store.add_entry(
             user_id=1, topic="Sleep", entry="Slept well.",
@@ -261,7 +261,7 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         fetched = await self.store.get_entry(
             user_id=1, entry_id=record.id)
         assert fetched is not None
-        self.assertEqual(fetched.topic, "Sleep")
+        self.assertEqual(fetched.topic, "sleep")
         # Other users see nothing.
         self.assertEqual(
             await self.store.update_entry_topic(
@@ -288,7 +288,7 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         narrow = await self.store.search_entries(
             user_id=1, query="anxious dreams")
         self.assertEqual(len(narrow), 1)
-        self.assertEqual(narrow[0].topic, "Sleep")
+        self.assertEqual(narrow[0].topic, "sleep")
         # Quoted phrase.
         phrase = await self.store.search_entries(
             user_id=1, query='"anxious dreams"')
@@ -465,13 +465,13 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         # Case-insensitive uniqueness, alphabetical.
         self.assertEqual(
             await self.store.list_topics(user_id=1),
-            ["Mood", "Sleep"])
+            ["mood", "sleep"])
         # Topics vanish once unused.
         await self.store.delete_entry(
             user_id=1, entry_id=first.id)
         self.assertEqual(
             await self.store.list_topics(user_id=1),
-            ["mood", "Sleep"])
+            ["mood", "sleep"])
 
 
 class TestJournalTools(unittest.IsolatedAsyncioTestCase):
@@ -539,7 +539,7 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         await journal_tool.journal_add(ctx, topic="Mood", entry="Hi.")
         out = await journal_tool.journal_get(ctx, ids=[1])
         self.assertIn("ID: 1", out)
-        self.assertIn("Topic: Mood", out)
+        self.assertIn("Topic: mood", out)
         self.assertIn("Entry: Hi.", out)
         self.assertIn("Created: ", out)
         self.assertEqual(
@@ -680,7 +680,7 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
                 ctx, id=1, oldTopic="Mood", newTopic="Sleep"),
             "Journal entry 1 topic updated")
         out = await journal_tool.journal_get(ctx, ids=[1])
-        self.assertIn("Topic: Sleep", out)
+        self.assertIn("Topic: sleep", out)
         # Cross-user isolation.
         other = self._ctx(user_id=2)
         self.assertEqual(
@@ -796,7 +796,7 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         await journal_tool.journal_add(ctx, topic="Sleep", entry="a")
         await journal_tool.journal_add(ctx, topic="Mood", entry="b")
         self.assertEqual(await journal_tool.journal_list_topics(ctx),
-                         "Mood\nSleep")
+                         "mood\nsleep")
 
     def test_all_seven_tools_are_declared(self):
         from tool_registry import BOTH, all_tools

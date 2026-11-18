@@ -317,7 +317,7 @@ async def journal_topic_edit(ctx: AgentContext, id: int | float | str,
     if len(newTopic.strip()) > MAX_TOPIC_LENGTH:
         return (f"Error: Topic must be at most "
                 f"{MAX_TOPIC_LENGTH} characters")
-    if oldTopic.strip() == newTopic.strip():
+    if oldTopic.strip().lower() == newTopic.strip().lower():
         return ("Error: No changes to apply: "
                 "oldTopic and newTopic are identical.")
     try:

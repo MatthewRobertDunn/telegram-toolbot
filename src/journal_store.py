@@ -150,7 +150,7 @@ class JournalStore:
 
     async def add_entry(self, *, user_id: int, topic: str, entry: str,
                         created: str, created_epoch_ms: int) -> JournalEntry:
-        clean_topic = topic.strip()
+        clean_topic = topic.strip().lower()
         if not clean_topic:
             raise ValueError("Topic cannot be empty")
         if len(clean_topic) > MAX_TOPIC_LENGTH:
@@ -245,8 +245,8 @@ class JournalStore:
     async def update_entry_topic(self, *, user_id: int, entry_id: int,
                                  old_topic: str,
                                  new_topic: str) -> ReplaceOutcome:
-        clean_old = old_topic.strip()
-        clean_new = new_topic.strip()
+        clean_old = old_topic.strip().lower()
+        clean_new = new_topic.strip().lower()
         if not clean_old:
             raise ValueError("Existing topic cannot be empty")
         if not clean_new:
@@ -266,7 +266,7 @@ class JournalStore:
         if row is None:
             return ReplaceOutcome.NOT_FOUND
         current: str = row["topic"]
-        if current != clean_old:
+        if current.lower() != clean_old:
             return ReplaceOutcome.TEXT_NOT_FOUND
         await db.execute(
             "UPDATE journal_entries SET topic = ? "
