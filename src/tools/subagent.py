@@ -247,7 +247,7 @@ async def _run_subagent(parent: ChatUpdateContext, record: SubagentRecord,
         "prompt. Shares your tools (except subagent controls and chat-posting "
         "tools) and sandbox; files persist. It can message you via "
         "subagent_send_to_parent. You get its final report on completion; "
-        "no polling needed. Use subagent_steer to steer it meanwhile."),
+        "no polling or tool call loops needed."),
     parameters={
         "description": {
             "type": "string",
