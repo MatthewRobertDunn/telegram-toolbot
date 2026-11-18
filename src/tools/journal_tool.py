@@ -107,15 +107,12 @@ def _format_entry(record: JournalEntry) -> str:
 @agent_tool(
     scope=BOTH,
     description=(
-        "Creates a new journal entry in the authenticated user's "
+        "Creates a new journal entry in the user's "
         "journal. Use this whenever the user shares information that "
-        "should be retained, such as health, mood, symptoms, sleep, "
-        "experiences or personal reflections. Prefer an existing "
+        "should be retained. Prefer an existing "
         "topic from journal_list_topics; do not create unnecessary "
         "variations of existing topics. Preserve the user's meaning "
-        "and relevant details; do not invent information. The "
-        "creation timestamp is generated automatically in the user's "
-        "timezone."),
+        "Do not include the current date or time in the entry text; it is already recorded automatically. "),
     parameters={
         "topic": {
             "type": "string",
