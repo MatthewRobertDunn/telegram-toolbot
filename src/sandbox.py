@@ -162,8 +162,6 @@ class SandboxManager:
                     "--cpus", config.SANDBOX_CPUS,
                     "--pids-limit", str(config.SANDBOX_PIDS_LIMIT),
                     "--security-opt", "no-new-privileges",
-                    "--cap-drop", "ALL",
-                    "--cap-add", "NET_RAW",
                     "--workdir", "/workspace",
                 ]
                 skills_dir = os.path.abspath(config.SKILLS_DIR)
