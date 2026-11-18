@@ -358,55 +358,46 @@ def _as_result(text: str, image: GeneratedImage,
 
 _RESOLUTION_PARAM = {
     "type": "string",
-    "description": ("Image dimensions as WIDTHxHEIGHT, e.g. '1024x1024'. "
-                    f"Width and height must each be a multiple of {DIM_STEP} "
-                    f"between {MIN_DIM} and {MAX_DIM}, e.g. '1024x1024', "
-                    "'1568x672', '768x1344', '1344x768'"),
+    "description": ("Image size as WIDTHxHEIGHT, e.g. '1024x1024'. "
+                    f"Each dimension must be a multiple of {DIM_STEP} "
+                    f"between {MIN_DIM} and {MAX_DIM}."),
 }
 
 _ADD_TO_CONTEXT_PARAM = {
     "type": "boolean",
-    "description": ("Whether to attach the generated image to this conversation "
-                    "so you can see it. Defaults to false. Requires a "
-                    "vision-capable model."),
+    "description": ("Attach generated image to this conversation so you can "
+                    "see it (requires vision-capable model). Defaults to "
+                    "false."),
 }
 
 _PROVIDER_PARAM = {
     "type": "string",
     "enum": list(IMAGE_PROVIDERS),
-    "description": ("Image backend to use: 'nvidia-flux3' (NVIDIA FLUX-3, "
-                    "default), 'nvidia-flux2' (NVIDIA FLUX.2-Klein, fast "
-                    "few-step), 'cloudflare' (Cloudflare Workers AI "
-                    "Leonardo Phoenix 1.0) or 'horde' (AI Horde "
-                    "crowdsourced generation). Defaults to 'nvidia-flux3'."),
+    "description": ("Image backend: 'nvidia-flux3' (default), "
+                    "'nvidia-flux2' (fast few-step), 'cloudflare' (Leonardo "
+                    "Phoenix 1.0) or 'horde' (crowdsourced)."),
 }
 
 
 @agent_tool(
     name="generate_image",
-    description=("Generate an image from a text prompt. The image is sent to "
-                 "the user in the chat and stored in the sandbox at "
-                 "/workspace/uploads, so it can be processed with sandbox "
-                 "tools. Set send_to_chat to false to generate an image "
-                 "without showing it to the user. Set add_to_context to true "
-                 "to attach the generated image to this conversation so you "
-                 "can look at it (requires a vision-capable model). "
+    description=("Generate an image from a text prompt, sent to the user in "
+                 "chat and stored in /workspace/uploads for sandbox "
+                 "processing. Set send_to_chat to false to keep it private, "
+                 "add_to_context to true to view it yourself (needs vision). "
                  "Set provider to 'nvidia-flux2', 'cloudflare' or 'horde' "
-                 "to use that backend instead of the default NVIDIA FLUX-3 "
-                 "backend."),
+                 "to override the default 'nvidia-flux3'."),
     parameters={
         "prompt": {
             "type": "string",
-            "description": "A text description of the image to generate",
+            "description": "Text description of image to generate",
         },
         "resolution": _RESOLUTION_PARAM,
         "provider": _PROVIDER_PARAM,
         "send_to_chat": {
             "type": "boolean",
-            "description": ("Whether to send the generated image to the user "
-                            "in the chat. Defaults to true. Set to false to "
-                            "generate the image privately: it is still stored "
-                            "in the sandbox, but not shown to the user."),
+            "description": ("Send image to user in chat (default true). Set "
+                            "false to keep private; still stored in sandbox."),
         },
         "add_to_context": _ADD_TO_CONTEXT_PARAM,
     })
@@ -437,19 +428,17 @@ async def generate_and_send_image(
 @agent_tool(
     name="generate_image",
     scope=SUBAGENT,
-    description=("Generate an image from a text prompt and store it in the "
-                 "sandbox at /workspace/uploads, where it can be processed "
-                 "with the sandbox tools. The image is never shown to the "
-                 "user: report its path to the parent assistant, which can "
-                 "share it. Set add_to_context to true to attach the image to "
-                 "this conversation so you can look at it (requires a "
-                 "vision-capable model). Set provider to 'nvidia-flux2', "
-                 "'cloudflare' or 'horde' to use that backend instead of "
-                 "the default NVIDIA FLUX-3 backend."),
+    description=("Generate an image from a text prompt, stored in "
+                 "/workspace/uploads for sandbox processing. Never shown to "
+                 "the user: report its path to the parent assistant to share. "
+                 "Set add_to_context to true to view it yourself (needs "
+                 "vision). Set provider to 'nvidia-flux2', "
+                 "'cloudflare' or 'horde' to override the default "
+                 "'nvidia-flux3'."),
     parameters={
         "prompt": {
             "type": "string",
-            "description": "A text description of the image to generate",
+            "description": "Text description of image to generate",
         },
         "resolution": _RESOLUTION_PARAM,
         "provider": _PROVIDER_PARAM,

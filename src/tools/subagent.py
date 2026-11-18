@@ -261,27 +261,21 @@ async def _run_subagent(parent: ChatUpdateContext, record: SubagentRecord,
 
 @agent_tool(
     description=(
-        "Start a background subagent on a task and return its id "
-        "immediately (does not wait). The subagent has fresh context "
-        "and none of this conversation's history, so include all "
-        "relevant context in the prompt. It shares your tools "
-        "(except these subagent controls and the tools that post to "
-        "the chat), and the sandbox; file changes persist. The "
-        "subagent can communicate with you via its "
-        "subagent_send_to_parent tool. You will be notified with its "
-        "final report when it finishes, no need to poll. Use "
-        "subagent_steer to steer it meanwhile."),
+        "Start a background subagent and return its id immediately (no wait). "
+        "Subagent has fresh context, no history: include all context in "
+        "prompt. Shares your tools (except subagent controls and chat-posting "
+        "tools) and sandbox; files persist. It can message you via "
+        "subagent_send_to_parent. You get its final report on completion; "
+        "no polling needed. Use subagent_steer to steer it meanwhile."),
     parameters={
         "description": {
             "type": "string",
-            "description": ("A short 3-5 word label for the task, displayed "
-                            "to the user"),
+            "description": ("Short 3-5 word task label, shown to user"),
         },
         "prompt": {
             "type": "string",
-            "description": ("The task for the subagent. Include context, "
-                            "constraints, and what its final report should "
-                            "contain."),
+            "description": ("Subagent task. Include context, constraints, and "
+                            "required final report contents."),
         },
     })
 async def subagent_start(ctx: ChatUpdateContext, description: str,
@@ -322,8 +316,7 @@ async def subagent_start(ctx: ChatUpdateContext, description: str,
 
 
 @agent_tool(
-    description=("List all subagents with their ids, statuses, "
-                 "and how long each has been running."))
+    description=("List subagents with ids, statuses, and runtimes."))
 async def subagent_list(ctx: ChatUpdateContext) -> str:
     subs = get_subagents(ctx)
     if not subs:
@@ -341,11 +334,11 @@ async def subagent_list(ctx: ChatUpdateContext) -> str:
 
 
 @agent_tool(
-    description="Stop a running background subagent by id.",
+    description="Stop a running subagent by id.",
     parameters={
         "id": {
             "type": "string",
-            "description": "The subagent id returned by subagent_start",
+            "description": "Subagent id from subagent_start",
         },
     })
 async def subagent_stop(ctx: ChatUpdateContext, id: str) -> str:
@@ -373,18 +366,16 @@ async def subagent_stop(ctx: ChatUpdateContext, id: str) -> str:
 
 @agent_tool(
     description=(
-        "Steer a running background subagent mid-run: queue a "
-        "message delivered as a parent message in its conversation. "
-        "Use it to redirect, answer its questions, or give it its "
-        "next task once idle."),
+        "Message a running subagent mid-run (delivered as parent message). "
+        "Use to redirect, answer questions, or assign next task when idle."),
     parameters={
         "id": {
             "type": "string",
-            "description": "The subagent id returned by subagent_start",
+            "description": "Subagent id from subagent_start",
         },
         "message": {
             "type": "string",
-            "description": "Message for the subagent",
+            "description": "Message for subagent",
         },
     })
 async def subagent_steer(ctx: ChatUpdateContext, id: str,
@@ -403,14 +394,12 @@ async def subagent_steer(ctx: ChatUpdateContext, id: str,
 @agent_tool(
     scope=BOTH,
     description=(
-        "Send a progress update back to the parent assistant "
-        "(you are still running). "
-        "Use it for progress worth surfacing before your final "
-        "report."),
+        "Send progress update to parent assistant (you keep running). "
+        "Use for progress worth surfacing before final report."),
     parameters={
         "message": {
             "type": "string",
-            "description": "Progress update for the parent assistant",
+            "description": "Progress update for parent",
         },
     })
 async def subagent_send_to_parent(ctx: AgentContext,

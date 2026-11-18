@@ -35,14 +35,13 @@ IMAGE_MIME_TYPES = {
 
 _FILE_PATH_PARAM = {
     "type": "string",
-    "description": "The path to the image file to view.",
+    "description": "Path to image file to view.",
 }
 
 _SEND_TO_CHAT_PARAM = {
     "type": "boolean",
-    "description": ("Whether to also send the image to the user in the chat. "
-                    "Defaults to true. Set to false to inspect the image "
-                    "yourself without showing it to the user."),
+    "description": ("Also send image to user in chat (default true). Set "
+                    "false to inspect privately."),
 }
 
 
@@ -97,15 +96,11 @@ def _image_result(text: str, image: LoadedImage) -> ToolCallResult:
 @agent_tool(
     name="read_image",
     description=(
-        "Read an image file (png, jpg, jpeg, gif, webp) from the "
-        "sandbox and attach it to the conversation so you can see "
-        "it. Requires a vision-capable model. The image is also "
-        "sent to the user's chat, unless send_to_chat is false, or "
-        "the user uploaded that file recently (it is already "
-        "visible in their chat window from the upload itself). "
-        "Use this instead of the read tool for image "
-        "files; the read tool rejects binary files. Images larger "
-        "than 5 MB cannot be displayed."),
+        "Read an image (png, jpg, jpeg, gif, webp) from sandbox and attach "
+        "it so you can see it (needs vision). Also sent to user's chat "
+        "unless send_to_chat is false or user recently uploaded it (already "
+        "visible). Use instead of read for images; read rejects binaries. "
+        "Max 5 MB."),
     parameters={
         "filePath": _FILE_PATH_PARAM,
         "send_to_chat": _SEND_TO_CHAT_PARAM,
@@ -139,13 +134,10 @@ async def read_image(ctx: ChatUpdateContext, filePath: str,
     name="read_image",
     scope=SUBAGENT,
     description=(
-        "Read an image file (png, jpg, jpeg, gif, webp) from the "
-        "sandbox and attach it to your conversation so you can see "
-        "it. Requires a vision-capable model. The image is not shown "
-        "to the user: report its path to the parent assistant if it "
-        "should be shared. Use this instead of the read tool for "
-        "image files; the read tool rejects binary files. Images "
-        "larger than 5 MB cannot be displayed."),
+        "Read an image (png, jpg, jpeg, gif, webp) from sandbox and attach "
+        "it so you can see it (needs vision). Never shown to user: report "
+        "path to parent to share. Use instead of read for images; read "
+        "rejects binaries. Max 5 MB."),
     parameters={"filePath": _FILE_PATH_PARAM})
 async def read_image_subagent(ctx: AgentContext,
                               filePath: str) -> str | ToolCallResult:
@@ -157,18 +149,15 @@ async def read_image_subagent(ctx: AgentContext,
 
 @agent_tool(
     description=(
-        "Send a file from the sandbox to the user as a Telegram "
-        "document. Usage:\n"
-        "- The file can be anywhere in the sandbox; paths are "
-        "relative to the sandbox workspace root /workspace, or "
-        "absolute.\n"
-        "- Use this to share files generated in the sandbox with "
-        "the user (reports, data files, images, binaries, etc.).\n"
-        "- Files larger than 45 MB cannot be sent."),
+        "Send a sandbox file to user as Telegram document. Usage:\n"
+        "- Paths relative to /workspace or absolute.\n"
+        "- Use to share generated files (reports, data, images, binaries, "
+        "etc.).\n"
+        "- Max 45 MB."),
     parameters={
         "filePath": {
             "type": "string",
-            "description": "The path to the file to send.",
+            "description": "Path of file to send.",
         },
     })
 async def send_file(ctx: ChatUpdateContext, filePath: str) -> str:

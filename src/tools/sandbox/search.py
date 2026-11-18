@@ -37,33 +37,26 @@ def _parse_rg_json(stdout: str) -> list[dict]:
 @agent_tool(
     scope=BOTH,
     description=(
-        "Fast content search tool that works with any codebase "
-        "size, powered by ripgrep in the sandbox. Usage:\n"
-        "- Searches file contents using regular expressions\n"
-        "- Supports full regex syntax (eg. \"log.*Error\", "
-        "\"function\\s+\\w+\", etc.)\n"
-        "- Filter files by pattern with the include parameter "
-        "(eg. \"*.js\", \"*.{ts,tsx}\")\n"
-        "- Returns file paths and line numbers with matching lines\n"
-        "- Use this tool when you need to find files containing "
-        "specific patterns\n"
-        "- If you need to identify/count the number of matches "
-        "within files, use the bash tool with `rg` (ripgrep) "
-        "directly. Do NOT use `grep`."),
+        "Fast content search via ripgrep in sandbox, any codebase size. "
+        "Usage:\n"
+        "- Regex search file contents (e.g. \"log.*Error\", "
+        "\"function\\s+\\w+\")\n"
+        "- Filter with include (e.g. \"*.js\", \"*.{ts,tsx}\")\n"
+        "- Returns paths, line numbers, matching lines\n"
+        "- Use to find files by content pattern\n"
+        "- To count matches, use bash with `rg` directly, NOT `grep`."),
     parameters={
         "pattern": {
             "type": "string",
-            "description": ("The regex pattern to search for in file "
-                            "contents"),
+            "description": ("Regex to search file contents"),
         },
         "path": {
             "type": "string",
-            "description": ("The directory to search in. Defaults to the "
-                            "current working directory."),
+            "description": ("Directory to search (default working dir)."),
         },
         "include": {
             "type": "string",
-            "description": ("File pattern to include in the search (e.g. "
+            "description": ("File pattern filter (e.g. "
                             "\"*.js\", \"*.{ts,tsx}\")"),
         },
     })
@@ -108,25 +101,19 @@ async def grep(ctx: AgentContext, pattern: str,
 @agent_tool(
     scope=BOTH,
     description=(
-        "Fast file pattern matching tool that works with any "
-        "codebase size, powered by ripgrep in the sandbox. "
-        "Returns matching file paths sorted by modification time "
-        "(newest first). Usage:\n"
-        "- Supports glob patterns like \"**/*.js\" or "
-        "\"src/**/*.ts\"\n"
-        "- Use this tool when you need to find files by name "
-        "patterns\n"
-        "- It is always better to speculatively perform multiple "
-        "searches as a batch that are potentially useful."),
+        "Fast file search via ripgrep in sandbox, any codebase size. "
+        "Returns matches newest-first. Usage:\n"
+        "- Glob patterns like \"**/*.js\", \"src/**/*.ts\"\n"
+        "- Use to find files by name\n"
+        "- Batch multiple speculative searches when useful."),
     parameters={
         "pattern": {
             "type": "string",
-            "description": "The glob pattern to match files against",
+            "description": "Glob pattern to match files",
         },
         "path": {
             "type": "string",
-            "description": ("The directory to search in. If not specified, "
-                            "the workspace root will be used."),
+            "description": ("Directory to search (default workspace root)."),
         },
     })
 async def glob(ctx: AgentContext, pattern: str,

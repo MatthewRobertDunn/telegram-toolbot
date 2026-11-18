@@ -10,23 +10,16 @@ from .common import _cap_output
 @agent_tool(
     scope=BOTH,
     description=(
-        "Execute a bash shell command in the user's sandbox and "
-        "return the output. The sandbox persists between calls: files "
-        "created and packages installed remain available in later "
-        "calls. Commands always run from the workspace root /workspace. "
-        "You don't need to prefix commands with `cd /workspace &&`."
-        "The sandbox has full network access and root privileges, so "
-        "software can be installed, e.g. 'apt-get update && "
-        "apt-get install -y <package>'. Prefer the dedicated read, "
-        "write, edit, grep and glob tools for file work; use bash "
-        "for everything else (git, npm, running code, etc.). All "
-        "state is permanently lost when the sandbox is destroyed, which "
-        "happens 24 hours after the last command executed on it. "
-        "Long output is truncated."),
+        "Run a bash command in sandbox and return output. Sandbox persists "
+        "(files/packages remain); commands run from /workspace (no `cd` "
+        "needed). Full network + root, e.g. 'apt-get update && apt-get "
+        "install -y <package>'. Prefer read/write/edit/grep/glob for file "
+        "work; bash for rest (git, npm, running code, etc.). State lost 24h "
+        "after last command. Long output truncated."),
     parameters={
         "command": {
             "type": "string",
-            "description": "The bash command to execute.",
+            "description": "Bash command to execute.",
         },
     })
 async def bash(ctx: AgentContext, command: str) -> str:

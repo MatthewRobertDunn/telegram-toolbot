@@ -11,13 +11,12 @@ from tool_registry import agent_tool
 
 
 @agent_tool(
-    description=("Displays a message to the user. Use this during long "
-                 "running tool executions (web search, python, etc.) to "
-                 "indicate progress. Do not use it for normal messages."),
+    description=("Show a progress message during long tool runs (web search, "
+                 "python, etc.). Not for normal messages."),
     parameters={
         "message": {
             "type": "string",
-            "description": "The text to display to the user.",
+            "description": "Text to display.",
         },
     })
 async def display_status(ctx: ChatUpdateContext, message: str) -> str:

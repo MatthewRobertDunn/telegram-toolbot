@@ -8,9 +8,8 @@ from tool_registry import BOTH, agent_tool
 @agent_tool(
     name="memory_list",
     scope=BOTH,
-    description=("List all keys in your memory. Your memory is private to "
-                 "each user and persists across interactions. Use it to "
-                 "remember facts, preferences, and details about the user."))
+    description=("List all memory keys. Memory is per-user, persistent; use "
+                 "for facts, preferences, user details."))
 async def memory_get_keys(ctx: AgentContext) -> str:
     async with create_memory_store() as memory:
         keys = await memory.get_all_keys(ctx.user_id)
@@ -20,14 +19,13 @@ async def memory_get_keys(ctx: AgentContext) -> str:
 @agent_tool(
     name="memory_get",
     scope=BOTH,
-    description=("Recall values for specified keys from your memory. Returns "
-                 "a dict mapping each key to its value (or null for anything "
-                 "you don't remember)."),
+    description=("Recall values for keys. Returns dict of key to value "
+                 "(null if unknown)."),
     parameters={
         "keys": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "List of keys to recall values for.",
+            "description": "Keys to recall.",
         },
     })
 async def memory_get_values(ctx: AgentContext, keys: list[str]) -> str:
@@ -39,17 +37,16 @@ async def memory_get_values(ctx: AgentContext, keys: list[str]) -> str:
 @agent_tool(
     name="memory_set",
     scope=BOTH,
-    description=("Save a key-value pair to your memory so you remember it in "
-                 "future interactions. Overwrites anything you previously "
-                 "remembered under the key."),
+    description=("Save a key-value pair for future interactions. Overwrites "
+                 "existing value."),
     parameters={
         "key": {
             "type": "string",
-            "description": "The key under which to remember the value.",
+            "description": "Key to store value under.",
         },
         "value": {
             "type": "string",
-            "description": "The value to remember.",
+            "description": "Value to remember.",
         },
     })
 async def memory_set_value(ctx: AgentContext, key: str, value: str) -> str:
@@ -61,13 +58,12 @@ async def memory_set_value(ctx: AgentContext, key: str, value: str) -> str:
 @agent_tool(
     name="memory_delete",
     scope=BOTH,
-    description=("Forget specified keys, permanently erasing them from your "
-                 "memory."),
+    description=("Forget keys, permanently erasing them."),
     parameters={
         "keys": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "List of keys to forget.",
+            "description": "Keys to forget.",
         },
     })
 async def memory_delete_values(ctx: AgentContext, keys: list[str]) -> str:

@@ -10,10 +10,9 @@ logger = logging.getLogger(__name__)
 
 @agent_tool(
     scope=BOTH,
-    description=("Get the current date, time, and day of the week in the "
-                 "user's timezone (set with /timezone, UTC when never set). "
-                 "Returns a full ISO 8601 timestamp with UTC offset, plus "
-                 "weekday and IANA timezone name."))
+    description=("Get current date and time in the user's timezone (set via "
+                 "/timezone, default UTC). Returns ISO 8601 timestamp with "
+                 "UTC offset, weekday and timezone name."))
 async def get_current_datetime(ctx: AgentContext) -> str:
     settings = ctx.user_data.settings
     if settings is None:

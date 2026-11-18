@@ -12,17 +12,13 @@ logger = logging.getLogger(__name__)
     name="python",
     scope=BOTH,
     description=(
-        "Execute a Python script in the user's sandbox and return the "
-        "output. The script runs with the working directory "
-        "/workspace (continue reading/writing files there with the "
-        "other tools afterwards). The sandbox has network access, "
-        "and state persists between calls. Use this to run "
-        "calculations, process data, or test code. Prefer this tool "
-        "over the bash tool for Python scripts."),
+        "Run a Python script in sandbox (/workspace, state persists, "
+        "network available) and return output. Use for calculations, data "
+        "processing, or testing code. Prefer over bash for Python."),
     parameters={
         "code": {
             "type": "string",
-            "description": "The Python code to execute.",
+            "description": "Python code to execute.",
         },
     })
 async def run_python_code(ctx: AgentContext, code: str) -> str:

@@ -107,12 +107,10 @@ def _format_entry(record: JournalEntry) -> str:
 @agent_tool(
     scope=BOTH,
     description=(
-        "Creates a new journal entry in the user's "
-        "journal. Use this whenever the user shares information that "
-        "should be retained. Prefer an existing "
-        "topic from journal_list_topics; do not create unnecessary "
-        "variations of existing topics. Preserve the user's meaning "
-        "Do not include the current date or time in the entry text; it is already recorded automatically. "),
+        "Create a journal entry for information worth retaining. Prefer an "
+        "existing topic from journal_list_topics over new variations. "
+        "Preserve the user's meaning; omit dates/times (recorded "
+        "automatically)."),
     parameters={
         "topic": {
             "type": "string",
@@ -120,7 +118,7 @@ def _format_entry(record: JournalEntry) -> str:
         },
         "entry": {
             "type": "string",
-            "description": "Journal entry content, plain text.",
+            "description": "Entry content, plain text.",
         },
     })
 async def journal_add(ctx: AgentContext, topic: str, entry: str) -> str:
@@ -147,16 +145,13 @@ async def journal_add(ctx: AgentContext, topic: str, entry: str) -> str:
 
 @agent_tool(
     scope=BOTH,
-    description=("Retrieves one or more journal entries by their IDs. Use "
-                 "this to inspect entries, verify their contents before "
-                 "editing them, or retrieve their full contents after a "
-                 "search. Only entries belonging to the authenticated user "
-                 "can be retrieved."),
+    description=("Get journal entries by ID. Use to inspect entries, verify "
+                 "before editing, or get full contents after a search."),
     parameters={
         "ids": {
             "type": "array",
             "items": {"type": "integer"},
-            "description": "Array of entry IDs to retrieve (max 50).",
+            "description": "Entry IDs to retrieve (max 50).",
         },
     })
 async def journal_get(ctx: AgentContext,
@@ -201,11 +196,11 @@ async def journal_get(ctx: AgentContext,
 
 @agent_tool(
     scope=BOTH,
-    description="Permanently deletes a journal entry.",
+    description="Permanently delete a journal entry.",
     parameters={
         "id": {
             "type": "integer",
-            "description": "ID of the entry to delete.",
+            "description": "ID of entry to delete.",
         },
     })
 async def journal_delete(ctx: AgentContext, id: int | float | str) -> str:
@@ -228,34 +223,27 @@ async def journal_delete(ctx: AgentContext, id: int | float | str) -> str:
 @agent_tool(
     scope=BOTH,
     description=(
-        "Performs exact string replacements in a journal entry. "
-        "Retrieve the entry with journal_get first if you do not already have its "
-        "current contents. Matching is exact and case-sensitive. "
-        "The edit will FAIL if `oldString` is not found in the "
-        "entry. The edit will FAIL if `oldString` is found multiple "
-        "times in the entry: either provide a larger string with "
-        "more surrounding context to make it unique or use "
-        "`replaceAll` to change every instance. The original "
-        "creation timestamp is preserved. Use an empty `newString` "
-        "to delete a section of text."),
+        "Edit a journal entry via exact, case-sensitive string replacement. "
+        "Get current contents with journal_get first. Fails if `oldString` "
+        "is missing or matches multiple times: add context to disambiguate "
+        "or use `replaceAll`. Creation timestamp is preserved. Empty "
+        "`newString` deletes text."),
     parameters={
         "id": {
             "type": "integer",
-            "description": "ID of the entry to modify.",
+            "description": "ID of entry to modify.",
         },
         "oldString": {
             "type": "string",
-            "description": "The text to replace",
+            "description": "Text to replace",
         },
         "newString": {
             "type": "string",
-            "description": ("The text to replace it with (must be different "
-                            "from oldString)"),
+            "description": ("Replacement text (must differ from oldString)"),
         },
         "replaceAll": {
             "type": "boolean",
-            "description": ("Replace all occurrences of oldString "
-                            "(default false)"),
+            "description": ("Replace all matches (default false)"),
         },
     })
 async def journal_edit(ctx: AgentContext, id: int | float | str,
@@ -298,24 +286,21 @@ async def journal_edit(ctx: AgentContext, id: int | float | str,
 @agent_tool(
     scope=BOTH,
     description=(
-        "Changes the topic of a journal entry. "
-        "Retrieve the entry with journal_get first if you do not "
-        "already know its current topic. oldTopic must match the "
-        "entry's current topic exactly; the edit fails otherwise. "
-        "Prefer an existing topic from journal_list_topics; do not "
-        "create unnecessary variations of existing topics."),
+        "Change a journal entry's topic. Get current topic with journal_get "
+        "first; oldTopic must match exactly. Prefer an existing topic from "
+        "journal_list_topics."),
     parameters={
         "id": {
             "type": "integer",
-            "description": "ID of the entry to modify.",
+            "description": "ID of entry to modify.",
         },
         "oldTopic": {
             "type": "string",
-            "description": "The current topic (must match exactly)",
+            "description": "Current topic (must match exactly)",
         },
         "newTopic": {
             "type": "string",
-            "description": ("The new topic (must be different from oldTopic, "
+            "description": ("New topic (must differ from oldTopic, "
                             "max 128 characters)"),
         },
     })
@@ -355,38 +340,28 @@ async def journal_topic_edit(ctx: AgentContext, id: int | float | str,
 @agent_tool(
     scope=BOTH,
     description=(
-        "Searches the authenticated user's journal by text "
-        "and topic. This is the primary tool for recalling recorded "
-        "information: past experiences, mood over time, symptoms, "
-        "sleep or wellbeing patterns. All parameters are optional; "
-        "call with no parameters to retrieve recent entries. "
-        "Results are newest-first by default; set sortDescending to "
-        "false for oldest-first. cursor is an optional exclusive "
-        "paging cursor, ISO 8601 with timezone: with newest-first "
-        "it returns only entries created before cursor, with "
-        "oldest-first only entries created after cursor. At most "
-        "limit entries are returned (default 50, maximum 50). When "
-        "more matching entries exist beyond the returned page, the "
-        "response ends with a follow-up line telling you which date "
-        "to pass as cursor next; keep the other parameters the same. "
-        "Full-text search matches "
-        "words, not meanings: "
-        "use concise terms or quoted phrases for exact phrases. "
-        "Timestamps must be ISO 8601 with an explicit timezone or "
-        "UTC indicator."),
+        "Search journal by text and topic; primary tool for recalling past "
+        "experiences, mood, symptoms, sleep/wellbeing. All parameters "
+        "optional; empty call returns recent entries. Newest-first by "
+        "default (sortDescending=false for oldest-first). cursor is an "
+        "exclusive ISO 8601 with timezone paging cursor: before cursor when "
+        "newest-first, after when oldest-first. Returns up to limit "
+        "(default/max 50); if more exist, response ends with the cursor for "
+        "the next page (keep other params). Full-text matches words, not "
+        "meanings: use concise terms or quoted phrases. Timestamps need "
+        "explicit timezone/UTC."),
     parameters={
         "cursor": {
             "type": "string",
-            "description": ("Optional exclusive paging cursor, ISO 8601 "
-                            "with timezone."),
+            "description": ("Exclusive paging cursor, ISO 8601 with timezone."),
         },
         "query": {
             "type": "string",
-            "description": "Optional full-text search query.",
+            "description": "Full-text search query.",
         },
         "topic": {
             "type": "string",
-            "description": "Optional exact topic filter (case-insensitive).",
+            "description": "Exact topic filter (case-insensitive).",
         },
         "sortDescending": {
             "type": "boolean",
@@ -457,11 +432,9 @@ async def journal_query(ctx: AgentContext,
 @agent_tool(
     scope=BOTH,
     description=(
-        "Returns the distinct topics in the authenticated user's "
-        "journal, one per line, sorted alphabetically. Use this to "
-        "discover existing categories before creating or searching "
-        "entries, and prefer an existing topic over coining a new "
-        "variation."))
+        "List distinct journal topics, one per line, alphabetically. Use to "
+        "discover categories before creating/searching; prefer existing "
+        "topics."))
 async def journal_list_topics(ctx: AgentContext) -> str:
     try:
         async with create_journal_store() as store:

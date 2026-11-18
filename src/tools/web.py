@@ -8,17 +8,15 @@ from tool_registry import BOTH, agent_tool
 
 @agent_tool(
     scope=BOTH,
-    description=("Search the web using DuckDuckGo. Returns titles, URLs, "
-                 "and snippets for each result."),
+    description=("Web search via DuckDuckGo. Returns titles, URLs, snippets."),
     parameters={
         "query": {
             "type": "string",
-            "description": "The search query string.",
+            "description": "Search query.",
         },
         "max_results": {
             "type": "integer",
-            "description": ("Maximum number of results to return "
-                            "(default 5, max 10)."),
+            "description": ("Max results (default 5, max 10)."),
         },
     })
 async def web_search(query: str, max_results: int = 5) -> str:
@@ -36,18 +34,15 @@ async def web_search(query: str, max_results: int = 5) -> str:
 
 @agent_tool(
     scope=BOTH,
-    description=("Fetch and extract the text content of a web page converted "
-                 "to markup given its URL."),
+    description=("Fetch a web page's text content as markup, given its URL."),
     parameters={
         "url": {
             "type": "string",
-            "description": ("The full URL of the webpage to fetch, including "
-                            "https://."),
+            "description": ("Full webpage URL, including https://."),
         },
         "max_chars": {
             "type": "integer",
-            "description": ("Maximum characters to return from the page "
-                            "(default 100000)."),
+            "description": ("Max characters to return (default 100000)."),
         },
     })
 async def web_fetch(url: str, max_chars: int = 100000) -> str:
