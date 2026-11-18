@@ -23,7 +23,6 @@ from tools import subagent as subagent_mod
 from tools.subagent import (
     MAX_RECORDS,
     MAX_SUBAGENTS,
-    SUBAGENT_TIMEOUT,
     SubagentRecord,
     cancel_all_subagents,
     format_duration,

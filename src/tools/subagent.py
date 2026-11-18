@@ -46,9 +46,6 @@ SUBAGENT_SYSTEM_PROMPT = (
 MAX_SUBAGENTS = 8
 # Finished records kept for subagent_list history; older ones are pruned.
 MAX_RECORDS = 32
-# A hung subagent is failed after this long so it cannot hold a slot and
-# stay silent forever.
-SUBAGENT_TIMEOUT = 30 * 60
 
 # The subagent whose tool loop is currently running (for
 # subagent_send_to_parent). The record also carries the parent context, so
@@ -190,17 +187,14 @@ async def _run_subagent(parent: ChatUpdateContext, record: SubagentRecord,
                         model: str | None) -> None:
     token = _current_subagent.set(record)
     try:
-        result = await asyncio.wait_for(
-            run_llm(
-                parent.new_subagent_context(record.conversation),
-                model=model,
-                conversation=record.conversation,
-                tools=get_subagent_tool_defs(),
-                inbox=record.inbox,
-                stream_drafts=False,
-                announce_tools=False,
-            ),
-            timeout=SUBAGENT_TIMEOUT,
+        result = await run_llm(
+            parent.new_subagent_context(record.conversation),
+            model=model,
+            conversation=record.conversation,
+            tools=get_subagent_tool_defs(),
+            inbox=record.inbox,
+            stream_drafts=False,
+            announce_tools=False,
         )
     except asyncio.CancelledError:
         record.finish("stopped")
@@ -217,19 +211,6 @@ async def _run_subagent(parent: ChatUpdateContext, record: SubagentRecord,
             except Exception:
                 logger.warning('subagent stop notification failed', exc_info=True)
         raise
-    except (asyncio.TimeoutError, TimeoutError):
-        record.finish("timed out")
-        record.result = f"Subagent timed out after {SUBAGENT_TIMEOUT}s."
-        record.notified = True
-        logger.warning('subagent %s timed out', record.id)
-        try:
-            await _notify_parent(
-                parent, SubagentMessage(id=record.id, state="timed out",
-                                        description=record.description))
-        except Exception:
-            logger.warning('subagent timeout notification failed',
-                           exc_info=True)
-        return
     except Exception as e:
         record.finish("failed")
         record.result = f"Subagent error: {e}"
@@ -409,7 +390,7 @@ async def subagent_send_to_parent(ctx: AgentContext,
     Subagents use it for progress worth surfacing before the final
     report; the state is "running" — the most up-to-date fact at send
     time — so the parent can tell interim mail apart from terminal
-    reports (finished/failed/timed out/stopped). The parent is also
+    reports (finished/failed/stopped). The parent is also
     offered it (as a safety net for role confusion): with no subagent
     context it just notes the message back into the parent's own inbox.
 

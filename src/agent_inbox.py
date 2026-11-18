@@ -26,7 +26,7 @@ PARENT_ID = "parent"
 #: Inbox states after which the sender will send no more mail. Receipts
 #: name these in the summary; anything else (interim progress) gets no
 #: suffix — the sender is still alive.
-TERMINAL_STATES = frozenset({"finished", "failed", "timed out", "stopped"})
+TERMINAL_STATES = frozenset({"finished", "failed", "stopped"})
 
 
 @dataclass
@@ -34,7 +34,7 @@ class SubagentMessage:
     """One structured inbox delivery.
 
     id: sender — subagent id, or "parent" for parent-originated mail.
-    state: running (still alive) | finished | timed out | failed |
+    state: running (still alive) | finished | failed |
         stopped | steer.
     description: subagent description ("" when unknown/inapplicable).
     result: report body, error detail, progress text, or steer text.
