@@ -10,10 +10,8 @@ logger = logging.getLogger(__name__)
 
 
 SETTINGS_KEY = "user_settings"
-# Conversation rows live in the settings table too, partitioned per user
-# by the user_id column. The unthreaded conversation keeps the plain
-# CONVERSATION_KEY (so pre-thread databases keep working untouched);
-# each thread id gets its own suffixed key row carrying that thread_id.
+# Conversation rows live in the settings table too: one CONVERSATION_KEY
+# row per (user, thread), told apart by the thread_id column.
 CONVERSATION_KEY = "conversation"
 
 SETTINGS_SCHEMA = '''
@@ -31,9 +29,9 @@ SETTINGS_SCHEMA = '''
 class SettingsStore(AsyncSQLiteStore):
     """The settings table: every row carries its thread id.
 
-    Settings rows share SETTINGS_KEY and are told apart by thread_id;
-    conversation rows keep suffixed keys. ``IS`` matches NULL thread
-    ids too.
+    Settings rows share SETTINGS_KEY and conversation rows share
+    CONVERSATION_KEY; both are told apart by thread_id. ``IS`` matches
+    NULL thread ids too.
     """
 
     def __init__(self, db_path: str):
@@ -81,12 +79,6 @@ def create_settings_store() -> SettingsStore:
     return SettingsStore(sql_db_path)
 
 
-def _conversation_key(thread_id: int | None) -> str:
-    if thread_id is None:
-        return CONVERSATION_KEY
-    return f"{CONVERSATION_KEY}:thread:{thread_id}"
-
-
 async def load_settings(user_id: int,
                         thread_id: int | None = None) -> UserSettings | None:
     """Load one thread's settings, or None when absent/corrupt.
@@ -115,7 +107,7 @@ async def save_settings(user_id: int, thread_id: int | None,
 
 async def save_conversation(user_id: int, thread_id: int | None,
                             conversation: Conversation) -> None:
-    """Persist the conversation under the thread's key.
+    """Persist the conversation under the thread's row.
 
     The single save point is the generation worker (which covers every
     queued unit of work); the few direct mutations (/start reset, ambient
@@ -123,7 +115,7 @@ async def save_conversation(user_id: int, thread_id: int | None,
     payload = json.dumps({'id': conversation.id,
                           'messages': list(conversation.messages)})
     async with create_settings_store() as store:
-        await store.set(user_id, _conversation_key(thread_id),
+        await store.set(user_id, CONVERSATION_KEY,
                         payload, thread_id)
 
 
@@ -132,7 +124,7 @@ async def load_conversation(user_id: int,
     """Load the persisted conversation for the thread, or None when
     absent/corrupt."""
     async with create_settings_store() as store:
-        raw = await store.get(user_id, _conversation_key(thread_id),
+        raw = await store.get(user_id, CONVERSATION_KEY,
                               thread_id)
     if raw is None:
         return None
