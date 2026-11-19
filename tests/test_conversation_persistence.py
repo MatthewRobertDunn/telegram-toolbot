@@ -13,13 +13,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 import settings_store
 from settings_store import (CONVERSATION_KEY, load_conversation,
                             save_conversation)
-from context_store import AsyncSQLiteStore, SETTINGS_SCHEMA
+from settings_store import SettingsStore
 from conversation import Conversation
 from mock_context import mock_ctx
 
 
 def _temp_store(path):
-    return AsyncSQLiteStore(path, 'settings', SETTINGS_SCHEMA)
+    return SettingsStore(path)
 
 
 class ConversationPersistenceTest(unittest.IsolatedAsyncioTestCase):
@@ -57,7 +57,7 @@ class ConversationPersistenceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_load_corrupt_returns_none(self):
         store = _temp_store(self.path)
-        await store.set(7, CONVERSATION_KEY, 'not json{{{')
+        await store.set(7, CONVERSATION_KEY, 'not json{{{', None)
         await store.close()
         self.assertIsNone(await load_conversation(7, None))
 

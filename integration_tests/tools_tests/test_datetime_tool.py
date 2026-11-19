@@ -17,6 +17,7 @@ class TestDatetimeTool(unittest.IsolatedAsyncioTestCase):
         settings = UserSettings.default()
         settings.timezone = tz_name
         ctx = MagicMock()
+        ctx.settings = settings
         ctx.user_data.settings = settings
         return ctx
 

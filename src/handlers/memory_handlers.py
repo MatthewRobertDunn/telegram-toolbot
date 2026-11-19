@@ -1,6 +1,6 @@
 from chat_update_context import ChatUpdateContext
 from handlers.middleware import handler
-from context_store import create_memory_store
+from memory_store import create_memory_store
 
 
 @handler

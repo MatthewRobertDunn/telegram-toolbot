@@ -27,7 +27,8 @@ load_dotenv(os.path.join(_HERE, '.env'))
 logging.disable(logging.CRITICAL)
 
 # ------------------------------------------------------------------ database
-from context_store import create_memory_store, create_settings_store
+from memory_store import create_memory_store
+from settings_store import create_settings_store
 
 _db_reset_done = False
 

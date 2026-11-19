@@ -1,34 +1,23 @@
-import aiosqlite
+"""Per-user key/value memory, backed by the ``kv`` table."""
+
 from config import sql_db_path
+from sqlite_store import AsyncSQLiteStore
+
+KV_SCHEMA = '''
+    CREATE TABLE IF NOT EXISTS kv (
+        user_id INTEGER NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (user_id, key)
+    )
+'''
 
 
-class AsyncSQLiteStore:
-    def __init__(self, db_path: str, table_name: str, schema_sql: str):
-        self.db_path = db_path
-        self.table_name = table_name
-        self._schema_sql = schema_sql
-        self._conn = None
-
-    async def _get_conn(self):
-        if self._conn is None:
-            self._conn = await aiosqlite.connect(self.db_path)
-        return self._conn
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        await self.close()
-
-    async def create_schema(self):
-        db = await self._get_conn()
-        await db.execute(self._schema_sql)
-        await db.commit()
-
-    async def close(self):
-        if self._conn:
-            await self._conn.close()
-            self._conn = None
+class MemoryStore(AsyncSQLiteStore):
+    def __init__(self, db_path: str):
+        # Table name "kv" is kept for backward compatibility with
+        # existing databases.
+        super().__init__(db_path, "kv", KV_SCHEMA)
 
     async def get(self, user_id: int, key: str) -> str | None:
         db = await self._get_conn()
@@ -43,21 +32,6 @@ class AsyncSQLiteStore:
         await db.execute(
             f'INSERT OR REPLACE INTO {self.table_name} (user_id, key, value) VALUES (?, ?, ?)',
             (user_id, key, value))
-        await db.commit()
-
-    async def set_with_thread(self, user_id: int, key: str, value: str,
-                              thread_id: int | None) -> None:
-        """Write a row carrying its thread id.
-
-        Settings-table only: the kv table has no thread_id column.
-        last_updated is left to the column default (CURRENT_TIMESTAMP),
-        refreshed by INSERT OR REPLACE on every write.
-        """
-        db = await self._get_conn()
-        await db.execute(
-            f'INSERT OR REPLACE INTO {self.table_name} '
-            '(user_id, key, value, thread_id) VALUES (?, ?, ?, ?)',
-            (user_id, key, value, thread_id))
         await db.commit()
 
     async def delete(self, user_id: int, key: str) -> None:
@@ -104,31 +78,5 @@ class AsyncSQLiteStore:
         await db.commit()
 
 
-KV_SCHEMA = '''
-    CREATE TABLE IF NOT EXISTS kv (
-        user_id INTEGER NOT NULL,
-        key TEXT NOT NULL,
-        value TEXT NOT NULL,
-        PRIMARY KEY (user_id, key)
-    )
-'''
-
-SETTINGS_SCHEMA = '''
-    CREATE TABLE IF NOT EXISTS settings (
-        user_id INTEGER NOT NULL,
-        key TEXT NOT NULL,
-        value TEXT NOT NULL,
-        thread_id INTEGER DEFAULT NULL,
-        last_updated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (user_id, key)
-    )
-'''
-
-
-def create_memory_store() -> AsyncSQLiteStore:
-    # Table name "kv" is kept for backward compatibility with existing databases.
-    return AsyncSQLiteStore(sql_db_path, "kv", KV_SCHEMA)
-
-
-def create_settings_store() -> AsyncSQLiteStore:
-    return AsyncSQLiteStore(sql_db_path, "settings", SETTINGS_SCHEMA)
+def create_memory_store() -> MemoryStore:
+    return MemoryStore(sql_db_path)
