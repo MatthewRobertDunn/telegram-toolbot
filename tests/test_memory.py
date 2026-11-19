@@ -4,13 +4,13 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from context_store import AsyncSQLiteStore, KV_SCHEMA
+from memory_store import MemoryStore
 
 
 class TestMemory(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
-        self.store = AsyncSQLiteStore(':memory:', "kv", KV_SCHEMA)
+        self.store = MemoryStore(':memory:')
         await self.store.create_schema()
 
     async def asyncTearDown(self):

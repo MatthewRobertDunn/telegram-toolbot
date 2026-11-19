@@ -4,7 +4,7 @@ Strongly typed persistence layer: methods take and return dataclasses and
 plain values, never pre-formatted strings. LLM-facing formatting lives in
 tools/journal_tool.py.
 
-Usage mirrors context_store.AsyncSQLiteStore: the schema is created once at
+Usage mirrors sqlite_store.AsyncSQLiteStore: the schema is created once at
 startup (chatbot.post_init) via ``async with create_journal_store() as
 store: await store.create_schema()``. Operations additionally ensure the
 schema themselves, so ad-hoc and test use works without a startup step.

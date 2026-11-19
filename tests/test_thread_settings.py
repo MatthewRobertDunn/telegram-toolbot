@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import settings_store
 from settings_store import load_settings, save_settings
-from context_store import AsyncSQLiteStore, SETTINGS_SCHEMA
+from settings_store import SettingsStore
 from chat_update_context import create_chat_update_context
 from handlers import middleware
 from mock_context import mock_ctx
@@ -24,7 +24,7 @@ from user_settings import UserSettings
 
 
 def _temp_store(path):
-    return AsyncSQLiteStore(path, 'settings', SETTINGS_SCHEMA)
+    return SettingsStore(path)
 
 
 async def _settings_rows(path, user_id):
