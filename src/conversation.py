@@ -10,6 +10,7 @@ The class also owns the small behaviors the message list needs everywhere
 """
 
 import base64
+import copy
 import enum
 import uuid
 from collections.abc import Iterable
@@ -38,6 +39,24 @@ class ConversationMessageType(enum.Enum):
     # steering): model-visible as a user turn, but /undo skips it when
     # looking for the human exchange to remove.
     AGENT_MESSAGE = 'agent_message'
+    # Model thinking kept for display: role=assistant in the history so
+    # /undo and /regenerate treat it like any assistant turn, but never
+    # sent to the endpoint (see to_openai()).
+    THINKING = 'thinking'
+
+
+class RegenerationAction(enum.Enum):
+    """What /regenerate should do after trimming the history."""
+    NOTHING = 'nothing'
+    ANSWER = 'answer'
+    IMPERSONATE = 'impersonate'
+
+
+def is_thinking_message(message: dict) -> bool:
+    """Whether a stored message is a kept thinking block (assistant role,
+    THINKING type). Works for plain dicts and ConversationMessage alike."""
+    return (message.get(CUSTOM) or {}).get('message_type') == \
+        ConversationMessageType.THINKING.value
 
 
 def _tool_call_ids(message: dict) -> set:
@@ -50,8 +69,12 @@ def _tool_call_ids(message: dict) -> set:
 
 
 def estimate_conversation_tokens(conversation) -> int:
-    """Estimated tokens of a whole conversation, images included."""
-    return sum(estimate_message_tokens(message) for message in conversation)
+    """Estimated tokens of a whole conversation, images included.
+
+    Thinking blocks are display-only (never sent to the endpoint), so
+    they are excluded like the endpoint excludes them."""
+    return sum(estimate_message_tokens(message) for message in conversation
+               if not is_thinking_message(message))
 
 
 def token_count(text: str) -> int:
@@ -178,6 +201,18 @@ class Conversation:
         message.add_telegram_message_id(telegram_message_ids)
         return message
 
+    def add_thinking(self, content,
+                     telegram_message_ids: int | list[int] | None = None
+                     ) -> ConversationMessage:
+        """Append a kept thinking block: an assistant message tagged
+        THINKING, carrying the Telegram collapsible ids. Never sent to
+        the endpoint (see to_openai()). No uuid is needed - like tool
+        calls, identity comes from position, not an id."""
+        message = self.add('assistant', content)
+        message.add_telegram_message_id(telegram_message_ids)
+        message.message_type = ConversationMessageType.THINKING
+        return message
+
     def add_tool(self, content, tool_call_id: str) -> dict:
         """A tool result message answering the tool call with that id."""
         return self.add('tool', content, tool_call_id=tool_call_id)
@@ -252,10 +287,12 @@ class Conversation:
 
     def to_openai(self) -> list:
         """The message list as the endpoint should see it: `custom` local
-        metadata (e.g. Telegram ids) removed, everything else passed through."""
+        metadata (e.g. Telegram ids) removed, thinking blocks skipped
+        (display-only, never model input), everything else passed through."""
         return [{key: value for key, value in message.items()
                  if key != CUSTOM}
-                for message in self.messages]
+                for message in self.messages
+                if not is_thinking_message(message)]
 
     def set_system_head(self, prompt: str) -> ConversationMessage:
         """Put this system prompt at position 0, creating the head if needed.
@@ -279,8 +316,100 @@ class Conversation:
 
     @property
     def token_estimate(self) -> int:
-        """Estimated tokens of the whole conversation, images included."""
-        return sum(estimate_message_tokens(message) for message in self.messages)
+        """Estimated tokens of the whole conversation, images included.
+
+        Thinking blocks are display-only and excluded, matching
+        estimate_conversation_tokens / to_openai()."""
+        return sum(estimate_message_tokens(message)
+                   for message in self.messages
+                   if not is_thinking_message(message))
+
+    def pop_trailing_tool_results(self) -> list:
+        """Drop abandoned trailing tool results (an unfinished assistant
+        turn left them behind) and return them newest-first, so the
+        caller can clean up anything attached to them."""
+        removed = []
+        while self.messages and self.messages[-1].get('role') == 'tool':
+            removed.append(self.messages.pop())
+        return removed
+
+    def pop_trailing_thinking(self) -> list:
+        """Drop trailing thinking blocks with no answer (a stopped run
+        left them behind) and return them newest-first, so the caller
+        can delete their Telegram posts."""
+        removed = []
+        while self.messages and is_thinking_message(self.messages[-1]):
+            removed.append(self.messages.pop())
+        return removed
+
+    def undo_last_exchange(self) -> list:
+        """Remove the last exchange back to and including the last human
+        user prompt, plus any tool-call cascade, and return the removed
+        messages newest-first for Telegram cleanup and preview.
+
+        Agent-injected user turns are skipped when finding the human
+        exchange. Thinking blocks are plain assistant turns here, so
+        they are removed with the tail like anything else - no special
+        case needed. Returns [] when there is nothing to undo."""
+        if not self.messages or self.messages[-1].get('role') == 'system':
+            return []
+        last_user_index = -1
+        for i, message in enumerate(self.messages):
+            if message.get('role') != 'user':
+                continue
+            if (message.get(CUSTOM) or {}).get('message_type') == \
+                    ConversationMessageType.AGENT_MESSAGE.value:
+                continue
+            last_user_index = i
+        if last_user_index == -1:
+            last = self.messages.pop()
+            return [last, *self.remove_tool_calls(last)]
+        removed = []
+        while len(self.messages) > last_user_index:
+            last = self.messages.pop()
+            removed.append(last)
+            for extra in self.remove_tool_calls(last):
+                if not any(extra is already for already in removed):
+                    removed.append(extra)
+        return removed
+
+    def prepare_regeneration(self) -> tuple[list, RegenerationAction]:
+        """Trim the history to the state a fresh reply should start from.
+
+        Drops abandoned trailing tool results and orphan thinking (a
+        stopped run's thinking with no answer), then either pops the
+        last assistant turn with its thinking (ANSWER), pops an
+        impersonation turn to redo (IMPERSONATE), or leaves a bare user
+        prompt to answer (ANSWER). Returns (removed newest-first for
+        Telegram cleanup, action)."""
+        removed: list = []
+        removed.extend(self.pop_trailing_tool_results())
+        removed.extend(self.pop_trailing_thinking())
+        if not self.messages or self.messages[-1].get('role') == 'system':
+            return removed, RegenerationAction.NOTHING
+        last = self.messages[-1]
+        if last.get('role') == 'assistant':
+            popped = self.messages.pop()
+            removed.append(popped)
+            removed.extend(self.remove_tool_calls(popped))
+            removed.extend(self.pop_trailing_thinking())
+            return removed, RegenerationAction.ANSWER
+        if (last.get('role') == 'user'
+                and (last.get(CUSTOM) or {}).get('message_type')
+                == ConversationMessageType.IMPERSONATION.value):
+            removed.append(self.messages.pop())
+            return removed, RegenerationAction.IMPERSONATE
+        return removed, RegenerationAction.ANSWER
+
+    def clone_for_impersonation(self, prompt: str) -> Conversation:
+        """A detached copy of this conversation plus the impersonation
+        prompt as its last user turn. The clone gets a fresh session id;
+        thinking blocks ride along (harmless - to_openai() skips them)
+        and the real history is never touched."""
+        clone = Conversation(
+            [copy.deepcopy(message) for message in self.messages])
+        clone.add_user(prompt)
+        return clone
 
     def __len__(self) -> int:
         return len(self.messages)

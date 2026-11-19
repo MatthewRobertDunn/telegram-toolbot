@@ -102,30 +102,38 @@ async def _drain_inbox(ctx: AgentContext,
     return drained
 
 
-async def _maybe_send_thinking(ctx: AgentContext,
-                               conversation: Conversation,
-                               chat: ChatUpdateContext | None,
-                               reasoning: str | None,
-                               link_to=None) -> None:
-    """Post the model's thinking as a collapsible when thinking_keep is on.
+def _thinking_chat(ctx: AgentContext,
+                   conversation: Conversation,
+                   chat: ChatUpdateContext | None) -> ChatUpdateContext | None:
+    """The chat to post thinking to, or None when thinking stays hidden.
 
-    Parent-only like the inbox receipts (see _drain_inbox): subagent loops
-    pass no chat and stay silent. Message ids are linked to the given
-    conversation message (the assistant turn for tool rounds, else the last
-    message in the history) so /undo deletes the post along with the turn.
+    Thinking is parent-main-loop-only: subagent loops pass no chat and
+    stay silent, and nested calls with their own history (compaction,
+    impersonation) share the parent chat but must not spam it - only the
+    conversation the user actually chats in posts. Respects /thinking_keep.
     """
+    if chat is None:
+        return None
+    try:
+        live = ctx.thread_data.conversation
+    except AttributeError:
+        live = ctx.conversation
+    if conversation is not live:
+        return None
+    if not getattr(ctx.settings, 'thinking_keep', False):
+        return None
+    return chat
+
+
+async def _post_thinking(conversation: Conversation,
+                         chat: ChatUpdateContext,
+                         reasoning: str | None) -> None:
+    """Append one thinking block to the history and post it as a
+    collapsible. No-op when there is no reasoning to keep."""
     if not reasoning:
         return
-    if chat is None:
-        return
-    if not getattr(ctx.settings, 'thinking_keep', False):
-        return
     message_ids = await chat.messaging.send_collapsible("Thinking", reasoning)
-    target = link_to
-    if target is None and conversation.messages:
-        target = conversation.messages[-1]
-    if target is not None:
-        target.add_telegram_message_id(message_ids)
+    conversation.add_thinking(reasoning, telegram_message_ids=message_ids)
 
 
 def _tool_map_for(tool_defs: list[dict], role: str) -> dict:
@@ -191,6 +199,8 @@ async def run_llm(ctx: AgentContext,
 
     # Tool-call and inbox announcements are parent-only.
     announce_chat = chat if announce_tools else None
+    # Thinking posts are parent-main-loop-only (see _thinking_chat).
+    think_chat = _thinking_chat(ctx, conversation, chat)
 
     while True:
         await _drain_inbox(ctx, conversation, inbox, announce_chat)
@@ -238,8 +248,9 @@ async def run_llm(ctx: AgentContext,
                 logger.warning('model returned tool calls while tools are '
                                'disabled; ignoring them')
             if message.content:
-                await _maybe_send_thinking(ctx, conversation, chat,
-                                           message.reasoning_content)
+                if think_chat is not None:
+                    await _post_thinking(conversation, think_chat,
+                                         message.reasoning_content)
                 # Anything that arrived while this round was in flight gets
                 # another turn instead of a stale reply (see _drain_inbox).
                 if await _drain_inbox(ctx, conversation, inbox,
@@ -247,8 +258,9 @@ async def run_llm(ctx: AgentContext,
                     continue
                 return message.content
             elif message.reasoning_content:
-                await _maybe_send_thinking(ctx, conversation, chat,
-                                           message.reasoning_content)
+                if think_chat is not None:
+                    await _post_thinking(conversation, think_chat,
+                                         message.reasoning_content)
                 if await _drain_inbox(ctx, conversation, inbox,
                                       announce_chat):
                     continue
@@ -258,16 +270,16 @@ async def run_llm(ctx: AgentContext,
                                       announce_chat):
                     continue
                 return NO_CONTENT_MESSAGE
-            
+
+        if think_chat is not None:
+            await _post_thinking(conversation, think_chat,
+                                 message.reasoning_content)
         assistant_message = conversation.add_assistant(message.content or '')
         if message.reasoning_content:
             # DeepSeek/Kimi thinking mode require the reasoning_content of a
             # tool-call turn to be passed back on every later request; dropping
             # it makes the API reject the turn and poisons the whole session.
             assistant_message['reasoning_content'] = message.reasoning_content
-        await _maybe_send_thinking(ctx, conversation, chat,
-                                   message.reasoning_content,
-                                   link_to=assistant_message)
         assistant_message['tool_calls'] = [
             {
                 "id": tc.id,

@@ -2,12 +2,12 @@
 turn, impersonating the user, and compacting the history."""
 
 import asyncio
-import copy
 import logging
 
 from chat_update_context import ChatUpdateContext
 from compaction import (DEFAULT_KEEP_TOKENS, CompactionError, compact_context)
-from conversation import CUSTOM, Conversation, ConversationMessageType
+from conversation import (CUSTOM, Conversation, ConversationMessageType,
+                          RegenerationAction, is_thinking_message)
 from handlers.middleware import handler
 from handlers.generation_queue import (
     generate_response,
@@ -137,64 +137,30 @@ async def run_undo(ctx: ChatUpdateContext) -> None:
 
 
 async def undo_turn(ctx: ChatUpdateContext) -> None:
-    """The undo itself, runs as its own task."""
-    messages = ctx.conversation.messages
-    if not messages or messages[-1].get('role') == 'system':
+    """The undo itself, runs as its own task.
+
+    High-level orchestration only: the history trim lives in
+    Conversation.undo_last_exchange, this just deletes the Telegram posts
+    and reports what went."""
+    removed_messages = ctx.conversation.undo_last_exchange()
+    if not removed_messages:
         message_ids = await ctx.messaging.send_message("Nothing to undo.")
         asyncio.create_task(_schedule_command_clear(
             ctx, [_command_message_id(ctx), *message_ids]))
         return
 
-    # Walk the history back to and including the last user turn: a whole
-    # exchange (prompt + reply + any tool rounds) is removed in one go.
-    # Agent-injected turns (subagent reports, parent steering) are skipped:
-    # they are not the human exchange, and anything after them belongs to
-    # a later exchange that /undo removes as well.
-    last_user_index = -1
-    for i, message in enumerate(messages):
-        if message.get('role') != 'user':
-            continue
-        if (getattr(message, 'message_type', None)
-                is ConversationMessageType.AGENT_MESSAGE):
-            continue
-        last_user_index = i
-
-    if last_user_index == -1:
-        # No user turn exists (e.g. only an assistant greeting); undo just
-        # the last message, preserving the old single-message behaviour.
-        last = messages.pop()
-        await delete_from_telegram(ctx, stored_message_ids(last))
-
-        removed = ctx.conversation.remove_tool_calls(last)
-        for message in removed:
-            await delete_from_telegram(ctx, stored_message_ids(message))
-
-        role = str(last.get('role') or 'message').capitalize()
-        message_ids = await ctx.messaging.send_message(
-            f"Removed message ({role}):\n"
-            f"{message_preview(last, context=messages + removed)}")
-        asyncio.create_task(_schedule_command_clear(
-            ctx, [_command_message_id(ctx), *message_ids]))
-        return
-
-    removed_messages = []
-    while len(messages) > last_user_index:
-        last = messages.pop()
-        removed_messages.append(last)
-        await delete_from_telegram(ctx, stored_message_ids(last))
-
-        removed = ctx.conversation.remove_tool_calls(last)
-        for message in removed:
-            await delete_from_telegram(ctx, stored_message_ids(message))
-            if message not in removed_messages:
-                removed_messages.append(message)
+    for message in removed_messages:
+        await delete_from_telegram(ctx, stored_message_ids(message))
 
     if len(removed_messages) == 1:
         last = removed_messages[0]
-        role = str(last.get('role') or 'message').capitalize()
+        if is_thinking_message(last):
+            role = 'Thinking'
+        else:
+            role = str(last.get('role') or 'message').capitalize()
         message_ids = await ctx.messaging.send_message(
             f"Removed message ({role}):\n"
-            f"{message_preview(last, context=messages + removed_messages)}")
+            f"{message_preview(last, context=ctx.conversation.messages + removed_messages)}")
     else:
         message_ids = await ctx.messaging.send_message(
             f"Removed {len(removed_messages)} message(s).\n"
@@ -243,30 +209,24 @@ async def run_regeneration(ctx: ChatUpdateContext) -> None:
 
 
 async def regeneration_turn(ctx: ChatUpdateContext) -> None:
-    """The regeneration itself, runs as its own task."""
-    messages = ctx.conversation.messages
-    # An unfinished assistant turn leaves its tool results trailing; skip
-    # past them so the real last speaker is what decides the branch.
-    while messages and messages[-1].get('role') == 'tool':
-        messages.pop()
-    if not messages or messages[-1].get('role') == 'system':
+    """The regeneration itself, runs as its own task.
+
+    High-level orchestration only: the history trim lives in
+    Conversation.prepare_regeneration, this just deletes the Telegram
+    posts and runs the next flow (answer again or redo impersonation)."""
+    removed, action = ctx.conversation.prepare_regeneration()
+    for message in removed:
+        await delete_from_telegram(ctx, stored_message_ids(message))
+
+    if action is RegenerationAction.NOTHING:
         message_ids = await ctx.messaging.send_message("Nothing to regenerate yet.")
         asyncio.create_task(_schedule_command_clear(
             ctx, [_command_message_id(ctx), *message_ids]))
         return
 
-    last = messages[-1]
-    if last.get('role') == 'assistant':
-        messages.pop()
-        await delete_from_telegram(ctx, stored_message_ids(last))
-
-    if (last.get('role') == 'user'
-            and last.message_type == ConversationMessageType.IMPERSONATION):
-        # The last turn was an impersonation: remove it (like any other
-        # user turn here) and run the impersonation flow again instead of
-        # answering the conversation as it stands.
-        messages.pop()
-        await delete_from_telegram(ctx, stored_message_ids(last))
+    if action is RegenerationAction.IMPERSONATE:
+        # The last turn was an impersonation: it is already removed, so
+        # run the impersonation flow again instead of answering as usual.
         # Already inside the worker: run the flow directly instead of
         # submitting a second queued item (which would deadlock waiting
         # for itself).
@@ -276,7 +236,7 @@ async def regeneration_turn(ctx: ChatUpdateContext) -> None:
         return
 
     # content=None: run the model without appending a user turn - after
-    # the pop the history ends on the original prompt, unchanged, and the
+    # the trim the history ends on the original prompt, unchanged, and the
     # model answers it again. Already inside the worker: call directly
     # instead of submitting a second queued item.
     await generate_response(ctx, None)
@@ -294,7 +254,8 @@ async def retry_command(ctx: ChatUpdateContext):
     Runs as a queued unit of work like /compact, so it waits for any
     in-flight work instead of refusing."""
     messages = ctx.conversation.messages
-    if not any(message.get('role') != 'system' for message in messages):
+    if not any(message.get('role') != 'system'
+               and not is_thinking_message(message) for message in messages):
         await ctx.messaging.send_message("Nothing to retry yet.")
         return
 
@@ -315,7 +276,8 @@ async def impersonate_command(ctx: ChatUpdateContext):
     Runs as a queued unit of work like /compact, with the task tracked
     in ctx.generation_task, so /stop stops it like any other work."""
     messages = ctx.conversation.messages
-    if not any(message.get('role') != 'system' for message in messages):
+    if not any(message.get('role') != 'system'
+               and not is_thinking_message(message) for message in messages):
         message_ids = await ctx.messaging.send_message("Nothing to impersonate yet.")
         asyncio.create_task(_schedule_command_clear(
             ctx, [_command_message_id(ctx), *message_ids]))
@@ -345,13 +307,12 @@ async def run_impersonation(ctx: ChatUpdateContext) -> None:
 
 
 async def impersonate_turn(ctx: ChatUpdateContext) -> None:
-    """The impersonation itself, runs as its own task."""
-    # Deep-copy the whole conversation, custom Telegram ids included:
-    # the clone must not share message dicts with the real history (and
-    # to_openai() strips the custom keys on the way out anyway).
-    clone = Conversation([
-        copy.deepcopy(message) for message in ctx.conversation.messages])
-    clone.add_user(IMPERSONATE_PROMPT)
+    """The impersonation itself, runs as its own task.
+
+    High-level orchestration only: the detached clone lives in
+    Conversation.clone_for_impersonation, this just runs the model and
+    records the fake turn."""
+    clone = ctx.conversation.clone_for_impersonation(IMPERSONATE_PROMPT)
 
     response = (await run_llm(ctx, conversation=clone)
                 or '').strip()

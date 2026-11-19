@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from agent_inbox import (get_main_inbox, main_loop_active,
                          set_main_loop_active)
 from chat_update_context import ChatUpdateContext
+from conversation import CUSTOM
 from settings_store import save_conversation
 from tools.subagent import get_parent_tool_defs
 from .run_llm import run_llm
@@ -129,8 +130,19 @@ async def generate_response(ctx: ChatUpdateContext, content: str | None = None,
                     # generation down too and re-raise.
                     inner.cancel()
                     raise
-                # /stop cancelled just the generation task; leave nothing behind
-                # (the user can /regenerate or simply talk again).
+                # /stop cancelled just the generation task. Thinking already
+                # appended for the aborted reply has no answer to belong to,
+                # so drop it now (history and Telegram): leaving it would
+                # strand a dangling block a later /regenerate would miss.
+                for thinking in ctx.conversation.pop_trailing_thinking():
+                    for message_id in (thinking.get(CUSTOM) or {}).get(
+                            'telegram_message_ids') or []:
+                        try:
+                            await ctx.messaging.delete_message(message_id)
+                        except Exception:
+                            logger.warning(
+                                'Could not delete thinking message %s',
+                                message_id, exc_info=True)
                 return
             finally:
                 ctx.generation_task = None
