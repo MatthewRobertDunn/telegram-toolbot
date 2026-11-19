@@ -31,6 +31,7 @@ from handlers.command_handlers import (
     top_p_reset_command,
     temperature_command,
     temperature_reset_command,
+    thinking_keep_command,
     timezone_command,
     settings_reset_command,
     tool_output_command,
@@ -108,6 +109,7 @@ async def post_init(application: Application):
             BotCommand("memory_delete", "Forget a remembered key"),
             BotCommand("memory_delete_all", "Forget everything I remember"),
             BotCommand("tool_output", "Toggle tool call output on/off"),
+            BotCommand("thinking_keep", "Toggle thinking output on/off"),
             BotCommand("settings_reset", "Reset all user settings to default"),
             BotCommand("sandbox_reset", "Destroy your sandbox and all its files"),
             BotCommand("user_profile", "Set your profile/biography"),
@@ -169,6 +171,7 @@ def main():
     application.add_handler(CommandHandler('systemprompt_reset', callback_adapter(systemprompt_reset_command)))
     application.add_handler(CommandHandler('temperature', callback_adapter(temperature_command)))
     application.add_handler(CommandHandler('temperature_reset', callback_adapter(temperature_reset_command)))
+    application.add_handler(CommandHandler('thinking_keep', callback_adapter(thinking_keep_command)))
     application.add_handler(CommandHandler('timezone', callback_adapter(timezone_command)))
     application.add_handler(CommandHandler('tool_output', callback_adapter(tool_output_command)))
     application.add_handler(CommandHandler('top_p', callback_adapter(top_p_command)))

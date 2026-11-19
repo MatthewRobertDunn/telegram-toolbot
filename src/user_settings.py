@@ -15,6 +15,7 @@ class UserSettingsSerialized:
     system_prompt: str | None = None
     user_profile: str | None = None
     show_tool_output: bool | None = None
+    thinking_keep: bool | None = None
     subagent_model: str | None = None
     timezone: str | None = None
 
@@ -115,6 +116,14 @@ class UserSettings:
     @show_tool_output.setter
     def show_tool_output(self, value: bool):
         self._settings.show_tool_output = value
+
+    @property
+    def thinking_keep(self) -> bool:
+        return False if self._settings.thinking_keep is None else self._settings.thinking_keep
+
+    @thinking_keep.setter
+    def thinking_keep(self, value: bool):
+        self._settings.thinking_keep = value
 
     @classmethod
     def from_json(cls, json_str: str) -> UserSettings:

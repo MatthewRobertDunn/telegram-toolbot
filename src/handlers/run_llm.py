@@ -102,6 +102,32 @@ async def _drain_inbox(ctx: AgentContext,
     return drained
 
 
+async def _maybe_send_thinking(ctx: AgentContext,
+                               conversation: Conversation,
+                               chat: ChatUpdateContext | None,
+                               reasoning: str | None,
+                               link_to=None) -> None:
+    """Post the model's thinking as a collapsible when thinking_keep is on.
+
+    Parent-only like the inbox receipts (see _drain_inbox): subagent loops
+    pass no chat and stay silent. Message ids are linked to the given
+    conversation message (the assistant turn for tool rounds, else the last
+    message in the history) so /undo deletes the post along with the turn.
+    """
+    if not reasoning:
+        return
+    if chat is None:
+        return
+    if not getattr(ctx.settings, 'thinking_keep', False):
+        return
+    message_ids = await chat.messaging.send_collapsible("Thinking", reasoning)
+    target = link_to
+    if target is None and conversation.messages:
+        target = conversation.messages[-1]
+    if target is not None:
+        target.add_telegram_message_id(message_ids)
+
+
 def _tool_map_for(tool_defs: list[dict], role: str) -> dict:
     """The executable map matching the offered definitions.
 
@@ -212,6 +238,8 @@ async def run_llm(ctx: AgentContext,
                 logger.warning('model returned tool calls while tools are '
                                'disabled; ignoring them')
             if message.content:
+                await _maybe_send_thinking(ctx, conversation, chat,
+                                           message.reasoning_content)
                 # Anything that arrived while this round was in flight gets
                 # another turn instead of a stale reply (see _drain_inbox).
                 if await _drain_inbox(ctx, conversation, inbox,
@@ -219,6 +247,8 @@ async def run_llm(ctx: AgentContext,
                     continue
                 return message.content
             elif message.reasoning_content:
+                await _maybe_send_thinking(ctx, conversation, chat,
+                                           message.reasoning_content)
                 if await _drain_inbox(ctx, conversation, inbox,
                                       announce_chat):
                     continue
@@ -235,6 +265,9 @@ async def run_llm(ctx: AgentContext,
             # tool-call turn to be passed back on every later request; dropping
             # it makes the API reject the turn and poisons the whole session.
             assistant_message['reasoning_content'] = message.reasoning_content
+        await _maybe_send_thinking(ctx, conversation, chat,
+                                   message.reasoning_content,
+                                   link_to=assistant_message)
         assistant_message['tool_calls'] = [
             {
                 "id": tc.id,
