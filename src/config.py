@@ -30,7 +30,7 @@ NVIDIA_FLUX2_GEN_URL = os.environ.get(
     "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b")
 temperature = 1.0
 top_p = 0.95
-api_retry_time = 3600
+api_retry_time = 36000
 
 STREAM_DRAFTS = os.environ.get("STREAM_DRAFTS", "1").strip().lower() not in ("0", "false", "off")
 
