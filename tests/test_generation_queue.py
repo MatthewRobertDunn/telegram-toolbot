@@ -127,6 +127,39 @@ class TestGenerateResponse(unittest.TestCase):
         asyncio.run(gq.submit_task(ctx, after()))
         self.assertEqual(order, ['ran'])
 
+    def test_stop_deletes_orphan_thinking(self):
+        async def main():
+            ctx = mock_ctx(user_id=5, bot=_Bot(),
+                           conversation=[{'role': 'user', 'content': 'hi'}])
+            deleted: list = []
+            ctx.messaging.delete_message = mock.AsyncMock(
+                side_effect=lambda message_id: deleted.append(message_id))
+            ctx.messaging.run_with_typing = lambda coro: coro
+
+            async def thinking_then_hang(*args, **kwargs):
+                ctx.conversation.add_thinking(
+                    'partial', telegram_message_ids=[55])
+                await asyncio.sleep(60)
+
+            with mock.patch.object(gq, 'run_llm', thinking_then_hang):
+                task = asyncio.ensure_future(
+                    gq.generate_response(ctx, None))
+                for _ in range(1000):
+                    if ctx.generation_task is not None:
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertIsNotNone(ctx.generation_task)
+                inner = ctx.generation_task
+                assert inner is not None
+                inner.cancel()
+                await asyncio.wait_for(task, 5)
+            self.assertEqual(deleted, [55])
+            roles = [m['role'] for m in ctx.conversation.messages
+                     if m['role'] != 'system']
+            self.assertEqual(roles, ['user'])
+
+        asyncio.run(main())
+
 
 class TestStopCommand(unittest.TestCase):
 

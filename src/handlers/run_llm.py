@@ -248,22 +248,24 @@ async def run_llm(ctx: AgentContext,
                 logger.warning('model returned tool calls while tools are '
                                'disabled; ignoring them')
             if message.content:
-                if think_chat is not None:
-                    await _post_thinking(conversation, think_chat,
-                                         message.reasoning_content)
-                # Anything that arrived while this round was in flight gets
-                # another turn instead of a stale reply (see _drain_inbox).
+                # Drain first: anything that arrived while this round was in
+                # flight gets another turn instead of a stale reply - and a
+                # discarded round must never post thinking, or the block is
+                # left in history with no answer for it.
                 if await _drain_inbox(ctx, conversation, inbox,
                                       announce_chat):
                     continue
+                if think_chat is not None:
+                    await _post_thinking(conversation, think_chat,
+                                         message.reasoning_content)
                 return message.content
             elif message.reasoning_content:
-                if think_chat is not None:
-                    await _post_thinking(conversation, think_chat,
-                                         message.reasoning_content)
                 if await _drain_inbox(ctx, conversation, inbox,
                                       announce_chat):
                     continue
+                if think_chat is not None:
+                    await _post_thinking(conversation, think_chat,
+                                         message.reasoning_content)
                 return message.reasoning_content
             else:
                 if await _drain_inbox(ctx, conversation, inbox,

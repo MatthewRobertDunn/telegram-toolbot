@@ -53,8 +53,10 @@ class RegenerationAction(enum.Enum):
 
 
 def is_thinking_message(message: dict) -> bool:
-    """Whether a stored message is a kept thinking block (assistant role,
-    THINKING type). Works for plain dicts and ConversationMessage alike."""
+    """Whether a stored message is a kept thinking block: tagged THINKING
+    in its custom metadata. Tag-only on purpose (fail-closed): anything so
+    tagged is display-only and never sent to the endpoint, whatever role it
+    carries. Works for plain dicts and ConversationMessage alike."""
     return (message.get(CUSTOM) or {}).get('message_type') == \
         ConversationMessageType.THINKING.value
 
@@ -120,6 +122,11 @@ class ConversationMessage(dict):
             message_ids = [message_ids]
         self.setdefault(CUSTOM, {}).setdefault(
             'telegram_message_ids', []).extend(message_ids)
+
+    @property
+    def telegram_message_ids(self) -> list:
+        """The Telegram message ids linked to this message, or []."""
+        return (self.get(CUSTOM) or {}).get('telegram_message_ids') or []
 
     @property
     def message_type(self) -> ConversationMessageType | None:
@@ -320,9 +327,7 @@ class Conversation:
 
         Thinking blocks are display-only and excluded, matching
         estimate_conversation_tokens / to_openai()."""
-        return sum(estimate_message_tokens(message)
-                   for message in self.messages
-                   if not is_thinking_message(message))
+        return estimate_conversation_tokens(self.messages)
 
     def pop_trailing_tool_results(self) -> list:
         """Drop abandoned trailing tool results (an unfinished assistant
@@ -345,7 +350,8 @@ class Conversation:
     def undo_last_exchange(self) -> list:
         """Remove the last exchange back to and including the last human
         user prompt, plus any tool-call cascade, and return the removed
-        messages newest-first for Telegram cleanup and preview.
+        messages for Telegram cleanup and preview (pop order with cascade
+        extras interleaved - order is not significant, delete them all).
 
         Agent-injected user turns are skipped when finding the human
         exchange. Thinking blocks are plain assistant turns here, so
@@ -380,8 +386,8 @@ class Conversation:
         stopped run's thinking with no answer), then either pops the
         last assistant turn with its thinking (ANSWER), pops an
         impersonation turn to redo (IMPERSONATE), or leaves a bare user
-        prompt to answer (ANSWER). Returns (removed newest-first for
-        Telegram cleanup, action)."""
+        prompt to answer (ANSWER). Returns (removed for Telegram cleanup,
+        action); removed order is not significant."""
         removed: list = []
         removed.extend(self.pop_trailing_tool_results())
         removed.extend(self.pop_trailing_thinking())

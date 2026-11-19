@@ -6,8 +6,9 @@ import logging
 
 from chat_update_context import ChatUpdateContext
 from compaction import (DEFAULT_KEEP_TOKENS, CompactionError, compact_context)
-from conversation import (CUSTOM, Conversation, ConversationMessageType,
-                          RegenerationAction, is_thinking_message)
+from conversation import (CUSTOM, Conversation, ConversationMessage,
+                          ConversationMessageType, RegenerationAction,
+                          is_thinking_message)
 from handlers.middleware import handler
 from handlers.generation_queue import (
     generate_response,
@@ -52,6 +53,8 @@ async def delete_from_telegram(ctx: ChatUpdateContext, message_ids) -> None:
 
 def stored_message_ids(message: dict) -> list:
     """The Telegram message ids recorded in a message's custom metadata."""
+    if isinstance(message, ConversationMessage):
+        return message.telegram_message_ids
     return (message.get(CUSTOM) or {}).get('telegram_message_ids') or []
 
 
@@ -158,9 +161,10 @@ async def undo_turn(ctx: ChatUpdateContext) -> None:
             role = 'Thinking'
         else:
             role = str(last.get('role') or 'message').capitalize()
+        context = ctx.conversation.messages + removed_messages
         message_ids = await ctx.messaging.send_message(
             f"Removed message ({role}):\n"
-            f"{message_preview(last, context=ctx.conversation.messages + removed_messages)}")
+            f"{message_preview(last, context=context)}")
     else:
         message_ids = await ctx.messaging.send_message(
             f"Removed {len(removed_messages)} message(s).\n"

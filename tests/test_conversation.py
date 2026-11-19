@@ -7,7 +7,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from conversation import (Conversation, ConversationMessage,
-                          ConversationMessageType, CUSTOM, IMAGE_PLACEHOLDER)
+                          ConversationMessageType, CUSTOM, IMAGE_PLACEHOLDER,
+                          RegenerationAction, estimate_message_tokens,
+                          is_thinking_message)
 
 
 class TestMessageNormalization(unittest.TestCase):
@@ -248,13 +250,12 @@ class TestThinkingMessages(unittest.TestCase):
     """Kept thinking blocks: first-class history, display-only for the API."""
 
     def test_add_thinking_tags_an_assistant_message(self):
-        from conversation import is_thinking_message
         conversation = Conversation()
         message = conversation.add_thinking('trace', telegram_message_ids=[7])
         self.assertEqual(message.get('role'), 'assistant')
         self.assertEqual(message.get('content'), 'trace')
         self.assertTrue(is_thinking_message(message))
-        self.assertEqual(message['custom']['telegram_message_ids'], [7])
+        self.assertEqual(message.telegram_message_ids, [7])
 
     def test_to_openai_skips_thinking(self):
         conversation = Conversation()
@@ -270,8 +271,7 @@ class TestThinkingMessages(unittest.TestCase):
         conversation.add_user('hi')
         conversation.add_thinking('x' * 1000)
         self.assertEqual(conversation.token_estimate,
-                         conversation.messages[0] and
-                         __import__('conversation').estimate_message_tokens(
+                         estimate_message_tokens(
                              conversation.messages[0]))
 
     def test_undo_removes_thinking_with_the_exchange(self):
@@ -284,7 +284,6 @@ class TestThinkingMessages(unittest.TestCase):
         self.assertEqual(len(removed), 3)
 
     def test_prepare_regeneration_drops_thinking_and_answer(self):
-        from conversation import RegenerationAction
         conversation = Conversation()
         conversation.add_user('q')
         conversation.add_thinking('t', telegram_message_ids=[2])
@@ -293,13 +292,10 @@ class TestThinkingMessages(unittest.TestCase):
         self.assertEqual(action, RegenerationAction.ANSWER)
         self.assertEqual([m.get('role') for m in conversation.messages],
                          ['user'])
-        ids = sorted(i for m in removed
-                     for i in (m.get('custom') or {}).get(
-                         'telegram_message_ids') or [])
+        ids = sorted(i for m in removed for i in m.telegram_message_ids)
         self.assertEqual(ids, [2, 3])
 
     def test_prepare_regeneration_drops_orphan_thinking(self):
-        from conversation import RegenerationAction
         conversation = Conversation()
         conversation.add_user('q')
         conversation.add_thinking('partial')

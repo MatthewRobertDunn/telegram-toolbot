@@ -18,7 +18,8 @@ from dataclasses import dataclass
 
 from conversation import (Conversation, TOKENS_PER_CHAR, IMAGE_TOKEN_ESTIMATE,
                           IMAGE_PLACEHOLDER, token_count,
-                          estimate_message_tokens, estimate_conversation_tokens)
+                          estimate_message_tokens, estimate_conversation_tokens,
+                          is_thinking_message)
 from chat_update_context import ChatUpdateContext
 from handlers.run_llm import (NO_CONTENT_MESSAGE, NO_RESPONSE_MESSAGE,
                               run_llm)
@@ -116,9 +117,7 @@ def message_to_text(message: dict) -> str:
     outcomes). Images become placeholder text and long tool outputs are
     truncated.
     """
-    from conversation import CUSTOM as _CUSTOM
-    from conversation import ConversationMessageType as _Type
-    if (message.get(_CUSTOM) or {}).get('message_type') == _Type.THINKING.value:
+    if is_thinking_message(message):
         return ''
     role = message.get('role')
     if role == 'system':
