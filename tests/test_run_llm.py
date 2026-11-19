@@ -15,6 +15,10 @@ from mock_context import mock_ctx
 SETTINGS = SimpleNamespace(
     show_tool_output=False, model='m', temperature=1.0, top_p=0.95)
 
+THINKING_SETTINGS = SimpleNamespace(
+    show_tool_output=False, model='m', temperature=1.0, top_p=0.95,
+    thinking_keep=True)
+
 
 def _chunk(content=None, reasoning=None, tool_calls=None):
     return SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(
@@ -210,6 +214,66 @@ class TestToolCallAnnouncements(unittest.IsolatedAsyncioTestCase):
         assert call is not None
         self.assertEqual(call.args[0], 'Tool call: `web_search`')
         self.assertEqual(call.args[1], '{"query": "cheese"}')
+
+
+class TestThinkingMessages(unittest.IsolatedAsyncioTestCase):
+    # Kept thinking lands in history as a first-class assistant message
+    # tagged THINKING (never sent to the endpoint), and only for the
+    # conversation the user actually chats in.
+
+    def _thinking_ctx(self):
+        ctx = mock_ctx(settings=THINKING_SETTINGS, conversation=[])
+        posted: list = []
+
+        async def fake_collapsible(title, body):
+            posted.append((title, body))
+            return [77]
+
+        ctx.messaging.send_collapsible = fake_collapsible  # type: ignore[method-assign]
+        return ctx, posted
+
+    async def test_final_thinking_is_a_first_class_message(self):
+        from conversation import is_thinking_message
+        ctx, posted = self._thinking_ctx()
+        with unittest.mock.patch.object(
+                run_llm_mod, 'client',
+                _fake_client({}, [_chunk('final', reasoning='trace')])):
+            result = await run_llm_mod.run_llm(ctx)
+        self.assertEqual(result, 'final')
+        self.assertEqual(posted, [('Thinking', 'trace')])
+        # run_llm records the thinking; the caller appends the answer.
+        self.assertEqual(len(ctx.conversation.messages), 1)
+        thinking = ctx.conversation.messages[0]
+        self.assertTrue(is_thinking_message(thinking))
+        self.assertEqual(thinking.get('content'), 'trace')
+        self.assertEqual(thinking.telegram_message_ids, [77])
+
+    async def test_nested_conversation_posts_no_thinking(self):
+        ctx, posted = self._thinking_ctx()
+        clone = Conversation([{'role': 'user', 'content': 'x'}])
+        with unittest.mock.patch.object(
+                run_llm_mod, 'client',
+                _fake_client({}, [_chunk('reply', reasoning='trace')])):
+            result = await run_llm_mod.run_llm(ctx, conversation=clone)
+        self.assertEqual(result, 'reply')
+        self.assertEqual(posted, [])
+        self.assertEqual(len(clone), 1)
+
+    async def test_thinking_off_posts_nothing(self):
+        from conversation import is_thinking_message
+        ctx = mock_ctx(settings=SETTINGS, conversation=[])
+        with unittest.mock.patch.object(
+                run_llm_mod, 'client',
+                _fake_client({}, [_chunk('final', reasoning='trace')])):
+            with unittest.mock.patch.object(
+                    Messaging, 'send_collapsible',
+                    unittest.mock.AsyncMock(
+                        side_effect=AssertionError('must not post'))) as send:
+                result = await run_llm_mod.run_llm(ctx)
+        self.assertEqual(result, 'final')
+        send.assert_not_called()
+        self.assertFalse(any(is_thinking_message(m)
+                             for m in ctx.conversation.messages))
 
 
 if __name__ == '__main__':

@@ -129,8 +129,18 @@ async def generate_response(ctx: ChatUpdateContext, content: str | None = None,
                     # generation down too and re-raise.
                     inner.cancel()
                     raise
-                # /stop cancelled just the generation task; leave nothing behind
-                # (the user can /regenerate or simply talk again).
+                # /stop cancelled just the generation task. Thinking already
+                # appended for the aborted reply has no answer to belong to,
+                # so drop it now (history and Telegram): leaving it would
+                # strand a dangling block a later /regenerate would miss.
+                for thinking in ctx.conversation.pop_trailing_thinking():
+                    for message_id in thinking.telegram_message_ids:
+                        try:
+                            await ctx.messaging.delete_message(message_id)
+                        except Exception:
+                            logger.warning(
+                                'Could not delete thinking message %s',
+                                message_id, exc_info=True)
                 return
             finally:
                 ctx.generation_task = None

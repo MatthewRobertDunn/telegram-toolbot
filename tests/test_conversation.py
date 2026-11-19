@@ -7,7 +7,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from conversation import (Conversation, ConversationMessage,
-                          ConversationMessageType, CUSTOM, IMAGE_PLACEHOLDER)
+                          ConversationMessageType, CUSTOM, IMAGE_PLACEHOLDER,
+                          RegenerationAction, estimate_message_tokens,
+                          is_thinking_message)
 
 
 class TestMessageNormalization(unittest.TestCase):
@@ -242,6 +244,74 @@ class TestConversationListCompat(unittest.TestCase):
         b = Conversation(list(messages))
         self.assertEqual(a, b)
         self.assertNotEqual(a.id, b.id)
+
+
+class TestThinkingMessages(unittest.TestCase):
+    """Kept thinking blocks: first-class history, display-only for the API."""
+
+    def test_add_thinking_tags_an_assistant_message(self):
+        conversation = Conversation()
+        message = conversation.add_thinking('trace', telegram_message_ids=[7])
+        self.assertEqual(message.get('role'), 'assistant')
+        self.assertEqual(message.get('content'), 'trace')
+        self.assertTrue(is_thinking_message(message))
+        self.assertEqual(message.telegram_message_ids, [7])
+
+    def test_to_openai_skips_thinking(self):
+        conversation = Conversation()
+        conversation.add_user('hi')
+        conversation.add_thinking('trace')
+        conversation.add_assistant('final')
+        self.assertEqual(conversation.to_openai(),
+                         [{'role': 'user', 'content': 'hi'},
+                          {'role': 'assistant', 'content': 'final'}])
+
+    def test_token_estimate_skips_thinking(self):
+        conversation = Conversation()
+        conversation.add_user('hi')
+        conversation.add_thinking('x' * 1000)
+        self.assertEqual(conversation.token_estimate,
+                         estimate_message_tokens(
+                             conversation.messages[0]))
+
+    def test_undo_removes_thinking_with_the_exchange(self):
+        conversation = Conversation()
+        conversation.add_user('q', telegram_message_ids=[1])
+        conversation.add_thinking('t', telegram_message_ids=[2])
+        conversation.add_assistant('a', telegram_message_ids=[3])
+        removed = conversation.undo_last_exchange()
+        self.assertEqual(conversation.messages, [])
+        self.assertEqual(len(removed), 3)
+
+    def test_prepare_regeneration_drops_thinking_and_answer(self):
+        conversation = Conversation()
+        conversation.add_user('q')
+        conversation.add_thinking('t', telegram_message_ids=[2])
+        conversation.add_assistant('a', telegram_message_ids=[3])
+        removed, action = conversation.prepare_regeneration()
+        self.assertEqual(action, RegenerationAction.ANSWER)
+        self.assertEqual([m.get('role') for m in conversation.messages],
+                         ['user'])
+        ids = sorted(i for m in removed for i in m.telegram_message_ids)
+        self.assertEqual(ids, [2, 3])
+
+    def test_prepare_regeneration_drops_orphan_thinking(self):
+        conversation = Conversation()
+        conversation.add_user('q')
+        conversation.add_thinking('partial')
+        removed, action = conversation.prepare_regeneration()
+        self.assertEqual(action, RegenerationAction.ANSWER)
+        self.assertEqual([m.get('role') for m in conversation.messages],
+                         ['user'])
+        self.assertEqual(len(removed), 1)
+
+    def test_clone_for_impersonation_has_a_fresh_id(self):
+        conversation = Conversation()
+        conversation.add_user('hi')
+        clone = conversation.clone_for_impersonation('prompt')
+        self.assertNotEqual(clone.id, conversation.id)
+        self.assertEqual(clone.messages[-1]['content'], 'prompt')
+        self.assertEqual(len(conversation.messages), 1)
 
 
 if __name__ == '__main__':

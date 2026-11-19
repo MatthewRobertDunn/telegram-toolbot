@@ -212,8 +212,10 @@ async def tool_output_command(ctx: ChatUpdateContext):
 async def thinking_keep_command(ctx: ChatUpdateContext):
     current = ctx.settings.thinking_keep
     ctx.settings.thinking_keep = not current
-    state = "on" if not current else "off"
-    await ctx.messaging.send_message(f'Thinking output is now {state}.')
+    if not current:
+        await ctx.messaging.send_message('Thinking will be kept.')
+    else:
+        await ctx.messaging.send_message('Thinking will be discarded.')
 
 
 @handler

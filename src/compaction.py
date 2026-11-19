@@ -18,7 +18,8 @@ from dataclasses import dataclass
 
 from conversation import (Conversation, TOKENS_PER_CHAR, IMAGE_TOKEN_ESTIMATE,
                           IMAGE_PLACEHOLDER, token_count,
-                          estimate_message_tokens, estimate_conversation_tokens)
+                          estimate_message_tokens, estimate_conversation_tokens,
+                          is_thinking_message)
 from chat_update_context import ChatUpdateContext
 from handlers.run_llm import (NO_CONTENT_MESSAGE, NO_RESPONSE_MESSAGE,
                               run_llm)
@@ -111,9 +112,13 @@ SUMMARY_PROMPT = "\n\n".join([
 def message_to_text(message: dict) -> str:
     """One conversation message as a transcript line.
 
-    Empty for messages the transcript leaves out (e.g. system prompts).
-    Images become placeholder text and long tool outputs are truncated.
+    Empty for messages the transcript leaves out (e.g. system prompts and
+    kept thinking blocks - reasoning is ephemeral, the summary keeps
+    outcomes). Images become placeholder text and long tool outputs are
+    truncated.
     """
+    if is_thinking_message(message):
+        return ''
     role = message.get('role')
     if role == 'system':
         return ''
