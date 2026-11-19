@@ -22,17 +22,30 @@ def _conversation_key(thread_id: int | None) -> str:
     return f"{CONVERSATION_KEY}:thread:{thread_id}"
 
 
-async def load_settings(user_id: int) -> UserSettings:
+async def load_settings(user_id: int,
+                        thread_id: int | None = None) -> UserSettings | None:
+    """Load one thread's settings, or None when absent/corrupt.
+
+    Thread ``None`` is the template every new thread clones: the legacy
+    global row keeps working untouched.
+    """
     async with create_settings_store() as store:
-        raw = await store.get(user_id, SETTINGS_KEY)
+        raw = await store.get_with_thread(user_id, SETTINGS_KEY, thread_id)
     if raw is None:
-        return UserSettings.default()
-    return UserSettings.from_json(raw)
+        return None
+    try:
+        return UserSettings.from_json(raw)
+    except (ValueError, AttributeError, TypeError) as e:
+        logger.warning('Could not load settings for user %d: %s',
+                       user_id, e)
+        return None
 
 
-async def save_settings(user_id: int, settings: UserSettings) -> None:
+async def save_settings(user_id: int, thread_id: int | None,
+                        settings: UserSettings) -> None:
     async with create_settings_store() as store:
-        await store.set(user_id, SETTINGS_KEY, settings.to_json())
+        await store.set_with_thread(user_id, SETTINGS_KEY,
+                                    settings.to_json(), thread_id)
 
 
 async def save_conversation(user_id: int, thread_id: int | None,

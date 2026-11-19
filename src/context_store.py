@@ -50,15 +50,36 @@ class AsyncSQLiteStore:
         """Write a row carrying its thread id.
 
         Settings-table only: the kv table has no thread_id column.
-        last_updated is left to the column default (CURRENT_TIMESTAMP),
-        refreshed by INSERT OR REPLACE on every write.
+        last_updated is refreshed on every write.
+
+        UPDATE-then-INSERT (not INSERT OR REPLACE): rows are keyed by
+        (user_id, key, thread_id), and SQLite never treats two NULL
+        thread ids as conflicting, so REPLACE would duplicate the
+        unthreaded/template row instead of replacing it.
         """
         db = await self._get_conn()
-        await db.execute(
-            f'INSERT OR REPLACE INTO {self.table_name} '
-            '(user_id, key, value, thread_id) VALUES (?, ?, ?, ?)',
-            (user_id, key, value, thread_id))
+        cursor = await db.execute(
+            f'UPDATE {self.table_name} SET value = ?, thread_id = ?, '
+            'last_updated = CURRENT_TIMESTAMP '
+            'WHERE user_id = ? AND key = ? AND thread_id IS ?',
+            (value, thread_id, user_id, key, thread_id))
+        if cursor.rowcount == 0:
+            await db.execute(
+                f'INSERT INTO {self.table_name} '
+                '(user_id, key, value, thread_id) VALUES (?, ?, ?, ?)',
+                (user_id, key, value, thread_id))
         await db.commit()
+
+    async def get_with_thread(self, user_id: int, key: str,
+                              thread_id: int | None) -> str | None:
+        """Read one thread's row. ``IS`` matches NULL thread ids too."""
+        db = await self._get_conn()
+        cursor = await db.execute(
+            f'SELECT value FROM {self.table_name} WHERE user_id = ? '
+            'AND key = ? AND thread_id IS ?',
+            (user_id, key, thread_id))
+        row = await cursor.fetchone()
+        return row[0] if row else None
 
     async def delete(self, user_id: int, key: str) -> None:
         db = await self._get_conn()
@@ -120,7 +141,7 @@ SETTINGS_SCHEMA = '''
         value TEXT NOT NULL,
         thread_id INTEGER DEFAULT NULL,
         last_updated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (user_id, key)
+        PRIMARY KEY (user_id, key, thread_id)
     )
 '''
 

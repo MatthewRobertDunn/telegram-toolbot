@@ -50,16 +50,18 @@ if TYPE_CHECKING:
 
 @dataclass
 class ThreadData:
-    """Per-chat/thread state: the conversation and its coordination.
+    """Per-chat/thread state: the conversation, its settings and its coordination.
 
     Everything here belongs to one chat/thread, not to the user: the
-    conversation, the serialized generation machinery (queue, worker and
-    tracked task), the subagent inbox plus its wakeup bookkeeping, the
-    epoch guarding against stale wakeups, and the subagent records that
-    report back to this thread.
+    conversation, its own settings copy (cloned from the user's template
+    on first touch), the serialized generation machinery (queue, worker
+    and tracked task), the subagent inbox plus its wakeup bookkeeping,
+    the epoch guarding against stale wakeups, and the subagent records
+    that report back to this thread.
     """
 
     conversation: Conversation | None = None
+    settings: "UserSettings | None" = None
     generation_task: asyncio.Task | None = None
     generation_worker: asyncio.Task | None = None
     generation_queue: asyncio.Queue | None = None
@@ -74,9 +76,10 @@ class ThreadData:
 class UserData:
     """Per-user state, shared by every chat/thread of that user.
 
-    Only genuinely user-scoped things live here: settings, and the
-    sandbox read marks (the sandbox itself is per-user, so a file read
-    in any thread counts everywhere).
+    Only genuinely user-scoped things live here: the settings template
+    that new threads clone on first touch (kept in sync with the most
+    recently changed thread), and the sandbox read marks (the sandbox
+    itself is per-user, so a file read in any thread counts everywhere).
     """
 
     settings: "UserSettings | None" = None
@@ -124,12 +127,16 @@ class AgentContext:
 
     @property
     def settings(self) -> "UserSettings":
+        # Per-thread copy once the thread has been initialised; the
+        # user's template otherwise (keeps stub-built contexts working).
+        if self.thread_data.settings is not None:
+            return self.thread_data.settings
         assert self.user_data.settings is not None
         return self.user_data.settings
 
     @settings.setter
     def settings(self, value: "UserSettings") -> None:
-        self.user_data.settings = value
+        self.thread_data.settings = value
 
 
 class ChatUpdateContext(AgentContext):
@@ -231,21 +238,26 @@ class ChatUpdateContext(AgentContext):
         """Build the isolated context a subagent runs against.
 
         The clone deliberately shares no mutable state with the parent:
-        it gets its own ``UserData`` holding only a settings snapshot and
-        its own ``ThreadData`` holding the subagent's conversation. The
+        it gets its own ``UserData`` (empty: subagents need no template)
+        plus its own ``ThreadData`` holding the subagent's conversation
+        and a deepcopy of the parent's effective settings. The
         parent thread's coordination state - inbox, wakeup flags,
         conversation epoch, generation queue, subagents - and its sandbox
         read marks are not reachable from here (fresh empty set), which is
         what makes an accidental mutation impossible rather than merely
         discouraged.
         """
-        user_data = UserData()
-        if self.user_data.settings is not None:
-            user_data.settings = copy.deepcopy(self.user_data.settings)
+        effective = self.thread_data.settings
+        if effective is None:
+            effective = self.user_data.settings
         return AgentContext(
             user_id=self.user_id,
-            user_data=user_data,
-            thread_data=ThreadData(conversation=conversation),
+            user_data=UserData(),
+            thread_data=ThreadData(
+                conversation=conversation,
+                settings=(copy.deepcopy(effective)
+                          if effective is not None else None),
+            ),
         )
 
 
