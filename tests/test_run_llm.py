@@ -62,16 +62,17 @@ class TestRunLlmReplies(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(captured['tool_choice'], 'auto')
                 self.assertIs(captured['stream'], True)
 
-    async def test_empty_reply_reports_no_content(self):
-        # Regression: an empty completion (no content, no reasoning, no tool
-        # calls) used to raise AttributeError on message.reasoning_content
-        # and kill the handler instead of returning the fallback text.
-        captured: dict = {}
+    async def test_empty_reply_retries_then_recovers(self):
+        # An empty completion (no content, no reasoning, no tool calls)
+        # retries instead of returning NO_CONTENT_MESSAGE immediately.
+        captured: list = []
         with unittest.mock.patch.object(
-                run_llm_mod, 'client', _fake_client(captured, [_chunk()])):
+                run_llm_mod, 'client',
+                _fake_client_calls(captured, [[_chunk()], [_chunk('recovered')]])):
             result = await run_llm_mod.run_llm(
                 mock_ctx(settings=SETTINGS, conversation=[]))
-        self.assertEqual(result, run_llm_mod.NO_CONTENT_MESSAGE)
+        self.assertEqual(result, 'recovered')
+        self.assertEqual(len(captured), 2)
 
     async def test_reasoning_only_reply_is_returned(self):
         captured: dict = {}

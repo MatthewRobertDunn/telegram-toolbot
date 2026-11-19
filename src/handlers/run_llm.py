@@ -234,6 +234,9 @@ async def run_llm(ctx: AgentContext,
                     response, streamer,
                     strip_thinking=effective_model
                     in config.THINK_SPLIT_MODELS)
+                if (not message.content and not message.reasoning_content
+                        and (not message.tool_calls or not offer_tools)):
+                    raise RuntimeError('empty response from model')
                 break
             except Exception as e:
                 logger.warning('%s: %s, trying again...', type(e).__name__, e)
