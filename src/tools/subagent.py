@@ -373,7 +373,7 @@ async def subagent_steer(ctx: ChatUpdateContext, id: str,
 
 
 @agent_tool(
-    scope=BOTH,
+    scope=SUBAGENT,
     description=(
         "Send progress update to parent assistant (you keep running). "
         "Use for progress worth surfacing before final report."),
