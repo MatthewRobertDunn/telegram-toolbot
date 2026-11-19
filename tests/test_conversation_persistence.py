@@ -119,12 +119,16 @@ class ConversationPersistenceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loaded_plain.messages[-1]['content'], 'plain')
         self.assertEqual(loaded_topic.messages[-1]['content'], 'topic')
 
-        # Thread bookkeeping landed on the rows.
-        store = _temp_store(self.path)
-        keys = await store.get_all_keys(5)
-        self.assertIn('conversation', keys)
-        self.assertIn('conversation:thread:2', keys)
-        await store.close()
+        # One shared key; the threads are told apart by thread_id.
+        conn = sqlite3.connect(self.path)
+        try:
+            threads = [r[0] for r in conn.execute(
+                "SELECT thread_id FROM settings "
+                "WHERE user_id = 5 AND key = 'conversation'")]
+        finally:
+            conn.close()
+        self.assertEqual(sorted(t for t in threads if t is not None), [2])
+        self.assertIn(None, threads)
 
     async def test_last_updated_is_stamped_by_the_db(self):
         await save_conversation(5, 2,
@@ -136,7 +140,8 @@ class ConversationPersistenceTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(cols['last_updated'][3], 1)  # NOT NULL
             row = conn.execute(
                 "SELECT thread_id, last_updated FROM settings "
-                "WHERE user_id = 5 AND key = 'conversation:thread:2'"
+                "WHERE user_id = 5 AND key = 'conversation' "
+                "AND thread_id IS 2"
             ).fetchone()
         finally:
             conn.close()
