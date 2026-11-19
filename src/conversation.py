@@ -407,7 +407,7 @@ class Conversation:
             return removed, RegenerationAction.IMPERSONATE
         return removed, RegenerationAction.ANSWER
 
-    def clone_for_impersonation(self, prompt: str) -> Conversation:
+    def clone_for_impersonation(self, prompt: str) -> "Conversation":
         """A detached copy of this conversation plus the impersonation
         prompt as its last user turn. The clone gets a fresh session id;
         thinking blocks ride along (harmless - to_openai() skips them)
