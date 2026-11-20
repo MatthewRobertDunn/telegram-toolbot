@@ -38,7 +38,7 @@ from tools.subagent import (
 
 SETTINGS = SimpleNamespace(
     show_tool_output=False, model='m', temperature=1.0, top_p=0.95,
-    subagent_model='sub-m')
+    subagent_model='sub-m', thinking_keep=False)
 
 
 def _ctx():
@@ -112,15 +112,16 @@ class TestToolSets(unittest.TestCase):
         # registry.
         register_tools()
 
-    def test_parent_tools_include_send_to_parent(self):
+    def test_parent_tools_exclude_send_to_parent(self):
         names = {t['function']['name'] for t in get_parent_tool_defs()}
         self.assertIn('subagent_start', names)
         self.assertIn('subagent_list', names)
         self.assertIn('subagent_stop', names)
         self.assertIn('subagent_steer', names)
-        # Shared steering tool: offered to the parent too, so role
-        # confusion degrades to a working tool instead of 'Unknown tool'.
-        self.assertIn('subagent_send_to_parent', names)
+        # Subagent-only: the parent loop never offers it, so a parent
+        # hallucinating the name gets 'Unknown tool' instead of a
+        # self-addressed note.
+        self.assertNotIn('subagent_send_to_parent', names)
 
     def test_subagent_tools_have_no_subagent_controls(self):
         names = {t['function']['name'] for t in get_subagent_tool_defs()}
@@ -262,26 +263,41 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.thread_data.subagents, {})
 
     async def test_send_to_parent_queues_for_main(self):
-        ctx = _ctx()
-        with unittest.mock.patch.object(subagent_mod, '_notify_parent',
-                                        unittest.mock.AsyncMock()) as notify:
-            result = await subagent_send_to_parent(ctx, 'halfway there')
+        parent = _ctx()
+        record = SubagentRecord(id='abc', description='T',
+                                conversation=Conversation([]), parent=parent)
+        token = subagent_mod._current_subagent.set(record)
+        try:
+            with unittest.mock.patch.object(
+                    subagent_mod, '_notify_parent',
+                    unittest.mock.AsyncMock()) as notify:
+                result = await subagent_send_to_parent(parent,
+                                                       'halfway there')
+        finally:
+            subagent_mod._current_subagent.reset(token)
         self.assertIn('sent', result.lower())
         notify.assert_awaited_once()
         self.assertIn('halfway there', notify.call_args.args[1].result)
-        # No subagent context: the parent itself is the sender.
-        self.assertEqual(notify.call_args.args[1].id, 'parent')
+        # The record identifies the sender.
+        self.assertEqual(notify.call_args.args[1].id, 'abc')
 
-    async def test_send_to_parent_shared_with_parent_tools(self):
-        # The parent loop offers it too: role confusion degrades to a
-        # working tool instead of an 'Unknown tool' error.
+    async def test_send_to_parent_without_record_is_an_error(self):
+        ctx = _ctx()
+        result = await subagent_send_to_parent(ctx, 'hello?')
+        self.assertIn('Error', result)
+
+    async def test_send_to_parent_is_subagent_only(self):
+        # The parent loop never offers it; only the subagent map can
+        # execute it.
         parent = {t['function']['name'] for t in get_parent_tool_defs()}
-        self.assertIn('subagent_send_to_parent', parent)
-        for role in (PARENT, SUBAGENT):
-            active = run_llm_mod._tool_map_for(
-                get_subagent_tool_defs() if role == SUBAGENT
-                else get_parent_tool_defs(), role)
-            self.assertIn('subagent_send_to_parent', active)
+        self.assertNotIn('subagent_send_to_parent', parent)
+        subagent = {t['function']['name'] for t in get_subagent_tool_defs()}
+        self.assertIn('subagent_send_to_parent', subagent)
+        for role, defs in ((PARENT, get_parent_tool_defs()),
+                           (SUBAGENT, get_subagent_tool_defs())):
+            active = run_llm_mod._tool_map_for(defs, role)
+            self.assertEqual('subagent_send_to_parent' in active,
+                             role == SUBAGENT)
 
     async def test_cancel_all(self):
         ctx = _ctx()
@@ -373,9 +389,11 @@ class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
         gen.assert_not_awaited()
 
 
-class TestPostReplyDrain(unittest.IsolatedAsyncioTestCase):
+class TestInboxCutoff(unittest.IsolatedAsyncioTestCase):
 
-    async def test_mail_during_final_round_gets_another_turn(self):
+    async def test_mail_during_final_round_waits_for_next_turn(self):
+        # Cutoff is request time: mail arriving mid-flight stays queued
+        # for the next turn instead of extending this one.
         ctx = _ctx()
         inbox = get_main_inbox(ctx)
         calls = []
@@ -396,9 +414,11 @@ class TestPostReplyDrain(unittest.IsolatedAsyncioTestCase):
         with unittest.mock.patch.object(
                 run_llm_mod, 'client', fake_client):
             result = await run_llm_mod.run_llm(ctx, inbox=inbox)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(result, 'reply 2')
-        self.assertIn('done stuff', calls[1]['messages'][-1]['content'])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result, 'reply 1')
+        # Still queued: the next turn's top-of-loop drain picks it up.
+        pending = inbox.get_nowait()
+        self.assertEqual(pending.result, 'done stuff')
 
 
 class TestSubagentLimits(unittest.IsolatedAsyncioTestCase):

@@ -138,7 +138,7 @@ class TestGenerateResponse(unittest.TestCase):
 
             async def thinking_then_hang(*args, **kwargs):
                 ctx.conversation.add_thinking(
-                    'partial', telegram_message_ids=[55])
+                    telegram_message_ids=[55])
                 await asyncio.sleep(60)
 
             with mock.patch.object(gq, 'run_llm', thinking_then_hang):

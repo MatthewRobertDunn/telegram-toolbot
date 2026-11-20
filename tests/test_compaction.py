@@ -97,7 +97,7 @@ class TestMessageToText(unittest.TestCase):
 
     def test_thinking_blocks_are_left_out(self):
         conversation = Conversation()
-        thinking = conversation.add_thinking('private reasoning')
+        thinking = conversation.add_thinking()
         self.assertEqual(compaction.message_to_text(thinking), '')
 
 

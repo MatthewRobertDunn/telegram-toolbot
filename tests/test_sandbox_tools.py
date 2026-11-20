@@ -832,9 +832,10 @@ class TestToolResultImageContract(unittest.IsolatedAsyncioTestCase):
                  run_llm_mod, 'functions_for',
                  lambda role: {'read_image': media.read_image}), \
              unittest.mock.patch.object(run_llm_mod, 'client', fake_client):
-            ctx = mock_ctx(bot=bot)
+            ctx = mock_ctx(bot=bot, conversation=[])
             ctx.user_data.settings = SimpleNamespace(  # type: ignore[assignment]
-                show_tool_output=False, model='m', temperature=1.0, top_p=0.95)
+                show_tool_output=False, model='m', temperature=1.0, top_p=0.95,
+                thinking_keep=False)
             conversation = Conversation()
             result = await run_llm_mod.run_llm(
                 ctx, conversation=conversation, tools=tool_defs)

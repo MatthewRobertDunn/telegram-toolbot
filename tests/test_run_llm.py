@@ -13,7 +13,8 @@ from messaging import Messaging
 from mock_context import mock_ctx
 
 SETTINGS = SimpleNamespace(
-    show_tool_output=False, model='m', temperature=1.0, top_p=0.95)
+    show_tool_output=False, model='m', temperature=1.0, top_p=0.95,
+    thinking_keep=False)
 
 THINKING_SETTINGS = SimpleNamespace(
     show_tool_output=False, model='m', temperature=1.0, top_p=0.95,
@@ -193,7 +194,8 @@ class TestToolCallAnnouncements(unittest.IsolatedAsyncioTestCase):
 
     async def test_announcement_ids_attach_to_the_assistant_message(self):
         ctx = mock_ctx(settings=SimpleNamespace(
-            show_tool_output=True, model='m', temperature=1.0, top_p=0.95),
+            show_tool_output=True, model='m', temperature=1.0, top_p=0.95,
+            thinking_keep=False),
             conversation=[])
         send = unittest.mock.AsyncMock(return_value=[101, 102])
         tool_defs = [{"type": "function",
@@ -246,7 +248,7 @@ class TestThinkingMessages(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(ctx.conversation.messages), 1)
         thinking = ctx.conversation.messages[0]
         self.assertTrue(is_thinking_message(thinking))
-        self.assertEqual(thinking.get('content'), 'trace')
+        self.assertEqual(thinking.get('content'), '')
         self.assertEqual(thinking.telegram_message_ids, [77])
 
     async def test_nested_conversation_posts_no_thinking(self):

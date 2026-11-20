@@ -70,10 +70,9 @@ async def _drain_inbox(ctx: AgentContext,
                        chat: ChatUpdateContext | None = None) -> int:
     """Move queued agent messages into the conversation as user turns.
 
-    Only called at the top of an agent loop iteration and just before a
-    final reply is returned (never mid-tool-batch), so an injected message
-    can never split an assistant tool_calls message from its tool results.
-    Returns the number of messages drained.
+    Called at the top of every agent loop iteration - the only injection
+    point, so an injected message can never split an assistant tool_calls
+    message from its tool results. Returns the number of messages drained.
 
     Display text is built here from the structured fields (never threaded
     through as pre-rendered strings). When ``chat`` is given (the parent
@@ -102,38 +101,17 @@ async def _drain_inbox(ctx: AgentContext,
     return drained
 
 
-def _thinking_chat(ctx: AgentContext,
-                   conversation: Conversation,
-                   chat: ChatUpdateContext | None) -> ChatUpdateContext | None:
-    """The chat to post thinking to, or None when thinking stays hidden.
-
-    Thinking is parent-main-loop-only: subagent loops pass no chat and
-    stay silent, and nested calls with their own history (compaction,
-    impersonation) share the parent chat but must not spam it - only the
-    conversation the user actually chats in posts. Respects /thinking_keep.
-    """
-    if chat is None:
-        return None
-    try:
-        live = ctx.thread_data.conversation
-    except AttributeError:
-        live = ctx.conversation
-    if conversation is not live:
-        return None
-    if not getattr(ctx.settings, 'thinking_keep', False):
-        return None
-    return chat
-
-
 async def _post_thinking(conversation: Conversation,
                          chat: ChatUpdateContext,
                          reasoning: str | None) -> None:
-    """Append one thinking block to the history and post it as a
-    collapsible. No-op when there is no reasoning to keep."""
+    """Post one thinking block as a collapsible and record its Telegram
+    ids in history. No-op when there is no reasoning to keep. Only the
+    ids are kept - the reasoning text itself is display-only and never
+    stored or sent back."""
     if not reasoning:
         return
     message_ids = await chat.messaging.send_collapsible("Thinking", reasoning)
-    conversation.add_thinking(reasoning, telegram_message_ids=message_ids)
+    conversation.add_thinking(telegram_message_ids=message_ids)
 
 
 def _tool_map_for(tool_defs: list[dict], role: str) -> dict:
@@ -199,8 +177,13 @@ async def run_llm(ctx: AgentContext,
 
     # Tool-call and inbox announcements are parent-only.
     announce_chat = chat if announce_tools else None
-    # Thinking posts are parent-main-loop-only (see _thinking_chat).
-    think_chat = _thinking_chat(ctx, conversation, chat)
+    # Thinking posts are parent-main-loop-only: nested calls with their
+    # own history (compaction, impersonation) reuse the interactive ctx
+    # but must not spam it, and subagent loops have no chat at all.
+    # Respects /thinking_keep.
+    think_chat = (chat if chat is not None
+                  and conversation is ctx.conversation
+                  and settings.thinking_keep else None)
 
     while True:
         await _drain_inbox(ctx, conversation, inbox, announce_chat)
@@ -247,39 +230,21 @@ async def run_llm(ctx: AgentContext,
             streamer.new_round()
             return NO_RESPONSE_MESSAGE
 
+        # Cutoff is request time: mail arriving mid-flight waits for the
+        # next turn (the parent re-loops on a non-empty inbox; a
+        # finished subagent has no use for it).
+        if think_chat is not None:
+            await _post_thinking(conversation, think_chat,
+                                 message.reasoning_content)
         if not message.tool_calls or not offer_tools:
             if message.tool_calls:
                 logger.warning('model returned tool calls while tools are '
                                'disabled; ignoring them')
             if message.content:
-                # Drain first: anything that arrived while this round was in
-                # flight gets another turn instead of a stale reply - and a
-                # discarded round must never post thinking, or the block is
-                # left in history with no answer for it.
-                if await _drain_inbox(ctx, conversation, inbox,
-                                      announce_chat):
-                    continue
-                if think_chat is not None:
-                    await _post_thinking(conversation, think_chat,
-                                         message.reasoning_content)
                 return message.content
-            elif message.reasoning_content:
-                if await _drain_inbox(ctx, conversation, inbox,
-                                      announce_chat):
-                    continue
-                if think_chat is not None:
-                    await _post_thinking(conversation, think_chat,
-                                         message.reasoning_content)
+            if message.reasoning_content:
                 return message.reasoning_content
-            else:
-                if await _drain_inbox(ctx, conversation, inbox,
-                                      announce_chat):
-                    continue
-                return NO_CONTENT_MESSAGE
-
-        if think_chat is not None:
-            await _post_thinking(conversation, think_chat,
-                                 message.reasoning_content)
+            return NO_CONTENT_MESSAGE
         assistant_message = conversation.add_assistant(message.content or '')
         if message.reasoning_content:
             # DeepSeek/Kimi thinking mode require the reasoning_content of a

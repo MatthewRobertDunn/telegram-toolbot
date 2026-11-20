@@ -390,9 +390,8 @@ async def subagent_send_to_parent(ctx: AgentContext,
     Subagents use it for progress worth surfacing before the final
     report; the state is "running" — the most up-to-date fact at send
     time — so the parent can tell interim mail apart from terminal
-    reports (finished/failed/stopped). The parent is also
-    offered it (as a safety net for role confusion): with no subagent
-    context it just notes the message back into the parent's own inbox.
+    reports (finished/failed/stopped). Subagent-only: the record comes
+    from the running subagent context, never from the caller.
 
     The parent context comes from the record, never from the sender's
     silent context: that copy owns no inbox, wakeup flag or generation
@@ -400,17 +399,11 @@ async def subagent_send_to_parent(ctx: AgentContext,
     conversation.
     """
     record = _current_subagent.get()
-    if record is not None:
-        parent = record.parent
-        description = record.description
-        sender_id = record.id
-    elif isinstance(ctx, ChatUpdateContext):
-        # The parent itself is the sender (role confusion fallback).
-        parent = ctx
-        description = ""
-        sender_id = PARENT_ID
-    else:
+    if record is None:
         return "Error: no parent assistant is available for this context."
+    parent = record.parent
+    description = record.description
+    sender_id = record.id
     await _notify_parent(
         parent, SubagentMessage(id=sender_id, state="running",
                                 description=description, result=message))

@@ -208,14 +208,15 @@ class Conversation:
         message.add_telegram_message_id(telegram_message_ids)
         return message
 
-    def add_thinking(self, content,
+    def add_thinking(self,
                      telegram_message_ids: int | list[int] | None = None
                      ) -> ConversationMessage:
         """Append a kept thinking block: an assistant message tagged
-        THINKING, carrying the Telegram collapsible ids. Never sent to
-        the endpoint (see to_openai()). No uuid is needed - like tool
-        calls, identity comes from position, not an id."""
-        message = self.add('assistant', content)
+        THINKING, carrying the Telegram collapsible ids. Content is always
+        empty - reasoning is display-only on Telegram, never stored - and
+        never sent to the endpoint (see to_openai()). No uuid is needed -
+        like tool calls, identity comes from position, not an id."""
+        message = self.add('assistant', '')
         message.add_telegram_message_id(telegram_message_ids)
         message.message_type = ConversationMessageType.THINKING
         return message
