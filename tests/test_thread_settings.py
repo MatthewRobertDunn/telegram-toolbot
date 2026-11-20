@@ -1,7 +1,8 @@
-"""Per-thread settings: isolation, template inheritance, dual save.
+"""Per-thread settings: isolation and template inheritance.
 
-Settings changes (e.g. /model) affect only the current thread, while the
-shared template is refreshed so newly created threads inherit them.
+Settings changes (e.g. /model) affect only the current thread, except
+changes made in the unthreaded/'all' category (thread id None) which
+also update the shared template that newly created threads clone.
 """
 
 import copy
@@ -164,7 +165,7 @@ class InitConversationThreadTest(_TempDbTest):
 
 class SettingsDecoratorTest(_TempDbTest):
 
-    async def test_change_updates_thread_and_template_only(self):
+    async def test_threaded_change_updates_thread_only(self):
         template = UserSettings.default()
         template.model = 'base'
         await save_settings(1, None, template)
@@ -189,6 +190,36 @@ class SettingsDecoratorTest(_TempDbTest):
         assert template_row is not None
         assert other_row is not None
         self.assertEqual(thread_row.model, 'new')
+        # Only the unthreaded/'all' category updates the template.
+        self.assertEqual(template_row.model, 'base')
+        self.assertEqual(other_row.model, 'other')
+        # A freshly created thread inherits the untouched template.
+        late = _ptb_pair(ptb_store, 9)
+        await middleware.init_conversation(late)
+        self.assertEqual(late.settings.model, 'base')
+
+    async def test_unthreaded_change_updates_template(self):
+        template = UserSettings.default()
+        template.model = 'base'
+        await save_settings(1, None, template)
+        other = UserSettings.default()
+        other.model = 'other'
+        await save_settings(1, 4, other)
+
+        ptb_store: dict = {}
+        ctx = _ptb_pair(ptb_store, None)
+        await middleware.init_conversation(ctx)
+
+        @middleware.settings
+        async def _change(inner_ctx):
+            inner_ctx.settings.model = 'new'
+
+        await _change(ctx)
+
+        template_row = await load_settings(1, None)
+        other_row = await load_settings(1, 4)
+        assert template_row is not None
+        assert other_row is not None
         self.assertEqual(template_row.model, 'new')
         self.assertEqual(other_row.model, 'other')
         # A freshly created thread now inherits the change.

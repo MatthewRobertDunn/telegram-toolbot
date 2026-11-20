@@ -77,8 +77,8 @@ class UserData:
     """Per-user state, shared by every chat/thread of that user.
 
     Only genuinely user-scoped things live here: the settings template
-    that new threads clone on first touch (kept in sync with the most
-    recently changed thread), and the sandbox read marks (the sandbox
+    that new threads clone on first touch (only changes made in the
+    unthreaded/'all' category update it), and the sandbox read marks (the sandbox
     itself is per-user, so a file read in any thread counts everywhere).
     """
 

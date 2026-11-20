@@ -29,18 +29,17 @@ def settings(func):
     async def wrapper(ctx: ChatUpdateContext):
         result = await func(ctx)
         if ctx.message_thread_id is None:
-            # Unthreaded chat: the thread shares the template object, so
-            # one write persists both.
+            # Unthreaded chat (the 'all' category): the thread shares the
+            # template object, so one write persists both.
             ctx.user_data.settings = ctx.thread_data.settings
             await save_settings(ctx.user_id, None, ctx.settings)
         else:
+            # Threaded chat: persist only this thread's copy. Only
+            # changes made in the unthreaded/'all' category (thread id
+            # None) are saved to the template, so other threads and
+            # future threads keep their own values.
             await save_settings(
                 ctx.user_id, ctx.message_thread_id, ctx.settings)
-            # Refresh the template so newly created threads inherit the
-            # change; existing threads keep their own copies.
-            ctx.user_data.settings = copy.deepcopy(ctx.settings)
-            await save_settings(
-                ctx.user_id, None, ctx.user_data.settings)
         return result
     return wrapper
 
