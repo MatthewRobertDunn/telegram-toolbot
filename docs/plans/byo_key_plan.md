@@ -1,5 +1,12 @@
 # Plan: per-user OpenAI-compatible endpoint and key
 
+> Status: **unimplemented** — this is a design record only; none of it is
+> built. Written before the env-var rename: it says `OPENAI_KEY` where the
+> environment variable is now `OPENAI_API_KEY` (config still names the
+> Python variable `OPENAI_KEY`), and `config.api_retry_time` is now
+> 36000 s, not the 600 s quoted below. Treat the concrete values as stale
+> and re-check them against `src/config.py` before implementing.
+
 Status: **design agreed, not implemented**
 
 ## Goal

@@ -1,60 +1,50 @@
-"""One-time test bootstrap: path setup, env loading, logging, DB reset.
+"""Shared setup for integration tests.
 
-Import this first in every test file that relies on src modules:
-    import bootstrap  # noqa: F401
+Importing this module establishes the isolated test environment (same
+harness as the unit tier, see ``tests/_bootstrap.py``). Import does
+have one filesystem effect: it creates the isolated per-run temporary
+database (and its schema). What it never touches is the repo's real
+``store.db`` — the old import-time delete/recreate of
+``integration_tests/test_store.db`` is gone, and a guard forbids
+opening any real database.
+
+* ``STORE_DB_PATH`` points at a fresh per-run temporary database
+  outside the checkout, so integration tests never touch the repo's
+  ``store.db``. One directory per process, so parallel runs cannot
+  collide.
+* A guard forbids opening the repo's real databases.
+
+Test modules import this module for its helpers only::
+
+    import bootstrap  # noqa: F401  (env + guard)
+    ...
+    uid = bootstrap.next_uid()
+    @bootstrap.requires_docker
+    class TestSandbox(...):
 """
-import asyncio
 import functools
-import logging
 import os
 import subprocess
 import sys
 import unittest
 
-_HERE = os.path.dirname(__file__)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
 
-# ------------------------------------------------------------------ paths
-_SRC = os.path.join(_HERE, '..', 'src')
-for _p in (_SRC, _HERE):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# Import the shared harness. It must run before any src module is
+# imported (config.py reads STORE_DB_PATH on first import), which holds
+# because test modules import this module before anything from src.
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from tests import _bootstrap  # noqa: E402
+
+_bootstrap.setup()
 
 # ------------------------------------------------------------------ .env
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: E402
+
 load_dotenv(os.path.join(_HERE, '.env'))
-
-# ------------------------------------------------------------------ logging
-logging.disable(logging.CRITICAL)
-
-# ------------------------------------------------------------------ database
-from memory_store import create_memory_store
-from settings_store import create_settings_store
-
-_db_reset_done = False
-
-
-def _reset_test_db():
-    global _db_reset_done
-    if _db_reset_done:
-        return
-    _db_reset_done = True
-
-    db_path = os.environ.get("STORE_DB_PATH", "store.db")
-    try:
-        os.remove(db_path)
-    except FileNotFoundError:
-        pass
-
-    async def _create():
-        async with create_memory_store() as memory:
-            await memory.create_schema()
-        async with create_settings_store() as settings_store:
-            await settings_store.create_schema()
-
-    asyncio.run(_create())
-
-
-_reset_test_db()
 
 # ------------------------------------------------------------------ uid
 _next_uid = 3000
@@ -103,4 +93,3 @@ def requires_sandbox_image(test_cls):
             image_available(),
             f"sandbox image {config.SANDBOX_IMAGE} not built locally")(
             test_cls))
-
