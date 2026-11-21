@@ -36,14 +36,29 @@ DEFAULT_BUSY_TIMEOUT_MS = 5_000
 # applied. Stores are created per operation (``async with
 # create_x_store()``), so a per-instance flag alone would re-run the
 # DDL script on every single operation; readiness has to be shared.
-# _SCHEMA_LOCK guards the check-and-apply so two concurrent first uses
-# cannot execute the script simultaneously. It is rebound when the
-# running event loop changes (unit tests run one loop per test case);
-# within one loop - the only place coroutines of this app interleave -
-# mutual exclusion always holds.
 _SCHEMA_READY: set[tuple[str, str]] = set()
-_SCHEMA_LOCK: asyncio.Lock = asyncio.Lock()
+# Guards the check-and-apply so two concurrent first uses cannot
+# execute the script simultaneously. Created on demand for the running
+# loop (asyncio primitives bind to the loop that first awaits them, so
+# an import-time lock would be dead weight): mutual exclusion is per
+# running loop by design, which is all this single-loop app needs;
+# multi-loop callers fall back on SQLite's own file locking and
+# busy_timeout.
+_SCHEMA_LOCK: asyncio.Lock | None = None
 _SCHEMA_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _reset_schema_cache() -> None:
+    """Forget the process-wide schema readiness (test/tool hook).
+
+    The memo is only valid while the database file at each path is the
+    one the schema was applied to: a file deleted and recreated at the
+    same path mid-process would be skipped as already ready and fail
+    with "no such table". Resetting is explicit on purpose - the app
+    never deletes its database out from under itself, and automatic
+    invalidation would race the writer.
+    """
+    _SCHEMA_READY.clear()
 
 
 def _is_memory_path(db_path: str) -> bool:
@@ -60,7 +75,7 @@ def _schema_lock() -> asyncio.Lock:
     """The schema lock for the running event loop (see _SCHEMA_LOCK)."""
     global _SCHEMA_LOCK, _SCHEMA_LOCK_LOOP
     loop = asyncio.get_running_loop()
-    if _SCHEMA_LOCK_LOOP is not loop:
+    if _SCHEMA_LOCK is None or _SCHEMA_LOCK_LOOP is not loop:
         _SCHEMA_LOCK = asyncio.Lock()
         _SCHEMA_LOCK_LOOP = loop
     return _SCHEMA_LOCK
@@ -121,11 +136,14 @@ class AsyncSQLiteStore:
     async def __aexit__(self, *args):
         await self.close()
 
-    def _schema_needed(self, key: tuple[str, str]) -> bool:
-        """Whether this store still has to apply its schema script."""
+    def _schema_already_applied(self) -> bool:
+        """Whether the schema is in place for this store's (path, table):
+        applied by this store, or by any store in this process for the
+        same database path (never true for in-memory databases)."""
         if self._schema_ready:
-            return False
-        return _is_memory_path(self.db_path) or key not in _SCHEMA_READY
+            return True
+        return (not _is_memory_path(self.db_path)
+                and (self.db_path, self.table_name) in _SCHEMA_READY)
 
     async def create_schema(self) -> None:
         """Create tables, indexes and triggers (idempotent).
@@ -134,34 +152,45 @@ class AsyncSQLiteStore:
         script. It is applied at most once per (database path, table)
         for the process: the explicit startup call populates the shared
         readiness just like the first operation does, and later
-        per-operation stores skip the DDL. In-memory databases are
-        exempt - every connection to one is a different, empty database,
-        so they always run the script. Caveat: a database file deleted
-        and recreated at the same path mid-process would be skipped as
-        already ready; use a fresh path instead (the tests do).
+        per-operation stores adopt it without re-running the DDL.
+        In-memory databases are exempt - every connection to one is a
+        different, empty database, so they always run the script. The
+        memo is only valid while the file at the path is the one the
+        schema was applied to; a file deleted and recreated at the same
+        path mid-process needs an explicit ``_reset_schema_cache()``
+        (there is no automatic invalidation).
         """
-        key = (self.db_path, self.table_name)
-        if not self._schema_needed(key):
+        if self._schema_already_applied():
+            # Memo hit: adopt the shared readiness so later operations
+            # on this store skip re-entering this method entirely.
+            self._schema_ready = True
             return
         async with _schema_lock():
-            if not self._schema_needed(key):
+            if self._schema_already_applied():
+                self._schema_ready = True
                 return
             db = await self._get_conn()
             await db.executescript(self._schema_sql)
             await db.commit()
             self._schema_ready = True
             if not _is_memory_path(self.db_path):
-                _SCHEMA_READY.add(key)
+                _SCHEMA_READY.add((self.db_path, self.table_name))
 
     async def _ready(self) -> aiosqlite.Connection:
         """Return the connection with the schema in place.
 
-        The first operation on a store applies the schema (unless this
-        process already applied it for this database path and table);
-        every later call is a plain connection fetch (no DDL re-run).
+        The first operation on a store applies the schema - or adopts
+        the shared memo when this process already applied it for this
+        database path and table, without re-entering create_schema
+        (whose subclass overrides may do per-call work: journal checks
+        FTS5 support there). Every later call is a plain connection
+        fetch (no DDL re-run).
         """
         if not self._schema_ready:
-            await self.create_schema()
+            if self._schema_already_applied():
+                self._schema_ready = True
+            else:
+                await self.create_schema()
         return await self._get_conn()
 
     async def close(self) -> None:

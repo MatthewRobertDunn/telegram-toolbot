@@ -68,9 +68,16 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
                 # A second store over the same file skips the DDL too:
                 # readiness is shared per (path, table) for the process,
                 # and it still reads the shared database.
-                self.assertIsNotNone(
-                    await second.get_entry(user_id=1, entry_id=1))
-                await second.list_topics(user_id=1)
+                with mock.patch.object(second, "create_schema",
+                                       wraps=second.create_schema) as spy:
+                    self.assertIsNotNone(
+                        await second.get_entry(user_id=1, entry_id=1))
+                    await second.list_topics(user_id=1)
+                    # The shared memo is adopted without re-entering
+                    # create_schema - the override's FTS5 support query
+                    # would otherwise cost a round-trip per operation.
+                    self.assertEqual(spy.await_count, 0)
+                    self.assertTrue(second._schema_ready)
             finally:
                 await second.close()
                 await first.close()
@@ -454,14 +461,14 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             user_id=1, cursor_ms=_ms("2026-11-14T09:00:00+00:00"), limit=1)
         self.assertEqual([r.entry for r in page.entries], ["entry 1"])
         self.assertTrue(page.has_more)
-        # The cursor is the page edge's created timestamp, computed once
-        # by the store for the tool to interpolate.
-        self.assertEqual(page.next_cursor, "2026-11-12T09:00:00+00:00")
+        # The cursor is the page edge's id, computed once by the store
+        # for the tool to interpolate.
+        self.assertEqual(page.next_cursor, "2")
         # First page truncated by limit: more exist.
         first = await self.store.search_page(user_id=1, limit=1)
         self.assertEqual([r.entry for r in first.entries], ["entry 2"])
         self.assertTrue(first.has_more)
-        self.assertEqual(first.next_cursor, "2026-11-14T09:00:00+00:00")
+        self.assertEqual(first.next_cursor, "3")
         # Last page: nothing more in this direction.
         last = await self.store.search_page(
             user_id=1, cursor_ms=_ms("2026-11-12T09:00:00+00:00"))
@@ -473,8 +480,7 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             user_id=1, limit=1, sort_descending=False)
         self.assertEqual([r.entry for r in asc_first.entries], ["entry 0"])
         self.assertTrue(asc_first.has_more)
-        self.assertEqual(asc_first.next_cursor,
-                         "2026-11-10T09:00:00+00:00")
+        self.assertEqual(asc_first.next_cursor, "1")
         asc_last = await self.store.search_page(
             user_id=1, cursor_ms=_ms("2026-11-12T09:00:00+00:00"),
             sort_descending=False)
@@ -501,13 +507,135 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             user_id=1, topic="Log", limit=1)
         self.assertEqual([r.entry for r in topic_page.entries], ["entry 2"])
         self.assertTrue(topic_page.has_more)
-        self.assertEqual(topic_page.next_cursor,
-                         "2026-11-14T09:00:00+00:00")
+        self.assertEqual(topic_page.next_cursor, "3")
         topic_full = await self.store.search_page(
             user_id=1, topic="Mood")
         self.assertEqual(len(topic_full.entries), 1)
         self.assertFalse(topic_full.has_more)
         self.assertIsNone(topic_full.next_cursor)
+
+    async def test_search_page_pages_by_timestamp_with_backdated_rows(self):
+        # A later id can carry an earlier timestamp (import, manual db
+        # fix, a future tool passing explicit created): ordering must
+        # follow created_epoch_ms, and the id-only token must still
+        # resume at the right position. An id-ordered implementation
+        # would start with "oldest" and fail this test.
+        base = _ms("2026-11-14T09:00:00+00:00")
+        newest = await self.store.add_entry(
+            user_id=1, topic="A", entry="newest",
+            created="2026-11-14T09:02:00+00:00",
+            created_epoch_ms=base + 120_000)
+        middle = await self.store.add_entry(
+            user_id=1, topic="B", entry="middle",
+            created="2026-11-14T09:00:00+00:00", created_epoch_ms=base)
+        oldest = await self.store.add_entry(
+            user_id=1, topic="C", entry="oldest",
+            created="2026-11-14T08:58:00+00:00",
+            created_epoch_ms=base - 120_000)
+        self.assertEqual((newest.id, middle.id, oldest.id), (1, 2, 3))
+        self.assertLess(oldest.created_epoch_ms, newest.created_epoch_ms)
+
+        page = await self.store.search_page(user_id=1, limit=1)
+        self.assertEqual([r.entry for r in page.entries], ["newest"])
+        self.assertEqual(page.next_cursor, "1")
+        page = await self.store.search_page(
+            user_id=1, cursor_id=1, limit=1)
+        self.assertEqual([r.entry for r in page.entries], ["middle"])
+        self.assertEqual(page.next_cursor, "2")
+        page = await self.store.search_page(
+            user_id=1, cursor_id=2, limit=1)
+        self.assertEqual([r.entry for r in page.entries], ["oldest"])
+        self.assertFalse(page.has_more)
+        self.assertIsNone(page.next_cursor)
+        # Oldest-first pages the same rows in reverse.
+        page = await self.store.search_page(user_id=1, limit=1,
+                                            sort_descending=False)
+        self.assertEqual([r.entry for r in page.entries], ["oldest"])
+        page = await self.store.search_page(user_id=1, cursor_id=3, limit=1,
+                                            sort_descending=False)
+        self.assertEqual([r.entry for r in page.entries], ["middle"])
+        self.assertEqual(page.next_cursor, "2")
+        page = await self.store.search_page(user_id=1, cursor_id=2, limit=1,
+                                            sort_descending=False)
+        self.assertEqual([r.entry for r in page.entries], ["newest"])
+        self.assertFalse(page.has_more)
+
+    async def test_search_page_pages_inside_tied_milliseconds(self):
+        # Three entries sharing one millisecond: the id token resumes
+        # inside the tie, so no entry is skipped or repeated.
+        created = "2026-11-14T09:00:00+00:00"
+        epoch = _ms(created)
+        for topic in ("A", "B", "C"):
+            await self.store.add_entry(
+                user_id=1, topic=topic, entry=topic,
+                created=created, created_epoch_ms=epoch)
+        # ids 1..3, newest-first 3, 2, 1.
+        page = await self.store.search_page(user_id=1, limit=2)
+        self.assertEqual([r.id for r in page.entries], [3, 2])
+        self.assertTrue(page.has_more)
+        self.assertEqual(page.next_cursor, "2")
+        page = await self.store.search_page(user_id=1, cursor_id=2, limit=2)
+        self.assertEqual([r.id for r in page.entries], [1])
+        self.assertFalse(page.has_more)
+        self.assertIsNone(page.next_cursor)
+        # Oldest-first: 1, 2, then 3.
+        page = await self.store.search_page(user_id=1, limit=2,
+                                            sort_descending=False)
+        self.assertEqual([r.id for r in page.entries], [1, 2])
+        self.assertTrue(page.has_more)
+        self.assertEqual(page.next_cursor, "2")
+        page = await self.store.search_page(user_id=1, cursor_id=2, limit=2,
+                                            sort_descending=False)
+        self.assertEqual([r.id for r in page.entries], [3])
+        self.assertFalse(page.has_more)
+        self.assertIsNone(page.next_cursor)
+
+    async def test_search_page_rejects_stale_cursor(self):
+        created = "2026-11-14T09:00:00+00:00"
+        epoch = _ms(created)
+        for topic in ("A", "B", "C"):
+            await self.store.add_entry(
+                user_id=1, topic=topic, entry=topic,
+                created=created, created_epoch_ms=epoch)
+        page = await self.store.search_page(user_id=1, limit=2)
+        self.assertEqual(page.next_cursor, "2")
+        # The edge row is gone: the token cannot be resolved, so paging
+        # fails loudly instead of guessing a position.
+        self.assertTrue(await self.store.delete_entry(user_id=1, entry_id=2))
+        with self.assertRaises(StoreValidationError) as caught:
+            await self.store.search_page(user_id=1, cursor_id=2, limit=2)
+        self.assertEqual(str(caught.exception),
+                         "Cursor entry no longer exists; restart paging.")
+        # Another user's entry id is equally unusable.
+        with self.assertRaises(StoreValidationError):
+            await self.store.search_page(user_id=2, cursor_id=3, limit=2)
+
+    async def test_search_page_iso_cursor_is_millisecond_granular(self):
+        created = "2026-11-14T09:00:00+00:00"
+        epoch = _ms(created)
+        for topic in ("A", "B", "C"):
+            await self.store.add_entry(
+                user_id=1, topic=topic, entry=topic,
+                created=created, created_epoch_ms=epoch)
+        await self.store.add_entry(
+            user_id=1, topic="D", entry="older",
+            created="2026-11-14T08:59:59+00:00",
+            created_epoch_ms=epoch - 1000)
+        await self.store.add_entry(
+            user_id=1, topic="E", entry="newer",
+            created="2026-11-14T09:00:01+00:00",
+            created_epoch_ms=epoch + 1000)
+        # The ISO cursor keeps its documented ms-granular meaning: only
+        # entries strictly before/after the millisecond match, so the
+        # tie itself is skipped (use the id token for exact paging).
+        page = await self.store.search_page(user_id=1, cursor_ms=epoch,
+                                            limit=10)
+        self.assertEqual([r.entry for r in page.entries], ["older"])
+        self.assertFalse(page.has_more)
+        page = await self.store.search_page(user_id=1, cursor_ms=epoch,
+                                            limit=10, sort_descending=False)
+        self.assertEqual([r.entry for r in page.entries], ["newer"])
+        self.assertFalse(page.has_more)
 
     async def test_search_sorts_by_epoch_not_text(self):
         # Lexically the +11:00 stamp sorts after the Z stamp, but its
@@ -843,12 +971,12 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn("entry 1", out)
         self.assertIn("entry 0", out)
         self.assertNotIn("More journal entries exist", out)
-        # Truncated cursor page hints with the edge date.
+        # Truncated cursor page hints with the edge entry's id.
         trunc = await journal_tool.journal_query(
             ctx, cursor="2026-11-14T09:00:00+00:00", limit=1)
         self.assertIn("entry 1", trunc)
         self.assertIn("More journal entries exist.", trunc)
-        self.assertIn("cursor=\"2026-11-12T09:00:00+00:00\"", trunc)
+        self.assertIn('cursor="2"', trunc)
         # Full result has no hint.
         full = await journal_tool.journal_query(ctx)
         self.assertIn("Found 3 journal entries:", full)
@@ -857,18 +985,22 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         first = await journal_tool.journal_query(ctx, limit=1)
         self.assertIn("entry 2", first)
         self.assertIn("More journal entries exist.", first)
-        self.assertIn("cursor=\"2026-11-14T09:00:00+00:00\"", first)
+        self.assertIn('cursor="3"', first)
         # Following the hint pages backwards.
         second = await journal_tool.journal_query(
             ctx, cursor="2026-11-14T09:00:00+00:00", limit=1)
         self.assertIn("entry 1", second)
         self.assertIn("More journal entries exist.", second)
+        # The bare-digit token round-trips unchanged.
+        third = await journal_tool.journal_query(ctx, cursor="2", limit=1)
+        self.assertIn("entry 0", third)
+        self.assertNotIn("More journal entries exist", third)
         # Oldest-first page hints at newer entries.
         oldest = await journal_tool.journal_query(
             ctx, limit=1, sortDescending=False)
         self.assertIn("entry 0", oldest)
         self.assertIn("More journal entries exist.", oldest)
-        self.assertIn("cursor=\"2026-11-10T09:00:00+00:00\"", oldest)
+        self.assertIn('cursor="1"', oldest)
         oldest_next = await journal_tool.journal_query(
             ctx, cursor="2026-11-10T09:00:00+00:00",
             sortDescending=False, limit=1)
@@ -886,6 +1018,53 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await journal_tool.journal_query(ctx, sortDescending="yes"),  # type: ignore[arg-type]
             "Error: sortDescending must be a boolean.")
+
+    async def test_query_tool_pages_with_id_token(self):
+        ctx = self._ctx()
+        created = "2026-11-14T09:00:00+00:00"
+        epoch = _ms(created)
+        for topic in ("A", "B", "C"):
+            await self.store.add_entry(
+                user_id=1, topic=topic, entry=topic,
+                created=created, created_epoch_ms=epoch)
+        # ids 1..3 share the millisecond; newest-first 3, 2, 1. The
+        # bare-digit token round-trips unchanged and resumes inside
+        # the tie instead of skipping it.
+        first = await journal_tool.journal_query(ctx, limit=2)
+        self.assertIn("ID: 3", first)
+        self.assertIn("ID: 2", first)
+        self.assertNotIn("ID: 1", first)
+        self.assertIn('cursor="2"', first)
+        second = await journal_tool.journal_query(ctx, cursor="2", limit=2)
+        self.assertIn("ID: 1", second)
+        self.assertNotIn("ID: 3", second)
+        self.assertNotIn("More journal entries exist", second)
+        # Oldest-first pages the same tie the other way.
+        asc = await journal_tool.journal_query(
+            ctx, limit=2, sortDescending=False)
+        self.assertIn("ID: 1", asc)
+        self.assertIn("ID: 2", asc)
+        self.assertIn('cursor="2"', asc)
+        asc_next = await journal_tool.journal_query(
+            ctx, cursor="2", limit=2, sortDescending=False)
+        self.assertIn("ID: 3", asc_next)
+        self.assertNotIn("More journal entries exist", asc_next)
+        # The ISO 8601 cursor keeps its documented ms-granular meaning:
+        # the tied millisecond itself is skipped.
+        iso = await journal_tool.journal_query(ctx, cursor=created, limit=2)
+        self.assertEqual(iso, "No journal entries found.")
+
+    async def test_query_tool_reports_stale_cursor(self):
+        ctx = self._ctx()
+        await journal_tool.journal_add(ctx, topic="Mood", entry="one")
+        first = await journal_tool.journal_query(ctx, limit=1)
+        self.assertIn("ID: 1", first)
+        await journal_tool.journal_delete(ctx, id=1)
+        # The token names a deleted entry: the store refuses to guess a
+        # position and the tool surfaces the message verbatim.
+        self.assertEqual(
+            await journal_tool.journal_query(ctx, cursor="1", limit=1),
+            "Error: Cursor entry no longer exists; restart paging.")
 
     async def test_list_topics_tool(self):
         ctx = self._ctx()

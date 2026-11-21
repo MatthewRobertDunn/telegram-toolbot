@@ -5,6 +5,7 @@ Creation timestamps use the timezone
 set with /timezone (UTC when never set).
 """
 import logging
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -55,6 +56,17 @@ def _parse_iso_timestamp(value: str, name: str) -> datetime:
             f"Error: {name} timestamp must include an explicit timezone "
             "or UTC indicator, e.g. '2026-11-01T00:00:00+10:30'.")
     return parsed
+
+
+_CURSOR_RE = re.compile(r"^\d+$")
+
+
+def _decode_cursor(cursor: str) -> int | None:
+    """Decode an opaque page cursor - the bare id of the entry to
+    resume from - or None when the cursor is an ISO 8601 timestamp
+    instead."""
+    text = cursor.strip()
+    return int(text) if _CURSOR_RE.match(text) else None
 
 
 def _coerce_int(value: object, error: str) -> int:
@@ -314,17 +326,23 @@ async def journal_topic_edit(ctx: AgentContext, id: int | float | str,
         "Search journal by text and topic; primary tool for recalling past "
         "experiences, mood, symptoms, sleep/wellbeing. All parameters "
         "optional; empty call returns recent entries. Newest-first by "
-        "default (sortDescending=false for oldest-first). cursor is an "
-        "exclusive ISO 8601 with timezone paging cursor: before cursor when "
-        "newest-first, after when oldest-first. Returns up to limit "
-        "(default/max 50); if more exist, response ends with the cursor for "
-        "the next page (keep other params). Full-text matches words, not "
-        "meanings: use concise terms or quoted phrases. Timestamps need "
-        "explicit timezone/UTC."),
+        "default (sortDescending=false for oldest-first). cursor is "
+        "either the token from the previous page - the entry id to "
+        "resume from, exact even for entries sharing a timestamp - or "
+        "an ISO 8601 timestamp with timezone (millisecond-granular, may "
+        "skip same-timestamp entries). Exclusive: entries at or before "
+        "it are skipped when newest-first, at or after when "
+        "oldest-first. Returns up to limit (default/max 50); if more "
+        "exist, response ends with the cursor for the next page (keep "
+        "other params). Full-text matches words, not meanings: use "
+        "concise terms or quoted phrases. Timestamps need explicit "
+        "timezone/UTC."),
     parameters={
         "cursor": {
             "type": "string",
-            "description": ("Exclusive paging cursor, ISO 8601 with timezone."),
+            "description": ("Exclusive paging cursor: the token from "
+                            "the previous page (an entry id), or an "
+                            "ISO 8601 timestamp with timezone."),
         },
         "query": {
             "type": "string",
@@ -350,11 +368,20 @@ async def journal_query(ctx: AgentContext,
                         topic: str | None = None,
                         sortDescending: bool | None = None,
                         limit: int | float | str | None = None) -> str:
-    try:
-        cursor_dt = (_parse_iso_timestamp(cursor, "cursor")
-                     if isinstance(cursor, str) and cursor.strip() else None)
-    except ValueError as e:
-        return str(e)
+    # The cursor is either the token from the previous page - the bare
+    # id of the entry to resume from, resolved to its timestamp for an
+    # exact (created_epoch_ms, id) comparison - or an ISO 8601
+    # timestamp filtered at millisecond granularity.
+    cursor_ms: int | None = None
+    cursor_id: int | None = None
+    if isinstance(cursor, str) and cursor.strip():
+        cursor_id = _decode_cursor(cursor)
+        if cursor_id is None:
+            try:
+                cursor_dt = _parse_iso_timestamp(cursor, "cursor")
+            except ValueError as e:
+                return str(e)
+            cursor_ms = int(cursor_dt.timestamp() * 1000)
     if sortDescending is None:
         sort_descending = True
     elif isinstance(sortDescending, bool):
@@ -372,8 +399,8 @@ async def journal_query(ctx: AgentContext,
         async with create_journal_store() as store:
             page = await store.search_page(
                 user_id=ctx.user_id,
-                cursor_ms=(int(cursor_dt.timestamp() * 1000)
-                           if cursor_dt is not None else None),
+                cursor_ms=cursor_ms,
+                cursor_id=cursor_id,
                 query=query if isinstance(query, str) and query.strip() else None,
                 topic=topic if isinstance(topic, str) and topic.strip() else None,
                 limit=max_entries,

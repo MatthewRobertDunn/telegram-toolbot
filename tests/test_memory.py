@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -169,6 +170,53 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
                     await store.close()
         self.assertEqual(results, ['value'] * 4)
         self.assertEqual(counter['calls'], 1)
+
+    async def test_second_store_adopts_shared_schema_readiness(self):
+        fd, path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        first = MemoryStore(path)
+        try:
+            await first.set(1, 'key', 'value')
+        finally:
+            await first.close()
+        second = MemoryStore(path)
+        try:
+            self.assertEqual(await second.get(1, 'key'), 'value')
+            # The memo hit synced the instance flag: later operations on
+            # this store do not re-enter create_schema at all.
+            self.assertTrue(second._schema_ready)
+        finally:
+            await second.close()
+
+    async def test_reset_schema_cache_allows_recreated_file(self):
+        fd, path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        first = MemoryStore(path)
+        try:
+            await first.set(1, 'key', 'value')
+        finally:
+            await first.close()
+
+        # Same path, recreated file: the stale memo skips the schema and
+        # the explicit-creation path is a no-op too, so writes fail.
+        os.unlink(path)
+        stale = MemoryStore(path)
+        try:
+            with self.assertRaises(sqlite3.OperationalError):
+                await stale.set(1, 'key', 'value')
+        finally:
+            await stale.close()
+
+        # Resetting the cache explicitly restores self-healing.
+        sqlite_store._reset_schema_cache()
+        recreated = MemoryStore(path)
+        try:
+            await recreated.set(1, 'key', 'value')
+            self.assertEqual(await recreated.get(1, 'key'), 'value')
+        finally:
+            await recreated.close()
 
 
 if __name__ == '__main__':
