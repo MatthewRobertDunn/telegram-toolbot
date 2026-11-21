@@ -17,7 +17,7 @@ from tool_registry import SUBAGENT, agent_tool
 from tool_result import ImageAttachment, ToolCallResult
 from upload_cache import was_recently_uploaded
 
-from .common import _resolve_path
+from .common import _resolve_path, MAX_ERROR_CHARS
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ async def _load_image(ctx: AgentContext,
     encoded = await manager.exec(
         ctx.user_id, f"base64 -w0 {shlex.quote(path)}")
     if encoded["returncode"] != 0:
-        return f"Error: {encoded['stderr'].strip()[:500]}"
+        return f"Error: {encoded['stderr'].strip()[:MAX_ERROR_CHARS]}"
     try:
         data = base64.b64decode(encoded["stdout"].strip())
     except ValueError:
@@ -173,7 +173,7 @@ async def send_file(ctx: ChatUpdateContext, filePath: str) -> str:
     encoded = await manager.exec(
         ctx.user_id, f"base64 -w0 {shlex.quote(path)}")
     if encoded["returncode"] != 0:
-        return f"Error: {encoded['stderr'].strip()[:500]}"
+        return f"Error: {encoded['stderr'].strip()[:MAX_ERROR_CHARS]}"
     try:
         data = base64.b64decode(encoded["stdout"].strip())
     except ValueError:
