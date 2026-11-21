@@ -27,12 +27,6 @@ client = AsyncOpenAI(api_key=config.OPENAI_KEY,
 NO_RESPONSE_MESSAGE = "Problem getting response from model."
 NO_CONTENT_MESSAGE = "Model response had no content."
 
-# Safety valve for the agent loop: the most completions one run_llm call
-# may spend on tool rounds (plus inbox-driven turns, which count the same
-# way). A pathological model/inbox loop stops here instead of burning the
-# serialized worker forever; it is meant to be unreachable in practice.
-MAX_TOOL_ROUNDS = 100
-
 # Retry backoff keeps the long-standing 1.2x growth, but one sleep is
 # capped (config.api_retry_max_delay / API_RETRY_MAX_DELAY) so a single
 # backoff cannot swallow hours of the retry budget.
@@ -472,18 +466,8 @@ async def run_llm(ctx: AgentContext,
     caps = _capabilities(ctx, cfg, conversation)
     await caps.streamer.start()
 
-    rounds = 0
     while True:
         await _drain_inbox(conversation, cfg.inbox, caps.announce_chat)
-        if rounds >= MAX_TOOL_ROUNDS:
-            # Bail between rounds, while the history is still consistent
-            # (every dispatched call already has its result), with a
-            # string the caller sends as the reply.
-            logger.warning('run_llm: tool round cap (%d) reached',
-                           MAX_TOOL_ROUNDS)
-            return (f"(Stopped after {MAX_TOOL_ROUNDS} tool rounds; "
-                    "send a message to continue.)")
-        rounds += 1
         message = await _one_completion(
             cfg, conversation, settings, effective_model, offer_tools,
             caps.streamer,
