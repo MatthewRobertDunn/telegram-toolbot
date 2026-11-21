@@ -51,9 +51,10 @@ def check_isolation() -> None:
 
 
 def main(argv: list[str]) -> int:
-    start_dir = argv[0] if argv else 'tests'
-    pattern = argv[1] if len(argv) > 1 else 'test_*.py'
-    verbosity = 2 if '-v' in argv or '--verbose' in argv else 1
+    args = [a for a in argv if not a.startswith('-')]
+    start_dir = args[0] if args else 'tests'
+    pattern = args[1] if len(args) > 1 else 'test_*.py'
+    verbosity = 2 if {'-v', '--verbose'} & set(argv) else 1
 
     check_isolation()
 
