@@ -34,12 +34,9 @@ NO_CONTENT_MESSAGE = "Model response had no content."
 MAX_TOOL_ROUNDS = 100
 
 # Retry backoff keeps the long-standing 1.2x growth, but one sleep is
-# capped so a single backoff cannot swallow hours of the retry budget.
+# capped (config.api_retry_max_delay / API_RETRY_MAX_DELAY) so a single
+# backoff cannot swallow hours of the retry budget.
 RETRY_BACKOFF_GROWTH = 1.2
-# Upper bound on a single retry sleep (seconds). config.API_RETRY_MAX_DELAY
-# (with its env knob) is being added by the config branch; the getattr
-# keeps this branch working standalone until it lands.
-RETRY_MAX_DELAY_DEFAULT = 300.0
 
 # Completion retry budget. DO NOT "fix" this into a short fail-fast
 # policy: requests normally go to an LLM router that reroutes a failing
@@ -62,8 +59,8 @@ _sleep = asyncio.sleep
 
 
 def _retry_max_delay() -> float:
-    return float(getattr(config, 'API_RETRY_MAX_DELAY',
-                         RETRY_MAX_DELAY_DEFAULT))
+    """Upper bound, in seconds, on one retry sleep."""
+    return float(config.api_retry_max_delay)
 
 
 def _retry_budget() -> float:
