@@ -1,6 +1,6 @@
 # Verification commands (pake tasks)
 
-All commands are pake tasks defined in `pakefile.py` ([pake](https://github.com/Teriks/pake).
+All commands are pake tasks defined in `pakefile.py` ([pake](https://github.com/Teriks/pake)).
 
 ```powershell
 pake typecheck         # pyright over src/ tests/ integration_tests/
@@ -11,6 +11,12 @@ pake publish_env          # copy the local .env to the deployment server, if one
 pake publish_requirements # copy requirements.txt to the deployment server and pip install it into the tbot venv
 pake update_sandbox_image  # docker pull the latest sandbox image on the deployment server
 ```
+
+Both test tiers run against an isolated per-run SQLite database created by
+`tests/_bootstrap.py` (exported as `STORE_DB_PATH` before any application
+import), so they never read or create the repo's `store.db`. A test that
+opens the real database hits a connect guard and raises. Run
+`python tests/run.py [integration_tests]` for a single tier without pake.
 
 # Build tasks (pake)
 

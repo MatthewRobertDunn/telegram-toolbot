@@ -46,18 +46,16 @@ def typecheck(ctx):
 
 @pk.task
 def unittest(ctx):
-    """Run unit tests (pure logic, no network)."""
+    """Run unit tests (pure logic, no network) against an isolated DB."""
 
-    ctx.call("python", "-m", "unittest", "discover", "-s", "tests",
-             "-p", "test_*.py", "-v")
+    ctx.call("python", "tests/run.py")
 
 
 @pk.task
 def integration_test(ctx):
     """Run integration tests (requires OPENAI_API_KEY in integration_tests/.env)."""
 
-    ctx.call("python", "-m", "unittest", "discover", "-s", "integration_tests",
-             "-p", "test_*.py", "-v")
+    ctx.call("python", "tests/run.py", "integration_tests")
 
 
 @pk.task

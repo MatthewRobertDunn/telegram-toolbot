@@ -372,13 +372,14 @@ class TestUploadCache(unittest.TestCase):
             maxsize=8, ttl=ttl, timer=lambda: now[0])
         return now
 
-    def test_matches_by_user_and_filename(self):
+    def test_matches_by_user_and_path(self):
         self._swap_cache(60)
         upload_cache.record_upload(1, '/workspace/uploads/pic.png')
         self.assertTrue(
             upload_cache.was_recently_uploaded(1, '/workspace/uploads/pic.png'))
-        # Matching is on the filename alone, so relative paths hit too.
-        self.assertTrue(upload_cache.was_recently_uploaded(1, 'uploads/pic.png'))
+        # Matching is on the full path, so a same-named file elsewhere
+        # does not collide with it.
+        self.assertFalse(upload_cache.was_recently_uploaded(1, 'uploads/pic.png'))
         self.assertFalse(
             upload_cache.was_recently_uploaded(2, '/workspace/uploads/pic.png'))
         self.assertFalse(
@@ -733,7 +734,7 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
     async def test_recent_upload_is_not_resent_to_the_chat(self):
         # An image the user just uploaded is already visible in the chat
         # window; read_image attaches it for the model without re-sending
-        # it. Another user's upload of the same name is not spared.
+        # it. Another user's upload of the same file is not spared.
         result, bot = await self._read_image(
             path='uploads/pic.png', uploaded_by=1)
         assert isinstance(result, ToolCallResult)
@@ -743,8 +744,9 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
         self.assertIn('recently uploaded', result.text)
         self.assertIn('attached to this result', result.text)
 
-        # Another user's upload of the same name is not spared.
-        upload_cache._recent_uploads.pop((1, 'pic.png'), None)
+        # Another user's upload of the same file is not spared.
+        upload_cache._recent_uploads.pop(
+            (1, '/workspace/uploads/pic.png'), None)
         result, bot = await self._read_image(
             path='uploads/pic.png', uploaded_by=2)
         assert isinstance(result, ToolCallResult)

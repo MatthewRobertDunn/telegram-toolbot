@@ -155,11 +155,19 @@ The bot runs indefinitely. Use Ctrl+C to stop.
 
 ```powershell
 # All unit tests (pure, no network required)
-python -m unittest discover -s tests -p "test_*.py" -v
+python tests/run.py -v
 
 # All integration tests (requires OPENAI_API_KEY in integration_tests/.env, Docker, and the sandbox image)
-python -m unittest discover -s integration_tests -p "test_*.py" -v
+python tests/run.py integration_tests -v
 ```
+
+`pake unittest` / `pake integration_test` run the same commands. Both
+tiers run against an isolated per-run SQLite database: the runner
+(`tests/run.py`) exports `STORE_DB_PATH` to a temporary directory before
+any application module is imported, so the repo's `store.db` is never
+read or created by a test run. A guard also fails immediately if a test
+tries to open the real database. Plain `python -m unittest discover -s
+tests` works too — `tests/__init__.py` applies the same isolation.
 
 ## Commands
 
