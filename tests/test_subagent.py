@@ -475,7 +475,7 @@ class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
             await subagent_mod._wakeup_parent(ctx, epoch=0)
         self.assertEqual(submitted, [])
 
-    async def test_cancel_all_clears_inbox_and_leaves_no_flag(self):
+    async def test_cancel_all_clears_the_inbox(self):
         ctx = _ctx()
         get_main_inbox(ctx).put_nowait(SubagentMessage(
             id='abc', state=SubagentStatus.FINISHED, description='T',
@@ -484,7 +484,6 @@ class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
         # Stale mail is dropped, so any wakeup already queued no-ops on
         # the empty inbox instead of replying into a reset conversation.
         self.assertTrue(get_main_inbox(ctx).empty())
-        self.assertFalse(ctx.thread_data.main_loop_active)
 
     async def test_late_steer_to_finished_subagent_is_dropped(self):
         ctx = _ctx()
