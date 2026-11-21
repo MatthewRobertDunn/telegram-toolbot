@@ -206,12 +206,17 @@ class RunConfig:
     run_llm's public keyword arguments map onto this one-for-one (they
     stay the call signature for compatibility); the phases below take
     the config object instead of an eight-parameter breadcrumb trail.
+    ``conversation`` is resolved before construction: it is the history
+    this run operates on - the caller's argument, or ctx.conversation -
+    so the phases never see a None to second-guess.
     """
 
+    # No default: the resolved history is not optional, and every
+    # constructor passes it by keyword.
+    conversation: Conversation
     model: str | None = None
     reasoning_effort: str | None = None
     extra_body: dict | None = None
-    conversation: Conversation | None = None
     tools: list[dict] | None = None
     inbox: SubagentInbox | None = None
     stream_drafts: bool = True
@@ -250,33 +255,32 @@ def _capabilities(ctx: AgentContext, cfg: RunConfig) -> _Capabilities:
                            if chat is not None and cfg.stream_drafts
                            else NullDraftSink())
     announce_chat = chat if cfg.announce_tools else None
-    # Thinking is chat-facing only for the main loop: a caller that
-    # supplied its own history (compaction's scratch conversation, the
+    # Thinking is chat-facing only for the main loop: a run on its own
+    # scratch history (compaction's summary conversation, the
     # impersonation clone) reuses the interactive ctx, and its thinking
     # must not be posted to the chat or recorded on a history that is
     # about to be discarded.
     think_chat = (chat if chat is not None
-                  and cfg.conversation is None
+                  and cfg.conversation is ctx.conversation
                   and ctx.settings.thinking_keep else None)
     return _Capabilities(streamer=streamer, announce_chat=announce_chat,
                          think_chat=think_chat)
 
 
-def _request_kwargs(cfg: RunConfig, conversation: Conversation,
-                    settings: UserSettings, effective_model: str,
+def _request_kwargs(cfg: RunConfig, settings: UserSettings,
                     offer_tools: bool) -> dict:
     """The chat.completions.create kwargs for one round. Built per
     attempt inside the guarded call: a construction TypeError/ValueError
     is a fail-fast retry outcome, not a crash of the queued job."""
     create_kwargs: dict = dict(
-        model=effective_model,
-        messages=conversation.to_openai(),
+        model=cfg.model if cfg.model is not None else settings.model,
+        messages=cfg.conversation.to_openai(),
         n=1,
         temperature=settings.temperature,
         top_p=settings.top_p,
         stream=True,
         extra_headers={
-            "x-opencode-session": conversation.id,
+            "x-opencode-session": cfg.conversation.id,
         },
     )
     if offer_tools:
@@ -289,8 +293,8 @@ def _request_kwargs(cfg: RunConfig, conversation: Conversation,
     return create_kwargs
 
 
-async def _one_completion(cfg: RunConfig, conversation: Conversation,
-                          settings: UserSettings, effective_model: str,
+async def _one_completion(cfg: RunConfig,
+                          settings: UserSettings,
                           offer_tools: bool, streamer: DraftSink,
                           strip_thinking: bool,
                           budget: float) -> ConsumeStreamResult | None:
@@ -324,8 +328,7 @@ async def _one_completion(cfg: RunConfig, conversation: Conversation,
             break
         attempt += 1
         try:
-            create_kwargs = _request_kwargs(cfg, conversation, settings,
-                                            effective_model, offer_tools)
+            create_kwargs = _request_kwargs(cfg, settings, offer_tools)
         except (TypeError, ValueError) as e:
             # Deterministic: rebuilding the same request fails the same
             # way forever, so waiting is pointless. The same exception
@@ -454,14 +457,12 @@ async def run_llm(ctx: AgentContext,
     history (subagent, compaction) construct their own Conversation, whose
     fresh id becomes that request's x-opencode-session.
     """
+    conversation = (conversation if conversation is not None
+                    else ctx.conversation)
     cfg = RunConfig(model=model, reasoning_effort=reasoning_effort,
                     extra_body=extra_body, conversation=conversation,
                     tools=tools, inbox=inbox, stream_drafts=stream_drafts,
                     announce_tools=announce_tools)
-    if cfg.conversation is not None:
-        conversation = cfg.conversation
-    else:
-        conversation = ctx.conversation
     settings = ctx.settings
     effective_model = cfg.model if cfg.model is not None else settings.model
 
@@ -473,8 +474,7 @@ async def run_llm(ctx: AgentContext,
     while True:
         await _drain_inbox(conversation, cfg.inbox, caps.announce_chat)
         message = await _one_completion(
-            cfg, conversation, settings, effective_model, offer_tools,
-            caps.streamer,
+            cfg, settings, offer_tools, caps.streamer,
             strip_thinking=effective_model in config.THINK_SPLIT_MODELS,
             budget=_retry_budget())
         if message is None:

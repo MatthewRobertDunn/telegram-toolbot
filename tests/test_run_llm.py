@@ -380,7 +380,7 @@ def _failing_client(errors: list):
 
 
 def _completion_cfg() -> run_llm_mod.RunConfig:
-    return run_llm_mod.RunConfig(model='m')
+    return run_llm_mod.RunConfig(model='m', conversation=Conversation())
 
 
 class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
@@ -407,9 +407,9 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
         with self._patched(clock, sleeps), \
                 unittest.mock.patch.object(run_llm_mod, 'client', client):
             result = await run_llm_mod._one_completion(
-                _completion_cfg(), Conversation(),
+                _completion_cfg(),
                 SETTINGS,  # type: ignore[arg-type]
-                'm', offer_tools=False,
+                offer_tools=False,
                 streamer=run_llm_mod.NullDraftSink(),
                 strip_thinking=False, budget=budget)
         return result, sleeps, clock
@@ -442,9 +442,9 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
                     unittest.mock.Mock(
                         side_effect=TypeError('unexpected kwarg'))):
             result = await run_llm_mod._one_completion(
-                _completion_cfg(), Conversation(),
+                _completion_cfg(),
                 SETTINGS,  # type: ignore[arg-type]
-                'm', offer_tools=False,
+                offer_tools=False,
                 streamer=run_llm_mod.NullDraftSink(),
                 strip_thinking=False, budget=1000)
         self.assertIsNone(result)
@@ -490,9 +490,9 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
                     run_llm_mod, '_retry_max_delay', lambda: 3.0), \
                 unittest.mock.patch.object(run_llm_mod, 'client', client):
             result = await run_llm_mod._one_completion(
-                _completion_cfg(), Conversation(),
+                _completion_cfg(),
                 SETTINGS,  # type: ignore[arg-type]
-                'm', offer_tools=False,
+                offer_tools=False,
                 streamer=run_llm_mod.NullDraftSink(),
                 strip_thinking=False, budget=100)
         self.assertIsNone(result)
@@ -520,9 +520,9 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
                 unittest.mock.patch.object(run_llm_mod, 'client', client):
             with self.assertRaises(asyncio.CancelledError):
                 await run_llm_mod._one_completion(
-                    _completion_cfg(), Conversation(),
+                    _completion_cfg(),
                     SETTINGS,  # type: ignore[arg-type]
-                    'm', offer_tools=False,
+                    offer_tools=False,
                     streamer=run_llm_mod.NullDraftSink(),
                     strip_thinking=False, budget=1000)
         # It was mid-retry (at least one sleep) when the stop landed.
