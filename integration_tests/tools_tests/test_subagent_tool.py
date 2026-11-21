@@ -10,7 +10,7 @@ from mocks import create_mock_context
 
 import config
 from user_settings import UserSettings
-from tool_registry import BOTH, PARENT
+from tool_registry import PARENT, SUBAGENT
 from tools import subagent as subagent_mod
 from tools.subagent import (
     subagent_list,
@@ -71,7 +71,7 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
             assert record.task is not None
             await record.task
 
-        self.assertEqual(record.status, "done")
+        self.assertEqual(record.status, "finished")
         self.assertEqual(record.result, "final report")
         # Single path: nothing goes straight to Telegram; the parent
         # inbox receipt is the only user-visible signal.
@@ -151,12 +151,13 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
             set(declared),
             {"subagent_start", "subagent_list", "subagent_stop",
              "subagent_steer", "subagent_send_to_parent"})
-        # Controls are parent-only; the progress channel is shared so the
-        # parent gets a working tool even under role confusion.
+        # Controls are parent-only; the progress channel is callable only
+        # from inside a subagent, which is where its sending context
+        # exists (the parent calling it would only get an error).
         for name in ("subagent_start", "subagent_list", "subagent_stop",
                      "subagent_steer"):
             self.assertEqual(declared[name].scope, PARENT)
-        self.assertEqual(declared["subagent_send_to_parent"].scope, BOTH)
+        self.assertEqual(declared["subagent_send_to_parent"].scope, SUBAGENT)
 
 
 if __name__ == "__main__":
