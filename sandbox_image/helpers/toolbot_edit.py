@@ -4,11 +4,17 @@ Performs exact string replacement in a file, ported from opencode's edit
 tool replacer chain (exact, line-trimmed, block-anchor, whitespace-
 normalized, indentation-flexible). Reads a JSON payload from stdin:
 {"path": ..., "old_string": ..., "new_string": ..., "replace_all": ...}.
-Prints {"ok": true, ...} or {"ok": false, "error": "..."} to stdout.
+Prints the shared helper protocol (see toolbot_protocol.py).
 """
+import io
 import json
 import re
 import sys
+
+from toolbot_protocol import emit
+
+PAYLOAD_FIELDS = {"path", "old_string", "new_string", "replace_all"}
+PAYLOAD_STRING_FIELDS = ("path", "old_string", "new_string")
 
 SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.65
 MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.65
@@ -231,9 +237,37 @@ def replace(content: str, old_string: str, new_string: str,
         "context to make the match unique.")
 
 
-def main() -> None:
+def read_payload(stream: io.TextIOBase) -> dict:
+    """Parse and validate the JSON payload read from `stream`.
+
+    The bot sends exactly path/old_string/new_string plus the optional
+    replace_all flag; anything else is a caller bug and gets a clear
+    error instead of a KeyError deep inside the replacers.
+    """
     try:
-        payload = json.loads(sys.stdin.read())
+        payload = json.loads(stream.read())
+    except json.JSONDecodeError as e:
+        raise ValueError(f"payload is not valid JSON: {e}") from e
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be a JSON object")
+    unknown = sorted(set(payload) - PAYLOAD_FIELDS)
+    if unknown:
+        raise ValueError(
+            "unexpected payload field(s): " + ", ".join(unknown))
+    for field in PAYLOAD_STRING_FIELDS:
+        if field not in payload:
+            raise ValueError(f"payload is missing field: {field}")
+        if not isinstance(payload[field], str):
+            raise ValueError(f"payload field must be a string: {field}")
+    if "replace_all" in payload and not isinstance(payload["replace_all"],
+                                                   bool):
+        raise ValueError("payload field must be a boolean: replace_all")
+    return payload
+
+
+def main() -> int:
+    try:
+        payload = read_payload(sys.stdin)
         path = payload["path"]
         old_string = payload["old_string"]
         new_string = payload["new_string"]
@@ -254,10 +288,10 @@ def main() -> None:
         updated = replace(content, normalized_old, normalized_new, replace_all)
         with open(path, "w", encoding="utf-8", newline="") as f:
             f.write(updated)
-        print(json.dumps({"ok": True, "data": {
-            "path": path, "output": "Edit applied successfully."}}))
+        return emit(True, {"path": path,
+                           "output": "Edit applied successfully."})
     except Exception as e:
-        print(json.dumps({"ok": False, "error": str(e)}))
+        return emit(False, error=str(e))
 
 
 if __name__ == "__main__":

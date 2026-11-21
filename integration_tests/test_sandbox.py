@@ -33,10 +33,22 @@ class TestSandboxIntegration(unittest.IsolatedAsyncioTestCase):
         await self.manager.exec(
             self.uid, "echo keep-me > /tmp/keep.txt")
         sandbox = self.manager._sandboxes[self.uid]
-        self.assertTrue(await self.manager._stop_sandbox(sandbox))
+        self.assertTrue(await self.manager._stop_sandbox(self.uid, sandbox))
         result = await self.manager.exec(self.uid, "cat /tmp/keep.txt")
         self.assertEqual(result["returncode"], 0)
         self.assertIn("keep-me", result["stdout"])
+
+    async def test_command_deadline_enforced_in_container(self):
+        # The in-container timeout kills the command at the deadline; the
+        # result reports the timeout without losing partial output.
+        result = await self.manager.exec(
+            self.uid, "echo partial; sleep 30", timeout=3)
+        self.assertTrue(result["timeout"])
+        self.assertIn("partial", result["stdout"])
+        # The sandbox is still usable right after.
+        follow = await self.manager.exec(self.uid, "echo alive")
+        self.assertEqual(follow["returncode"], 0)
+        self.assertIn("alive", follow["stdout"])
 
     async def test_software_can_be_installed(self):
         install = await self.manager.exec(

@@ -1,15 +1,16 @@
 """Glob tool backend for the toolbot sandbox.
 
 Finds files by glob pattern using ripgrep (respects .gitignore), sorted by
-modification time (newest first). Prints a JSON result to stdout:
-{"ok": true, "data": {"files": [...], "truncated": ...}} or
-{"ok": false, "error": "..."}.
+modification time (newest first). Prints the shared helper protocol
+(see toolbot_protocol.py).
 """
 import argparse
 import json
 import os
 import subprocess
 import sys
+
+from toolbot_protocol import emit
 
 LIMIT = 100
 
@@ -42,7 +43,7 @@ def find_files(path: str, pattern: str) -> dict:
     }
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pattern", required=True)
     parser.add_argument("--path", default=".")
@@ -51,9 +52,9 @@ def main() -> None:
     try:
         if not os.path.isdir(args.path):
             raise ValueError(f"glob path must be a directory: {args.path}")
-        print(json.dumps({"ok": True, "data": find_files(args.path, args.pattern)}))
+        return emit(True, find_files(args.path, args.pattern))
     except Exception as e:
-        print(json.dumps({"ok": False, "error": str(e)}))
+        return emit(False, error=str(e))
 
 
 if __name__ == "__main__":

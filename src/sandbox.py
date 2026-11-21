@@ -1,11 +1,14 @@
 import asyncio
+import contextlib
 import logging
 import os
 import re
 import shlex
 import time
+import weakref
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
-from typing import NamedTuple
+from typing import Any, NamedTuple, Protocol
 
 import config
 
@@ -13,6 +16,52 @@ logger = logging.getLogger(__name__)
 
 SANDBOX_LABEL = "toolbot.sandbox"
 UPLOADS_DIR = "/workspace/uploads"
+
+# The sandbox enforces command deadlines itself (see _deadline_command);
+# this is only the extra time the docker CLI gets beyond that deadline
+# before the client-side backstop kills it and drops whatever output the
+# command had produced.
+_EXEC_GRACE_SECONDS = 30.0
+
+# GNU timeout's exit status for a command it killed at the deadline, and
+# 128+SIGKILL (137) for a command that ignored SIGTERM and needed the
+# -k escalation; the wrapped command exits with one of the two.
+_TIMEOUT_EXIT_CODE = 124
+_KILL_EXIT_CODE = 137
+
+# Longest a single upload write may run. Uploads are bounded by Telegram's
+# bot download limit, so this only catches a wedged container.
+_STORE_FILE_TIMEOUT = 120.0
+
+_ERROR_CHARS = 500
+
+# Docker daemon stderr for a sandbox container that is gone: stopped ("is
+# not running") or removed ("No such container" / "No such object"). Only
+# matched against `docker exec` failures, so a command's own stderr is
+# never reinterpreted.
+_CONTAINER_GONE_RE = re.compile(
+    r"is not running|No such container|No such object|is marked for removal")
+
+
+def _container_gone(stderr: str) -> bool:
+    """True if docker stderr says the sandbox container is gone."""
+    return _CONTAINER_GONE_RE.search(stderr) is not None
+
+
+def _deadline_command(command: str, timeout: float) -> str:
+    """Wrap a command so the sandbox enforces the deadline itself.
+
+    Container-side ``timeout`` stops the command at the deadline: SIGTERM
+    to the command's process group, escalating to SIGKILL after a short
+    grace, so partial output survives and nothing keeps running past the
+    deadline (docker's --init reaps the remains). The client-side wait_for
+    is only a backstop for a hung docker CLI; it is granted
+    _EXEC_GRACE_SECONDS beyond the deadline. A command timeout(1) killed
+    exits with _TIMEOUT_EXIT_CODE, which timeout reports as its own exit
+    status (KILL escalation keeps that status; -s KILL would report 137).
+    """
+    return f"timeout -k 5 {timeout:g} bash -c {shlex.quote(command)}"
+
 
 # Docker timestamp, e.g. 2026-10-14T09:00:00.123456789Z. Docker reports its
 # zero time (0001-01-01T00:00:00Z) for "never happened".
@@ -45,26 +94,61 @@ class _ContainerState(NamedTuple):
     user_id: int | None
 
 
-def _unique_name(name: str, existing: set[str]) -> str:
-    if name not in existing:
-        return name
-    stem, ext = os.path.splitext(name)
-    counter = 1
-    while f"{stem}-{counter}{ext}" in existing:
-        counter += 1
-    return f"{stem}-{counter}{ext}"
+# One exec does the mkdir, the name pick and the write, so two concurrent
+# uploads cannot race a listing-then-write pair into the same name. stdin
+# is the file contents; stdout is the stored path. A taken name falls back
+# to stem-1.ext, stem-2.ext, ...
+_STORE_SCRIPT = """set -e
+d={dir}
+n={name}
+mkdir -p "$d"
+p="$d/$n"
+if [ -e "$p" ]; then
+    case "$n" in
+        ?*.*) stem=${{n%.*}}; ext=.${{n##*.}} ;;
+        *) stem=$n; ext= ;;
+    esac
+    i=1
+    while [ -e "$d/$stem-$i$ext" ]; do
+        i=$((i + 1))
+    done
+    p="$d/$stem-$i$ext"
+fi
+cat > "$p"
+printf '%s' "$p"
+"""
+
+
+def _store_script(name: str) -> str:
+    """Build the atomic upload write for `name` (see _STORE_SCRIPT)."""
+    return _STORE_SCRIPT.format(dir=shlex.quote(UPLOADS_DIR),
+                                name=shlex.quote(name))
 
 
 class SandboxError(Exception):
-    pass
+    """Base class for sandbox failures reported to callers.
+
+    Subclasses carry the classification; messages are written for whoever
+    surfaces them and never quote raw docker stderr (that goes to the log).
+    """
 
 
 class DockerTimeoutError(SandboxError):
-    pass
+    """The docker CLI did not finish within its client-side deadline."""
 
 
 class SandboxStartError(SandboxError):
-    pass
+    """The sandbox container could not be started or restarted."""
+
+
+class ReadMarkHolder(Protocol):
+    """The per-user object the sandbox tools hang read marks on.
+
+    chat_update_context.UserData satisfies this structurally; the protocol
+    keeps sandbox.py from importing the chat layer.
+    """
+
+    sandbox_read_files: set[str]
 
 
 async def run_docker_command(args: list[str],
@@ -118,6 +202,9 @@ class SandboxManager:
         self._docker = docker
         self._sandboxes: dict[int, Sandbox] = {}
         self._locks: dict[int, asyncio.Lock] = {}
+        # Where each user's read marks live (see watch_read_marks); held
+        # weakly, cleared by destroy().
+        self._read_marks: dict[int, list[weakref.ref[ReadMarkHolder]]] = {}
 
     def _lock_for(self, user_id: int) -> asyncio.Lock:
         lock = self._locks.get(user_id)
@@ -125,6 +212,40 @@ class SandboxManager:
             lock = asyncio.Lock()
             self._locks[user_id] = lock
         return lock
+
+    @contextlib.asynccontextmanager
+    async def _with_container(self, user_id: int) -> AsyncIterator[None]:
+        """Hold the user's sandbox lock for a whole operation.
+
+        One lock per user serializes every operation on that sandbox —
+        starting it, running commands, stopping, destroying — so a stop or
+        destroy cannot interleave between ensure() and the docker call it
+        drives.
+        """
+        async with self._lock_for(user_id):
+            yield
+
+    def watch_read_marks(self, user_id: int, holder: ReadMarkHolder) -> None:
+        """Track where a user's read marks live so destroy() can clear them.
+
+        The sandbox tools keep read-before-write marks on the agent's
+        per-user state (tools/sandbox/common.py); that object outlives any
+        single tool call, so destroy() needs a way back to it. Held weakly:
+        a throwaway subagent state object must not be kept alive here.
+        """
+        holders = self._read_marks.get(user_id)
+        if holders is None:
+            holders = self._read_marks[user_id] = []
+        holders[:] = [ref for ref in holders if ref() is not None]
+        if not any(ref() is holder for ref in holders):
+            holders.append(weakref.ref(holder))
+
+    def _clear_read_marks(self, user_id: int) -> None:
+        """Forget the user's read-before-write marks: the files are gone."""
+        for ref in self._read_marks.pop(user_id, []):
+            holder = ref()
+            if holder is not None:
+                holder.sandbox_read_files.clear()
 
     @staticmethod
     def container_name_for(user_id: int) -> str:
@@ -142,110 +263,161 @@ class SandboxManager:
         timeout. Creating or restarting refreshes the activity timer; a
         sandbox that is already running is returned untouched.
         """
-        async with self._lock_for(user_id):
-            name = self.container_name_for(user_id)
-            sandbox = self._sandboxes.get(user_id) or Sandbox(name)
-            if await self._container_running(sandbox):
-                self._sandboxes[user_id] = sandbox
-                return sandbox
-            rc, _, _ = await self._docker(["start", name])
-            if rc == 0:
-                logger.info("Restarted sandbox %s for user %d", name, user_id)
-            else:
-                await self._docker(["rm", "-f", name])
-                args = [
-                    "run", "-d",
-                    "--name", name,
-                    "--label", f"{SANDBOX_LABEL}=1",
-                    "--label", f"toolbot.uid={user_id}",
-                    "--memory", config.SANDBOX_MEMORY,
-                    "--cpus", config.SANDBOX_CPUS,
-                    "--pids-limit", str(config.SANDBOX_PIDS_LIMIT),
-                    "--security-opt", "no-new-privileges",
-                    "--workdir", "/workspace",
-                ]
-                skills_dir = os.path.abspath(config.SKILLS_DIR)
-                if os.path.isdir(skills_dir):
-                    args += [
-                        "--mount",
-                        f"type=bind,src={skills_dir},"
-                        f"dst={config.SANDBOX_SKILLS_DIR},readonly",
-                    ]
-                args += [
-                    config.SANDBOX_IMAGE,
-                    "sleep", "infinity",
-                ]
-                rc, stdout, stderr = await self._docker(
-                    args, timeout=config.SANDBOX_START_TIMEOUT)
-                if rc != 0:
-                    logger.warning("Failed to start sandbox for user %d: %s",
-                                   user_id, stderr.strip())
-                    raise SandboxStartError(
-                        f"Failed to start sandbox container: {stderr.strip()}")
-                logger.info("Started sandbox %s for user %d", name, user_id)
-            sandbox = Sandbox(name)
+        async with self._with_container(user_id):
+            return await self._ensure_locked(user_id)
+
+    async def _ensure_locked(self, user_id: int) -> Sandbox:
+        """ensure()'s body; the caller holds the user's sandbox lock."""
+        name = self.container_name_for(user_id)
+        sandbox = self._sandboxes.get(user_id) or Sandbox(name)
+        if await self._container_running(sandbox):
             self._sandboxes[user_id] = sandbox
             return sandbox
+        rc, _, _ = await self._docker(["start", name])
+        if rc == 0:
+            logger.info("Restarted sandbox %s for user %d", name, user_id)
+        else:
+            await self._docker(["rm", "-f", name])
+            args = [
+                "run", "-d",
+                "--name", name,
+                "--label", f"{SANDBOX_LABEL}=1",
+                "--label", f"toolbot.uid={user_id}",
+                "--memory", config.SANDBOX_MEMORY,
+                "--cpus", config.SANDBOX_CPUS,
+                "--pids-limit", str(config.SANDBOX_PIDS_LIMIT),
+                "--security-opt", "no-new-privileges",
+                "--workdir", "/workspace",
+            ]
+            skills_dir = os.path.abspath(config.SKILLS_DIR)
+            if os.path.isdir(skills_dir):
+                args += [
+                    "--mount",
+                    f"type=bind,src={skills_dir},"
+                    f"dst={config.SANDBOX_SKILLS_DIR},readonly",
+                ]
+            # --init gives the container a PID 1 that reaps, so a killed
+            # command cannot leave zombies behind.
+            args += [
+                "--init",
+                config.SANDBOX_IMAGE,
+                "sleep", "infinity",
+            ]
+            rc, stdout, stderr = await self._docker(
+                args, timeout=config.SANDBOX_START_TIMEOUT)
+            if rc != 0:
+                logger.warning("Failed to start sandbox for user %d: %s",
+                               user_id, stderr.strip())
+                raise SandboxStartError(
+                    f"Could not start the sandbox container "
+                    f"(exit code {rc}).")
+            logger.info("Started sandbox %s for user %d", name, user_id)
+        sandbox = Sandbox(name)
+        self._sandboxes[user_id] = sandbox
+        return sandbox
 
     async def exec(self, user_id: int, command: str,
                    timeout: float | None = None,
-                   stdin_data: bytes | None = None) -> dict:
+                   stdin_data: bytes | None = None) -> dict[str, Any]:
         """Run a shell command in the user's sandbox.
 
-        Refreshes the activity timer. Returns
+        Refreshes the activity timer. The deadline is enforced inside the
+        container (_deadline_command), so a timed-out command's partial
+        output survives; the client-side wait is only a backstop for a
+        hung docker CLI, and its output is lost with the client. If the
+        container vanished mid-command (reset or reaper), the daemon's
+        stderr is translated into a plain message instead. Returns
         {stdout, stderr, returncode, timeout}.
         """
-        sandbox = await self.ensure(user_id)
+        async with self._with_container(user_id):
+            return await self._exec_locked(user_id, command, timeout,
+                                           stdin_data)
+
+    async def _exec_locked(self, user_id: int, command: str,
+                           timeout: float | None,
+                           stdin_data: bytes | None) -> dict[str, Any]:
+        """exec()'s body; the caller holds the user's sandbox lock."""
+        sandbox = await self._ensure_locked(user_id)
         if timeout is None:
             timeout = config.SANDBOX_EXEC_TIMEOUT
         args = ["exec"]
         if stdin_data is not None:
             args.append("-i")
-        args += [sandbox.container_name, "bash", "-c", command]
+        args += [sandbox.container_name, "bash", "-c",
+                 _deadline_command(command, timeout)]
         try:
             rc, stdout, stderr = await self._docker(
-                args, timeout=timeout, input=stdin_data)
-            timed_out = False
+                args, timeout=timeout + _EXEC_GRACE_SECONDS,
+                input=stdin_data)
         except DockerTimeoutError:
-            rc, stdout, stderr = None, "", (
-                f"Command timed out after {timeout} seconds "
-                "and was killed; it may have left background processes.")
-            timed_out = True
+            # The backstop fired: the docker CLI hung past deadline plus
+            # grace, so whatever the command had produced is lost with it.
+            logger.warning(
+                "docker exec for user %d hung past %ss; killed the client",
+                user_id, timeout + _EXEC_GRACE_SECONDS)
+            sandbox.last_activity = time.time()
+            return {
+                "stdout": "",
+                "stderr": (f"Command timed out after {timeout:g} seconds "
+                           "and was killed; its output was lost."),
+                "returncode": None,
+                "timeout": True,
+            }
+        if rc != 0 and _container_gone(stderr):
+            # The container vanished mid-command (/sandbox_reset or the
+            # reaper). The command never ran; say so instead of surfacing
+            # the daemon's stderr.
+            logger.info("Sandbox for user %d vanished during exec: %s",
+                        user_id, stderr.strip())
+            sandbox.last_activity = time.time()
+            return {
+                "stdout": "",
+                "stderr": ("The sandbox was reset or stopped; it will be "
+                           "recreated on the next command."),
+                "returncode": None,
+                "timeout": False,
+            }
         sandbox.last_activity = time.time()
         return {
             "stdout": stdout,
             "stderr": stderr,
             "returncode": rc,
-            "timeout": timed_out,
+            "timeout": rc in (_TIMEOUT_EXIT_CODE, _KILL_EXIT_CODE),
         }
 
     async def store_file(self, user_id: int, data: bytes,
                          name: str) -> tuple[str | None, str | None]:
         """Store bytes in the sandbox uploads dir under a unique name.
 
-        Returns (path, error); exactly one of the two is not None.
+        The mkdir, name pick and write happen in a single exec
+        (_store_script) so concurrent uploads cannot race into the same
+        name, under a bounded timeout. Returns (path, error); exactly one
+        of the two is not None.
         """
-        listing = await self.exec(
-            user_id, f"mkdir -p {UPLOADS_DIR} && ls -1 {UPLOADS_DIR}")
-        if listing["returncode"] != 0:
-            error = ("Error preparing the sandbox uploads folder: "
-                     f"{listing['stderr'].strip()[:500]}")
-            return None, error
-        path = f"{UPLOADS_DIR}/{_unique_name(name, set(listing['stdout'].splitlines()))}"
-        write = await self.exec(
-            user_id, f"cat > {shlex.quote(path)}", stdin_data=data)
-        if write["returncode"] != 0:
-            error = ("Error storing the file in the sandbox: "
-                     f"{write['stderr'].strip()[:500]}")
-            return None, error
+        result = await self.exec(user_id, _store_script(name),
+                                 stdin_data=data,
+                                 timeout=_STORE_FILE_TIMEOUT)
+        if result["timeout"]:
+            return None, (f"Error storing the file in the sandbox: timed "
+                          f"out after {_STORE_FILE_TIMEOUT:g} seconds.")
+        if result["returncode"] != 0:
+            detail = (result["stderr"].strip()[:_ERROR_CHARS]
+                      or f"exit code {result['returncode']}")
+            return None, f"Error storing the file in the sandbox: {detail}"
+        path = result["stdout"].strip()
+        if not path:
+            return None, ("Error storing the file in the sandbox: the "
+                          "container did not report the stored path.")
         return path, None
 
     async def destroy(self, user_id: int) -> bool:
         """Force-remove the user's sandbox, losing all changes.
 
-        Returns True if a container was removed.
+        The user's read-before-write marks are cleared too: the files they
+        refer to no longer exist. Returns True if a container was removed.
         """
-        async with self._lock_for(user_id):
+        async with self._with_container(user_id):
+            self._clear_read_marks(user_id)
             self._sandboxes.pop(user_id, None)
             rc, _, _ = await self._docker(
                 ["rm", "-f", self.container_name_for(user_id)])
@@ -253,21 +425,29 @@ class SandboxManager:
                 logger.info("Destroyed sandbox for user %d", user_id)
             return rc == 0
 
-    async def _stop_sandbox(self, sandbox: Sandbox) -> bool:
+    async def _stop_sandbox(self, user_id: int, sandbox: Sandbox) -> bool:
         """Stop a sandbox container, keeping its files for a later restart.
 
-        Returns True if the container was stopped.
+        Returns True if the container was stopped. ``running`` tracks the
+        real state: a failed stop leaves it True, so reap_idle() retries
+        on the next pass.
         """
-        rc, _, _ = await self._docker(["stop", sandbox.container_name])
-        sandbox.running = False
-        return rc == 0
+        async with self._with_container(user_id):
+            rc, _, _ = await self._docker(["stop", sandbox.container_name])
+            if rc == 0:
+                sandbox.running = False
+            # A failed stop leaves running True: the container is still
+            # there, so reap_idle() retries on the next pass.
+            return rc == 0
 
     async def reap_idle(self) -> tuple[list[int], list[int]]:
         """Stop sandboxes idle past SANDBOX_IDLE_STOP_TIMEOUT and destroy
         sandboxes idle past SANDBOX_IDLE_DESTROY_TIMEOUT.
 
         A stopped sandbox keeps its files until it is destroyed and is
-        restarted on the next access. Returns (stopped, destroyed) user ids.
+        restarted on the next access. A sandbox whose stop fails stays
+        tracked and running and is retried on the next pass. Returns
+        (stopped, destroyed) user ids.
         """
         now = time.time()
         stopped: list[int] = []
@@ -275,11 +455,11 @@ class SandboxManager:
         for user_id, sandbox in list(self._sandboxes.items()):
             idle = now - sandbox.last_activity
             if idle >= config.SANDBOX_IDLE_DESTROY_TIMEOUT:
-                await self.destroy(user_id)
-                destroyed.append(user_id)
+                if await self.destroy(user_id):
+                    destroyed.append(user_id)
             elif idle >= config.SANDBOX_IDLE_STOP_TIMEOUT and sandbox.running:
-                await self._stop_sandbox(sandbox)
-                stopped.append(user_id)
+                if await self._stop_sandbox(user_id, sandbox):
+                    stopped.append(user_id)
         return stopped, destroyed
 
     _INSPECT_STATE = (
@@ -385,12 +565,3 @@ def stop_reaper():
     if _reaper_task is not None:
         _reaper_task.cancel()
         _reaper_task = None
-
-
-if __name__ == "__main__":
-    async def _self_test():
-        result = await manager.exec(0, "echo Hello from sandbox!")
-        print(result)
-        print("destroyed:", await manager.destroy(0))
-
-    asyncio.run(_self_test())

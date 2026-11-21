@@ -4,7 +4,7 @@ from chat_update_context import AgentContext
 from sandbox import manager
 from tool_registry import BOTH, agent_tool
 
-from .common import _cap_output
+from .common import format_command_result
 
 
 @agent_tool(
@@ -26,15 +26,4 @@ async def bash(ctx: AgentContext, command: str) -> str:
     if not command.strip():
         return "Error: empty command."
     result = await manager.exec(ctx.user_id, command)
-    output = []
-    if result["timeout"]:
-        output.append("Command timed out.")
-    if result["returncode"] is not None:
-        output.append(f"Return code: {result['returncode']}")
-    if result["stdout"]:
-        output.append(f"stdout:\n{_cap_output(result['stdout'])}")
-    if result["stderr"]:
-        output.append(f"stderr:\n{_cap_output(result['stderr'])}")
-    if not output:
-        return "(executed with no output)"
-    return "\n".join(output)
+    return format_command_result(result)
