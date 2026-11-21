@@ -9,12 +9,25 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+import aiosqlite
 import journal_store
 import sqlite_store
 from journal_store import ReplaceOutcome, StoreValidationError
 from tools import journal_tool
 from mock_context import mock_ctx
 from user_settings import UserSettings
+
+
+def _counting_executescript(counter: dict):
+    """A replacement for aiosqlite.Connection.executescript that counts
+    calls and passes them through unchanged."""
+    original = aiosqlite.Connection.executescript
+
+    def counting(conn, sql, *args, **kwargs):
+        counter["calls"] += 1
+        return original(conn, sql, *args, **kwargs)
+
+    return counting
 
 
 def _ms(iso: str) -> int:
@@ -33,25 +46,37 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         await self.store.close()
         self._tmp.cleanup()
 
-    async def test_schema_created_once_per_store(self):
+    async def test_schema_script_runs_once_per_database(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        counter = {"calls": 0}
         created = "2026-11-14T16:34:00+00:00"
         epoch = _ms(created)
-        fresh = journal_store.create_journal_store(self.db)
-        try:
-            with mock.patch.object(fresh, "create_schema",
-                                   wraps=fresh.create_schema) as spy:
-                await fresh.add_entry(user_id=1, topic="A", entry="one",
+        with mock.patch.object(aiosqlite.Connection, "executescript",
+                               _counting_executescript(counter)):
+            first = journal_store.create_journal_store(path)
+            second = journal_store.create_journal_store(path)
+            try:
+                await first.add_entry(user_id=1, topic="A", entry="one",
                                       created=created,
                                       created_epoch_ms=epoch)
-                await fresh.get_entry(user_id=1, entry_id=1)
-                await fresh.search_entries(user_id=1)
-                await fresh.list_topics(user_id=1)
-                # The first operation applies the schema; every later
-                # operation on the same store reuses the ready
-                # connection instead of re-running the DDL script.
-                self.assertEqual(spy.await_count, 1)
-        finally:
-            await fresh.close()
+                await first.search_entries(user_id=1)
+                # Repeated explicit calls on one instance do nothing.
+                await first.create_schema()
+                await first.create_schema()
+                # A second store over the same file skips the DDL too:
+                # readiness is shared per (path, table) for the process,
+                # and it still reads the shared database.
+                self.assertIsNotNone(
+                    await second.get_entry(user_id=1, entry_id=1))
+                await second.list_topics(user_id=1)
+            finally:
+                await second.close()
+                await first.close()
+        # One 8-statement script application for the whole process, not
+        # one per store or per operation.
+        self.assertEqual(counter["calls"], 1)
 
     async def test_db_path_resolved_at_call_time(self):
         fd, path = tempfile.mkstemp(suffix=".db")

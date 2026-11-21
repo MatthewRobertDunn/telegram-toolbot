@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import tempfile
@@ -7,8 +8,23 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+import aiosqlite
 import sqlite_store
 from memory_store import MemoryStore, create_memory_store
+
+
+def _counting_executescript(counter: dict):
+    """A replacement for aiosqlite.Connection.executescript that counts
+    calls and passes them through unchanged. aiosqlite's execute methods
+    return an object that is both awaitable and an async context
+    manager; returning it untouched keeps both usages identical."""
+    original = aiosqlite.Connection.executescript
+
+    def counting(conn, sql, *args, **kwargs):
+        counter['calls'] += 1
+        return original(conn, sql, *args, **kwargs)
+
+    return counting
 
 
 class TestMemory(unittest.IsolatedAsyncioTestCase):
@@ -89,6 +105,70 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
             finally:
                 await store.close()
         self.assertGreater(os.path.getsize(path), 0)
+
+    async def test_schema_runs_once_per_database_across_stores(self):
+        # Stores are created per operation; the DDL script must run once
+        # per (path, table) for the process, not once per store.
+        fd, path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        counter = {'calls': 0}
+        with mock.patch.object(aiosqlite.Connection, 'executescript',
+                               _counting_executescript(counter)):
+            first = MemoryStore(path)
+            try:
+                await first.set(1, 'k1', 'v1')
+                await first.set(1, 'k2', 'v2')
+                self.assertEqual(await first.get(1, 'k1'), 'v1')
+            finally:
+                await first.close()
+            # A second, unrelated store over the same file skips DDL.
+            second = MemoryStore(path)
+            try:
+                self.assertEqual(await second.get(1, 'k2'), 'v2')
+                self.assertEqual(await second.get_all_keys(1), ['k1', 'k2'])
+            finally:
+                await second.close()
+        self.assertEqual(counter['calls'], 1)
+
+    async def test_memory_databases_never_share_schema_readiness(self):
+        # Every connection to an in-memory database is a different,
+        # empty database: each store must run the schema itself.
+        counter = {'calls': 0}
+        with mock.patch.object(aiosqlite.Connection, 'executescript',
+                               _counting_executescript(counter)):
+            for _ in range(2):
+                store = MemoryStore(':memory:')
+                try:
+                    await store.set(1, 'key', 'value')
+                    self.assertEqual(await store.get(1, 'key'), 'value')
+                finally:
+                    await store.close()
+        self.assertEqual(counter['calls'], 2)
+
+    async def test_concurrent_first_uses_run_schema_once(self):
+        fd, path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        counter = {'calls': 0}
+        with mock.patch.object(aiosqlite.Connection, 'executescript',
+                               _counting_executescript(counter)):
+            stores = [MemoryStore(path) for _ in range(4)]
+
+            async def use(store: MemoryStore) -> str | None:
+                await store.set(1, 'key', 'value')
+                return await store.get(1, 'key')
+
+            try:
+                # The readiness lock serialises the first uses: the
+                # script still runs exactly once.
+                results = await asyncio.gather(
+                    *(use(store) for store in stores))
+            finally:
+                for store in stores:
+                    await store.close()
+        self.assertEqual(results, ['value'] * 4)
+        self.assertEqual(counter['calls'], 1)
 
 
 if __name__ == '__main__':
