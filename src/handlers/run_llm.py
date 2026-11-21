@@ -45,11 +45,10 @@ RETRY_MAX_DELAY_DEFAULT = 300.0
 # policy: requests normally go to an LLM router that reroutes a failing
 # request to another model, so nearly every failure is transient, and the
 # budget is intentionally huge (config.api_retry_time, 10 h by default).
-# Subagents in particular retry indefinitely by default (config
-# .SUBAGENT_API_RETRY_TIME, default 0 = no deadline): a subagent that
-# gives up loses all of its background work, so a proxy restart or outage
-# must not destroy it. The parent has a finite budget because the user
-# can simply /stop it.
+# Every context kind gets the same budget: a per-subagent "retry forever"
+# rule is a known deferred design - it only makes sense together with
+# persisted/resumable subagent state, which does not exist yet, so do not
+# add a special case here until that lands.
 
 
 def _loop_time() -> float:
@@ -67,21 +66,14 @@ def _retry_max_delay() -> float:
                          RETRY_MAX_DELAY_DEFAULT))
 
 
-def _retry_budget(ctx: AgentContext, override: float | None) -> float:
-    """Wall-clock retry budget in seconds; <= 0 means retry indefinitely.
+def _retry_budget() -> float:
+    """Wall-clock retry budget in seconds for every context kind.
 
-    Interactive contexts keep the long-standing config.api_retry_time.
-    Subagent contexts default to unlimited (see the rationale above);
-    config.SUBAGENT_API_RETRY_TIME lands with the config branch and the
-    getattr keeps this branch working standalone until then. ``override``
-    is the per-call hook (RunConfig.retry_budget) for callers that need
-    their own bound.
+    One budget, deliberately long (config.api_retry_time): see the
+    router-failover rationale at the top of this module. There is
+    deliberately no per-context-kind or per-call override.
     """
-    if override is not None:
-        return float(override)
-    if isinstance(ctx, ChatUpdateContext):
-        return float(config.api_retry_time)
-    return float(getattr(config, 'SUBAGENT_API_RETRY_TIME', 0))
+    return float(config.api_retry_time)
 
 
 def _non_retryable(error: Exception) -> bool:
@@ -223,10 +215,6 @@ class RunConfig:
     run_llm's public keyword arguments map onto this one-for-one (they
     stay the call signature for compatibility); the phases below take
     the config object instead of an eight-parameter breadcrumb trail.
-
-    ``retry_budget`` is the per-call override for the completion retry
-    budget (see _retry_budget); None defers to the context kind. It is
-    not part of the public kwargs yet.
     """
 
     model: str | None = None
@@ -237,7 +225,6 @@ class RunConfig:
     inbox: SubagentInbox | None = None
     stream_drafts: bool = True
     announce_tools: bool = True
-    retry_budget: float | None = None
 
 
 @dataclass(frozen=True)
@@ -314,10 +301,9 @@ async def _one_completion(cfg: RunConfig, conversation: Conversation,
                           budget: float) -> ConsumeStreamResult | None:
     """One completion request under the module retry policy.
 
-    Retries within the wall-clock ``budget`` (<= 0 means no deadline:
-    subagents retry indefinitely so a proxy restart or outage does not
-    destroy their background work - see the rationale at the top of this
-    module), except for errors waiting cannot fix (_non_retryable), which
+    Retries within the wall-clock ``budget`` (config.api_retry_time for
+    every context kind; see the rationale at the top of this module),
+    except for errors waiting cannot fix (_non_retryable), which
     return None right away. Backoff grows 1.2x per attempt, clamped to a
     per-sleep maximum so one sleep cannot swallow hours of the budget.
     Returns the consumed stream, or None when the budget is spent or a
@@ -492,7 +478,7 @@ async def run_llm(ctx: AgentContext,
             cfg, conversation, settings, effective_model, offer_tools,
             caps.streamer,
             strip_thinking=effective_model in config.THINK_SPLIT_MODELS,
-            budget=_retry_budget(ctx, cfg.retry_budget))
+            budget=_retry_budget())
         if message is None:
             caps.streamer.new_round()
             return NO_RESPONSE_MESSAGE

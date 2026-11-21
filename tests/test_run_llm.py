@@ -379,8 +379,8 @@ def _failing_client(errors: list):
     return client, calls
 
 
-def _completion_cfg(budget: float) -> run_llm_mod.RunConfig:
-    return run_llm_mod.RunConfig(model='m', retry_budget=budget)
+def _completion_cfg() -> run_llm_mod.RunConfig:
+    return run_llm_mod.RunConfig(model='m')
 
 
 class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
@@ -407,7 +407,7 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
         with self._patched(clock, sleeps), \
                 unittest.mock.patch.object(run_llm_mod, 'client', client):
             result = await run_llm_mod._one_completion(
-                _completion_cfg(budget), Conversation(),
+                _completion_cfg(), Conversation(),
                 SETTINGS,  # type: ignore[arg-type]
                 'm', offer_tools=False,
                 streamer=run_llm_mod.NullDraftSink(),
@@ -452,7 +452,7 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
                     run_llm_mod, '_retry_max_delay', lambda: 3.0), \
                 unittest.mock.patch.object(run_llm_mod, 'client', client):
             result = await run_llm_mod._one_completion(
-                _completion_cfg(100), Conversation(),
+                _completion_cfg(), Conversation(),
                 SETTINGS,  # type: ignore[arg-type]
                 'm', offer_tools=False,
                 streamer=run_llm_mod.NullDraftSink(),
@@ -462,21 +462,18 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(max(sleeps), 3.0)
         self.assertIn(3.0, sleeps)
 
-    async def test_subagent_budget_is_unlimited_until_cancelled(self):
-        # A subagent must outlive what would have been the parent's
-        # budget (a proxy restart must not destroy its work); the only
-        # way out is cancellation (subagent_stop).
+    async def test_cancellation_interrupts_the_retry_sleep(self):
+        # subagent_stop / /stop cancel the task; the cancellation must
+        # come out of the retry loop immediately, not be swallowed as a
+        # retryable failure.
         clock = _FakeClock()
         sleeps: list = []
         client, _ = _failing_client([_FakeStatusError(502)])
-        parent_budget = 10.0
 
         async def fake_sleep(delay):
             sleeps.append(delay)
             clock.now += delay
-            if clock.now - 100.0 > parent_budget:
-                # subagent_stop cancelled the task mid-retry.
-                raise asyncio.CancelledError
+            raise asyncio.CancelledError
 
         with unittest.mock.patch.object(run_llm_mod, '_loop_time',
                                         clock.time), \
@@ -485,31 +482,39 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
                 unittest.mock.patch.object(run_llm_mod, 'client', client):
             with self.assertRaises(asyncio.CancelledError):
                 await run_llm_mod._one_completion(
-                    _completion_cfg(0), Conversation(),
+                    _completion_cfg(), Conversation(),
                     SETTINGS,  # type: ignore[arg-type]
                     'm', offer_tools=False,
                     streamer=run_llm_mod.NullDraftSink(),
-                    strip_thinking=False, budget=0)
-        # It kept retrying well past the parent's 10 s budget instead of
-        # returning NO_RESPONSE_MESSAGE at the deadline.
-        self.assertGreater(clock.now - 100.0, parent_budget)
-        self.assertGreater(len(sleeps), 6)
+                    strip_thinking=False, budget=1000)
+        # It was mid-retry (at least one sleep) when the stop landed.
+        self.assertGreaterEqual(len(sleeps), 1)
 
-    async def test_budget_selection_by_context_kind(self):
-        agent = AgentContext(user_id=1, user_data=UserData(),
-                             thread_data=ThreadData())
+    async def test_budget_is_the_same_for_both_context_kinds(self):
+        # One budget for everyone: the "subagents retry forever" design
+        # is deferred until subagent state is persisted/resumable, so a
+        # silent AgentContext must not get special treatment here.
+        captured: list = []
+
+        async def spy(cfg, *args, **kwargs):
+            captured.append(kwargs['budget'])
+            return None
+
+        agent = AgentContext(
+            user_id=1, user_data=UserData(),
+            thread_data=ThreadData(  # type: ignore[arg-type]
+                conversation=Conversation(),
+                settings=SETTINGS))  # type: ignore[arg-type]
         with unittest.mock.patch.object(config, 'api_retry_time', 36000), \
-                unittest.mock.patch.object(config, 'SUBAGENT_API_RETRY_TIME',
-                                           0, create=True):
-            self.assertEqual(
-                run_llm_mod._retry_budget(
-                    mock_ctx(settings=SETTINGS), None), 36000.0)
-            # 0 or less means "no deadline" for silent contexts.
-            self.assertEqual(
-                run_llm_mod._retry_budget(agent, None), 0.0)
-            # The per-call override wins over both.
-            self.assertEqual(
-                run_llm_mod._retry_budget(agent, 42.0), 42.0)
+                unittest.mock.patch.object(run_llm_mod, '_one_completion',
+                                           spy):
+            await run_llm_mod.run_llm(mock_ctx(settings=SETTINGS,
+                                               conversation=[]))
+            await run_llm_mod.run_llm(agent)
+        # Interactive and silent contexts both run on the same
+        # configured budget; _retry_budget takes no context at all.
+        self.assertEqual(captured, [36000.0, 36000.0])
+        self.assertEqual(run_llm_mod._retry_budget(), 36000.0)
 
     async def test_run_llm_returns_no_response_when_budget_spent(self):
         ctx = mock_ctx(settings=SETTINGS, conversation=[])
