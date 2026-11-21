@@ -8,8 +8,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from conversation import (Conversation, ConversationMessage,
                           ConversationMessageType, CUSTOM, IMAGE_PLACEHOLDER,
-                          RegenerationAction, estimate_message_tokens,
-                          is_thinking_message)
+                          MAX_IMAGES, RegenerationAction,
+                          estimate_message_tokens, is_thinking_message)
 
 
 class TestMessageNormalization(unittest.TestCase):
@@ -159,6 +159,27 @@ class TestMessageType(unittest.TestCase):
 
 class TestConversationAddImage(unittest.TestCase):
 
+    def test_max_images_is_a_constructor_parameter(self):
+        # The retention cap is a per-conversation argument now, not a
+        # class attribute tests were expected to monkey-patch.
+        conversation = Conversation(max_images=2)
+        self.assertEqual(conversation.max_images, 2)
+        for n in range(5):
+            conversation.add_image(bytes([n]), 'image/png', f'img {n}')
+        image_urls = [part['image_url']['url']
+                      for message in conversation
+                      for part in message['content']
+                      if part['type'] == 'image_url']
+        self.assertEqual(len(image_urls), 2)
+        # The three oldest merged their placeholder into the caption.
+        self.assertEqual(
+            [message['content'] for message in conversation[:3]],
+            [[{'type': 'text', 'text': f'img {n}\n{IMAGE_PLACEHOLDER}'}]
+             for n in range(3)])
+
+    def test_max_images_defaults_to_MAX_IMAGES(self):
+        self.assertEqual(Conversation().max_images, MAX_IMAGES)
+
     def test_add_image_appends_a_caption_and_base64_image(self):
         conversation = Conversation()
         message = conversation.add_image(b'abc', 'image/png', 'look at this')
@@ -228,6 +249,74 @@ class TestConversationAddImage(unittest.TestCase):
             conversation.add_image(bytes([n]), 'image/png')
         self.assertEqual(conversation[0]['content'],
                          [{'type': 'text', 'text': IMAGE_PLACEHOLDER}])
+
+
+class TestOpenAiContract(unittest.TestCase):
+    """validate_openai_contract: the invariants to_openai() output relies
+    on - one system head, and tool calls paired with their results - are
+    checkable on demand, never automatically on the request path."""
+
+    def test_a_well_formed_conversation_has_no_problems(self):
+        conversation = Conversation()
+        conversation.set_system_head('prompt')
+        conversation.add_user('go')
+        assistant = conversation.add_assistant('')
+        assistant['tool_calls'] = [
+            {'id': 'c1', 'type': 'function',
+             'function': {'name': 'a', 'arguments': '{}'}},
+            {'id': 'c2', 'type': 'function',
+             'function': {'name': 'b', 'arguments': '{}'}},
+        ]
+        conversation.add_tool('one', 'c1')
+        conversation.add_tool('two', 'c2')
+        conversation.add_assistant('done')
+        self.assertEqual(conversation.validate_openai_contract(), [])
+
+    def test_more_than_one_system_message_is_reported(self):
+        conversation = Conversation()
+        conversation.set_system_head('prompt')
+        conversation.add_user('hi')
+        conversation.add('system', 'a second prompt')
+        problems = conversation.validate_openai_contract()
+        self.assertEqual(len(problems), 1)
+        self.assertIn('more than one system message', problems[0])
+
+    def test_a_system_message_off_the_head_is_reported(self):
+        conversation = Conversation([{'role': 'user', 'content': 'hi'},
+                                     {'role': 'system', 'content': 'p'}])
+        problems = conversation.validate_openai_contract()
+        self.assertEqual(len(problems), 1)
+        self.assertIn('not the head', problems[0])
+
+    def test_an_unanswered_tool_call_is_reported(self):
+        conversation = Conversation()
+        conversation.add_user('go')
+        assistant = conversation.add_assistant('')
+        assistant['tool_calls'] = [
+            {'id': 'c1', 'type': 'function',
+             'function': {'name': 'a', 'arguments': '{}'}},
+        ]
+        problems = conversation.validate_openai_contract()
+        self.assertEqual(problems, ['unanswered tool calls: [\'c1\']'])
+
+    def test_a_tool_result_answering_nothing_is_reported(self):
+        conversation = Conversation()
+        conversation.add_user('go')
+        conversation.add_tool('orphan', 'c9')
+        problems = conversation.validate_openai_contract()
+        self.assertEqual(len(problems), 1)
+        self.assertIn('answers no open call', problems[0])
+        self.assertIn('c9', problems[0])
+
+    def test_thinking_blocks_are_not_contract_problems(self):
+        # Thinking is stripped by to_openai(), never sent, so it cannot
+        # break the endpoint contract even though it sits in the history.
+        conversation = Conversation()
+        conversation.set_system_head('prompt')
+        conversation.add_user('go')
+        conversation.add_thinking()
+        conversation.add_assistant('done')
+        self.assertEqual(conversation.validate_openai_contract(), [])
 
 
 class TestConversationListCompat(unittest.TestCase):

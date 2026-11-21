@@ -5,31 +5,45 @@ keeps only the newest messages verbatim, so long conversations stay well
 inside the model's context window. The summary is produced by a nested
 run_llm call with tools disabled and streamed to the user like any reply.
 
-Only the newest `keep_tokens` of messages are kept verbatim (15000 by
-default); images are dropped everywhere and replaced by placeholder text.
+The split is decided on the *rendered transcript* (transcript.py): the
+newest `keep_tokens` worth of transcript is kept verbatim (15000 by
+default), the rest is summarized, and no tool call is ever separated from
+its results across the boundary. Every size check here is transcript
+tokens (token_count over message_to_text lines); the raw message estimates
+(tokens.estimate_conversation_tokens) are only for the before/after
+report. Images are dropped everywhere and replaced by placeholder text.
 
 The logic is deliberately independent of command handling so compaction can
 later run automatically once the context grows past a threshold (see
-estimate_conversation_tokens / split_for_compaction for the size checks).
+split_for_compaction for the size checks).
 """
-import asyncio
+
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from conversation import (Conversation, TOKENS_PER_CHAR, IMAGE_TOKEN_ESTIMATE,
-                          IMAGE_PLACEHOLDER, token_count,
-                          estimate_message_tokens, estimate_conversation_tokens,
-                          is_thinking_message)
 from chat_update_context import ChatUpdateContext
+from conversation import Conversation
 from handlers.run_llm import (NO_CONTENT_MESSAGE, NO_RESPONSE_MESSAGE,
                               run_llm)
+from messages import tool_call_ids
+from tokens import token_count, estimate_conversation_tokens
+from transcript import message_to_text
 
 # Tokens of recent conversation kept verbatim beside the summary.
 DEFAULT_KEEP_TOKENS = 15_000
-# Contexts smaller than this are left alone; compaction would save little.
-MIN_COMPACT_TOKENS = 15_000
-# Long tool outputs are cut to this many characters in the summary source.
-TOOL_OUTPUT_MAX_CHARS = 1_250
+# Contexts whose transcript is smaller than this are left alone: a
+# summary costs a model call, and below about twice the keep budget the
+# compaction cannot even halve the context. Deliberately distinct from
+# DEFAULT_KEEP_TOKENS - while the two were equal, the size check and the
+# keep-budget check were the same check, and /compact could only ever
+# fire with the budget already exhausted.
+MIN_COMPACT_TOKENS = 2 * DEFAULT_KEEP_TOKENS
+# The summarized part must be at least this fraction of the transcript,
+# else compaction is refused: summarizing a sliver of the context cannot
+# pay for the model call it needs, and the "compaction" would report a
+# token increase. This is what guards custom /compact keeps larger than
+# half the context.
+MIN_SUMMARY_FRACTION = 0.25
 
 
 class CompactionError(Exception):
@@ -98,9 +112,9 @@ SUMMARY_PROMPT = "\n\n".join([
     "summary that will be given to another assistant to resume the work.",
     "Summarize only what the user and the assistant said and did. Leave out "
     "instructions and setup the assistant was given rather than told by the "
-    "if the conversation trnacript contains a compaction summary, build the new summary on top of it "
-    "carrying forward only what is still relevant.",
     "user, such as system prompt text and environment details.",
+    "If the conversation transcript contains a compaction summary, build the "
+    "new summary on top of it, carrying forward only what is still relevant.",
     SUMMARY_TEMPLATE,
     SUMMARY_RULES,
     "Do not continue the task or call tools.",
@@ -109,52 +123,62 @@ SUMMARY_PROMPT = "\n\n".join([
 ])
 
 
-def message_to_text(message: dict) -> str:
-    """One conversation message as a transcript line.
+@dataclass(frozen=True)
+class _Entry:
+    """One transcript line of a conversation, with its size."""
+    message: dict
+    text: str
+    tokens: int
 
-    Empty for messages the transcript leaves out (e.g. system prompts and
-    kept thinking blocks - reasoning is ephemeral, the summary keeps
-    outcomes). Images become placeholder text and long tool outputs are
-    truncated.
+
+def choose_boundary(entries: list[_Entry], *, keep_tokens: int,
+                    transcript_tokens: int) -> int | None:
+    """Where the verbatim part starts: an index into `entries`, or None
+    when compaction is refused.
+
+    Rules, in order:
+    - The kept suffix never exceeds the keep budget: the boundary is the
+      oldest position whose suffix still fits. (The previous rule snapped
+      the boundary backwards to an earlier user message - keeping more
+      than the budget - or forwards to the last user message - keeping
+      almost nothing - and could even land before the first entry,
+      summarizing nothing at all while still paying for a summary call.)
+    - A tool call and its results are never separated across the
+      boundary: one that would split a pair moves forward past the whole
+      batch.
+    - The boundary is at least 1 - there is always something to
+      summarize - and the summarized part is at least
+      MIN_SUMMARY_FRACTION of the transcript, else None: compacting a
+      trivial remainder is a model call that saves nothing.
     """
-    if is_thinking_message(message):
-        return ''
-    role = message.get('role')
-    if role == 'system':
-        return ''
-    if role == 'user':
-        content = message.get('content')
-        if isinstance(content, str):
-            return f'[User]: {content}'
-        lines = []
-        for part in content or []:
-            if not isinstance(part, dict):
-                continue
-            if part.get('type') == 'text':
-                lines.append(f"[User]: {part.get('text') or ''}")
-            elif part.get('type') == 'image_url':
-                lines.append(IMAGE_PLACEHOLDER)
-        return '\n'.join(lines)
-    if role == 'assistant':
-        lines = []
-        content = message.get('content')
-        if content:
-            lines.append(f'[Assistant]: {content}')
-        for tool_call in message.get('tool_calls') or []:
-            function = (tool_call or {}).get('function') or {}
-            name = function.get('name') or ''
-            arguments = function.get('arguments') or ''
-            lines.append(f'[Assistant tool call]: {name}({arguments})')
-        return '\n'.join(lines)
-    if role == 'tool':
-        return f"[Tool result]: {_truncate_tool_output(message.get('content') or '')}"
-    return ''
-
-
-def _truncate_tool_output(value: str) -> str:
-    if len(value) <= TOOL_OUTPUT_MAX_CHARS:
-        return value
-    return value[:TOOL_OUTPUT_MAX_CHARS] + '\n[truncated]'
+    # The oldest boundary whose kept suffix fits the budget: walk from
+    # the newest entry backwards while the suffix keeps fitting.
+    suffix = 0
+    boundary = len(entries)
+    for position in range(len(entries) - 1, -1, -1):
+        if suffix + entries[position].tokens > keep_tokens:
+            break
+        suffix += entries[position].tokens
+        boundary = position
+    # Push the boundary past any tool-call batch it would split: every
+    # entry absorbed into the older side may answer (or be answered by)
+    # the next one. A kept part also never starts on a tool result - a
+    # well-formed result is caught by its id, and a malformed one without
+    # an id still always belongs to an older call.
+    older_ids: set = set()
+    for position in range(boundary):
+        older_ids |= tool_call_ids(entries[position].message)
+    while boundary < len(entries) and (
+            entries[boundary].message.get('role') == 'tool'
+            or older_ids & tool_call_ids(entries[boundary].message)):
+        older_ids |= tool_call_ids(entries[boundary].message)
+        boundary += 1
+    # Refuse a trivial summary.
+    summarized = transcript_tokens - sum(
+        entry.tokens for entry in entries[boundary:])
+    if summarized < MIN_SUMMARY_FRACTION * transcript_tokens:
+        return None
+    return boundary
 
 
 def split_for_compaction(
@@ -162,49 +186,33 @@ def split_for_compaction(
         keep_tokens: int = DEFAULT_KEEP_TOKENS) -> CompactionSplit | None:
     """Split a conversation into the part to summarize and the part to keep.
 
-    The newest messages worth about `keep_tokens` are kept verbatim; the rest
-    is summarized. Returns None when there is nothing worth compacting: the
-    conversation is small, or all of it fits in `keep_tokens`.
+    The newest messages worth about `keep_tokens` of transcript are kept
+    verbatim; the rest is summarized. Returns None when there is nothing
+    worth compacting: the transcript is small (MIN_COMPACT_TOKENS), all
+    of it fits in `keep_tokens`, or the summarized part would be trivial
+    (choose_boundary refuses).
     """
-    tokens_before = estimate_conversation_tokens(conversation)
-    if tokens_before < MIN_COMPACT_TOKENS or tokens_before <= keep_tokens:
-        return None
-
     entries = []
     for message in conversation:
         text = message_to_text(message)
         if text:
-            entries.append((message, text, token_count(text)))
+            entries.append(_Entry(message, text, token_count(text)))
     if not entries:
         return None
+    transcript_tokens = sum(entry.tokens for entry in entries)
+    if transcript_tokens < MIN_COMPACT_TOKENS or \
+            transcript_tokens <= keep_tokens:
+        return None
 
-    # Drop oldest entries until the rest fit the allowance, but always keep
-    # the newest one.
-    kept = 0
-    kept_tokens = 0
-    for _, _, tokens in reversed(entries):
-        if kept and kept_tokens + tokens > keep_tokens:
-            break
-        kept_tokens += tokens
-        kept += 1
-    first_kept = len(entries) - kept
-
-    # Start the verbatim part at a user message so an assistant's tool calls
-    # and their results are never separated across the summary boundary.
-    user_positions = [pos for pos, (message, _, _) in enumerate(entries)
-                      if pos > 0 and message.get('role') == 'user']
-    if user_positions:
-        first_kept = max((pos for pos in user_positions if pos <= first_kept),
-                         default=user_positions[-1])
-    else:
-        # A single exchange cannot be split at a user message: summarize it
-        # all and keep nothing verbatim.
-        first_kept = len(entries)
+    boundary = choose_boundary(entries, keep_tokens=keep_tokens,
+                               transcript_tokens=transcript_tokens)
+    if boundary is None:
+        return None
 
     return CompactionSplit(
-        older_text='\n\n'.join(text for _, text, _ in entries[:first_kept]),
-        recent_text='\n\n'.join(text for _, text, _ in entries[first_kept:]),
-        tokens_before=tokens_before)
+        older_text='\n\n'.join(entry.text for entry in entries[:boundary]),
+        recent_text='\n\n'.join(entry.text for entry in entries[boundary:]),
+        tokens_before=estimate_conversation_tokens(conversation))
 
 
 async def compact_context(
@@ -280,4 +288,3 @@ async def _run_compaction(
         summary=summary,
         tokens_before=split.tokens_before,
         tokens_after=estimate_conversation_tokens(ctx.conversation))
-
