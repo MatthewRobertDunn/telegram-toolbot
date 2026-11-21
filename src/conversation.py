@@ -5,8 +5,12 @@ fresh uuid assigned at construction. Whoever creates a Conversation gets a
 session id for the x-opencode-session header for free - no hashing of
 contents, no id(...) bookkeeping.
 
-The class also owns the small behaviors the message list needs everywhere
-(append helpers, system-prompt head management, token estimation).
+The class owns the message-list behaviors: append helpers, system-prompt
+head management, tool-call pairing, the trims commands need, and the
+endpoint contract check. Concerns that are not the list itself live in
+sibling modules: message-dict accessors (messages), token accounting
+(tokens), transcript rendering (transcript). This module re-exports the
+names those moved because everything already imports it.
 """
 
 import base64
@@ -16,33 +20,19 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-# Rough token estimate: about a quarter token per character.
-TOKENS_PER_CHAR = 0.25
-# What an inline image is assumed to cost before it is dropped.
-IMAGE_TOKEN_ESTIMATE = 1_500
-# Where local-only metadata (e.g. Telegram ids) lives on a raw message
-# dict; never sent to the endpoint (see `to_openai()`).
-CUSTOM = 'custom'
-# Text left behind where an image was pruned.
-IMAGE_PLACEHOLDER = '[image omitted]'
+from messages import (CUSTOM, ConversationMessageType, add_telegram_ids,
+                      is_thinking, message_type_of, set_message_type,
+                      telegram_ids_of, tool_call_ids)
+from tokens import (TOKENS_PER_CHAR, IMAGE_TOKEN_ESTIMATE, token_count,
+                    estimate_conversation_tokens, estimate_message_tokens)
+from transcript import IMAGE_PLACEHOLDER
+
 # How many of the most recent images a conversation holds onto.
 MAX_IMAGES = 8
 
-
-class ConversationMessageType(enum.Enum):
-    """What produced a message, recorded in its custom metadata so
-    commands can re-run the right flow over it (e.g. /regenerate redoing
-    a /impersonation turn instead of answering as usual). Stripped by
-    to_openai() like the rest of the metadata."""
-    IMPERSONATION = 'impersonation'
-    # A turn injected from an agent inbox (subagent report, parent
-    # steering): model-visible as a user turn, but /undo skips it when
-    # looking for the human exchange to remove.
-    AGENT_MESSAGE = 'agent_message'
-    # Model thinking kept for display: role=assistant in the history so
-    # /undo and /regenerate treat it like any assistant turn, but never
-    # sent to the endpoint (see to_openai()).
-    THINKING = 'thinking'
+# Public names that used to be defined here; other branches and tests
+# import them from conversation.
+is_thinking_message = is_thinking
 
 
 class RegenerationAction(enum.Enum):
@@ -52,99 +42,33 @@ class RegenerationAction(enum.Enum):
     IMPERSONATE = 'impersonate'
 
 
-def is_thinking_message(message: dict) -> bool:
-    """Whether a stored message is a kept thinking block: tagged THINKING
-    in its custom metadata. Tag-only on purpose (fail-closed): anything so
-    tagged is display-only and never sent to the endpoint, whatever role it
-    carries. Works for plain dicts and ConversationMessage alike."""
-    return (message.get(CUSTOM) or {}).get('message_type') == \
-        ConversationMessageType.THINKING.value
-
-
-def _tool_call_ids(message: dict) -> set:
-    """Every tool call id a message references: the ids in an assistant
-    message's tool_calls, or a tool result's tool_call_id."""
-    if message.get('role') == 'tool':
-        return {message.get('tool_call_id')} - {None}
-    return {((call or {}).get('id'))
-            for call in message.get('tool_calls') or []} - {None}
-
-
-def estimate_conversation_tokens(conversation) -> int:
-    """Estimated tokens of a whole conversation, images included.
-
-    Thinking blocks are display-only (never sent to the endpoint), so
-    they are excluded like the endpoint excludes them."""
-    return sum(estimate_message_tokens(message) for message in conversation
-               if not is_thinking_message(message))
-
-
-def token_count(text: str) -> int:
-    """Rough token estimate for text: about a quarter token per character."""
-    return int(len(text) * TOKENS_PER_CHAR)
-
-
-def estimate_message_tokens(message: dict) -> int:
-    total = 0
-    content = message.get('content')
-    if isinstance(content, str):
-        total += token_count(content)
-    elif isinstance(content, list):
-        for part in content:
-            if not isinstance(part, dict):
-                continue
-            if part.get('type') == 'text':
-                total += token_count(part.get('text') or '')
-            elif part.get('type') == 'image_url':
-                total += IMAGE_TOKEN_ESTIMATE
-    for tool_call in message.get('tool_calls') or []:
-        function = (tool_call or {}).get('function') or {}
-        total += token_count(function.get('name') or '')
-        total += token_count(function.get('arguments') or '')
-    return total
-
-
 class ConversationMessage(dict):
     """A conversation message: the OpenAI-style dict the endpoint sees,
     plus a helper for the local-only Telegram linkage. Plain dicts stay
     valid wherever a message is only read; `ConversationMessage` is what
     the add_ helpers hand back so callers can attach ids as replies are
-    sent."""
+    sent. Every behavior is the messages accessor of the same name, so a
+    plain dict and a ConversationMessage read identically."""
 
     def add_telegram_message_id(self,
                                 message_ids: int | list[int] | None) -> None:
-        """Link Telegram messages to this conversation message: a single
-        id or a list of them (reply chunks, tool call announcements).
-        Nothing is linked for no ids; everything is stored as a list."""
-        if not message_ids:
-            return
-        if isinstance(message_ids, int):
-            message_ids = [message_ids]
-        self.setdefault(CUSTOM, {}).setdefault(
-            'telegram_message_ids', []).extend(message_ids)
+        """Link Telegram messages to this conversation message."""
+        add_telegram_ids(self, message_ids)
 
     @property
     def telegram_message_ids(self) -> list:
         """The Telegram message ids linked to this message, or []."""
-        return (self.get(CUSTOM) or {}).get('telegram_message_ids') or []
+        return telegram_ids_of(self)
 
     @property
     def message_type(self) -> ConversationMessageType | None:
         """What produced this message (see ConversationMessageType), or
         None when untagged."""
-        raw = (self.get(CUSTOM) or {}).get('message_type')
-        return ConversationMessageType(raw) if raw else None
+        return message_type_of(self)
 
     @message_type.setter
     def message_type(self, value: ConversationMessageType | None) -> None:
-        if value is None:
-            custom = self.get(CUSTOM)
-            if custom is not None:
-                custom.pop('message_type', None)
-                if not custom:
-                    del self[CUSTOM]
-            return
-        self.setdefault(CUSTOM, {})['message_type'] = value.value
+        set_message_type(self, value)
 
 
 @dataclass(eq=False, init=False)
@@ -165,18 +89,22 @@ class Conversation:
 
     messages: list[ConversationMessage] = field(default_factory=list)
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    # Cap on retained inline images. Unannotated, so it stays a plain
-    # class attribute rather than a dataclass field: instances may
-    # shrink it (tests do) without touching the constructor.
-    max_images = MAX_IMAGES
 
     def __init__(self,
                  messages: Iterable[dict | ConversationMessage] | None = None,
-                 id: str | None = None) -> None:
+                 id: str | None = None,
+                 max_images: int = MAX_IMAGES) -> None:
+        if max_images < 1:
+            # A cap of 0 cannot work: _prune_images runs before the
+            # append, so the image being added would always survive and
+            # the cap would silently end at 1.
+            raise ValueError('max_images must be at least 1')
         self.messages = [message if isinstance(message, ConversationMessage)
                          else ConversationMessage(message)
                          for message in (messages or [])]
         self.id = id or uuid.uuid4().hex
+        # Cap on retained inline images (see add_image).
+        self.max_images = max_images
 
     def set_messages(self,
                      messages: Iterable[dict | ConversationMessage]) -> None:
@@ -277,17 +205,17 @@ class Conversation:
         Removal cascades: an assistant message removed for one id drags
         the results of its other parallel calls along, since a call left
         without its results (or vice versa) can't be replayed."""
-        ids = _tool_call_ids(message)
+        ids = tool_call_ids(message)
         removed = []
         while True:
             batch = [message for message in self.messages
-                     if _tool_call_ids(message) & ids
+                     if tool_call_ids(message) & ids
                      and not any(message is old for old in removed)]
             if not batch:
                 break
             removed.extend(batch)
             for message in batch:
-                ids |= _tool_call_ids(message)
+                ids |= tool_call_ids(message)
         if removed:
             self.messages[:] = [message for message in self.messages
                                 if not any(message is old for old in removed)]
@@ -300,7 +228,42 @@ class Conversation:
         return [{key: value for key, value in message.items()
                  if key != CUSTOM}
                 for message in self.messages
-                if not is_thinking_message(message)]
+                if not is_thinking(message)]
+
+    def validate_openai_contract(self) -> list[str]:
+        """Contract problems that would make to_openai() output
+        un-replayable at the endpoint: more than one system message, a
+        system message that is not the head, a tool call left without
+        its results, or a tool result answering no open call.
+
+        Checking is explicit, never automatic: tests and callers (e.g.
+        after a trim or a compaction) invoke this when they want the
+        guarantee - it does not run on the request path. Returns the
+        problems; an empty list means the history is well-formed."""
+        problems: list[str] = []
+        system_positions = [position
+                            for position, message in enumerate(self.messages)
+                            if message.get('role') == 'system']
+        if len(system_positions) > 1:
+            problems.append('more than one system message')
+        elif system_positions and system_positions != [0]:
+            problems.append('system message that is not the head')
+        open_ids: set = set()
+        for position, message in enumerate(self.messages):
+            role = message.get('role')
+            if role == 'assistant':
+                open_ids |= tool_call_ids(message)
+            elif role == 'tool':
+                call_id = message.get('tool_call_id')
+                if call_id in open_ids:
+                    open_ids.discard(call_id)
+                else:
+                    problems.append(
+                        f'message {position}: tool result answers no open '
+                        f'call ({call_id!r})')
+        if open_ids:
+            problems.append(f'unanswered tool calls: {sorted(open_ids)}')
+        return problems
 
     def set_system_head(self, prompt: str) -> ConversationMessage:
         """Put this system prompt at position 0, creating the head if needed.
@@ -341,10 +304,10 @@ class Conversation:
 
     def pop_trailing_thinking(self) -> list:
         """Drop trailing thinking blocks with no answer (a stopped run
-        left them behind) and return them newest-first, so the caller
-        can delete their Telegram posts."""
+        left them behind) and return them newest-first, so the caller can
+        delete their Telegram posts."""
         removed = []
-        while self.messages and is_thinking_message(self.messages[-1]):
+        while self.messages and is_thinking(self.messages[-1]):
             removed.append(self.messages.pop())
         return removed
 
@@ -364,8 +327,8 @@ class Conversation:
         for i, message in enumerate(self.messages):
             if message.get('role') != 'user':
                 continue
-            if (message.get(CUSTOM) or {}).get('message_type') == \
-                    ConversationMessageType.AGENT_MESSAGE.value:
+            if message_type_of(message) is \
+                    ConversationMessageType.AGENT_MESSAGE:
                 continue
             last_user_index = i
         if last_user_index == -1:
@@ -402,8 +365,8 @@ class Conversation:
             removed.extend(self.pop_trailing_thinking())
             return removed, RegenerationAction.ANSWER
         if (last.get('role') == 'user'
-                and (last.get(CUSTOM) or {}).get('message_type')
-                == ConversationMessageType.IMPERSONATION.value):
+                and message_type_of(last)
+                is ConversationMessageType.IMPERSONATION):
             removed.append(self.messages.pop())
             return removed, RegenerationAction.IMPERSONATE
         return removed, RegenerationAction.ANSWER
