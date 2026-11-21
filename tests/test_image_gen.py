@@ -1,4 +1,6 @@
+import asyncio
 import base64
+import contextlib
 import json
 import os
 import sys
@@ -8,17 +10,46 @@ import unittest.mock
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-import requests
+import http_client
 from conversation import Conversation
 from messaging import Messaging
 from tools import image_gen
 from tool_result import ToolCallResult
 from mock_context import mock_ctx
 
+# Config values every provider's credential check looks for; tests patch
+# them all so no test depends on the real environment.
+_CREDENTIALS = dict(
+    NVIDIA_API_KEY='nvidia-key',
+    AI_HORDE_KEY='horde-key',
+    AI_HORDE_API_URL='https://horde.test/api/v2',
+    CLOUDFLARE_ACCOUNT_ID='acct',
+    CLOUDFLARE_API_TOKEN='tok')
+
+
+def _response(body: bytes, content_type: str = 'application/json',
+              status: int = 200,
+              url: str = 'https://unit.test') -> http_client.Response:
+    return http_client.Response(
+        status=status, headers={'Content-Type': content_type},
+        content=body, url=url)
+
+
+@contextlib.contextmanager
+def _configured(**overrides):
+    """Patch the config settings the providers' credential checks read."""
+    values = {**_CREDENTIALS, **overrides}
+    with contextlib.ExitStack() as stack:
+        for attr, value in values.items():
+            stack.enter_context(unittest.mock.patch.object(
+                image_gen.config, attr, value))
+        yield
+
 
 class TestImageGenErrors(unittest.IsolatedAsyncioTestCase):
     # The model only sees the tool result string, so a generation failure has
-    # to carry the endpoint's own error text back to it.
+    # to carry the endpoint's own error text back to it, and every failure
+    # goes through the one truncating formatter.
 
     async def _run(self, error: Exception) -> str:
         async def boom(*args, **kwargs):
@@ -29,19 +60,33 @@ class TestImageGenErrors(unittest.IsolatedAsyncioTestCase):
         return result
 
     async def test_http_error_body_is_returned(self):
-        response = requests.Response()
-        response.status_code = 400
-        response.encoding = 'utf-8'
-        response._content = b'{"detail":"content policy violated"}'
-        result = await self._run(
-            requests.HTTPError('400 Client Error', response=response))
+        result = await self._run(http_client.HttpStatusError(
+            400, 'https://img.test', '{"detail":"content policy violated"}'))
         self.assertEqual(
-            result, 'Failed to generate image: {"detail":"content policy violated"}')
+            result,
+            'Failed to generate image: {"detail":"content policy violated"}')
+
+    async def test_http_error_without_a_body_names_the_status(self):
+        result = await self._run(
+            http_client.HttpStatusError(502, 'https://img.test', ''))
+        self.assertEqual(
+            result, 'Failed to generate image: HTTP 502 from https://img.test')
 
     async def test_generic_error_message_is_returned(self):
-        result = await self._run(RuntimeError('Generation blocked by content filter'))
+        result = await self._run(
+            RuntimeError('Generation blocked by content filter'))
         self.assertEqual(
             result, 'Failed to generate image: Generation blocked by content filter')
+
+    async def test_long_error_text_is_truncated(self):
+        prefix = 'Failed to generate image: '
+        for error in (
+                http_client.HttpStatusError(400, 'https://img.test',
+                                            'x' * (image_gen.MAX_ERROR_CHARS + 1)),
+                RuntimeError('y' * (image_gen.MAX_ERROR_CHARS + 1))):
+            result = await self._run(error)
+            self.assertEqual(len(result),
+                             len(prefix) + image_gen.MAX_ERROR_CHARS)
 
 
 class TestParseResolution(unittest.IsolatedAsyncioTestCase):
@@ -75,7 +120,7 @@ class TestSendToChat(unittest.IsolatedAsyncioTestCase):
 
     async def _run(self, store_error=None, **kwargs):
         async def fake_generate(*args, **_):
-            return base64.b64encode(b'\x89PNG').decode()
+            return b'\x89PNG\r\n\x1a\n'
 
         async def fake_store(user_id, data, name):
             if store_error is not None:
@@ -98,7 +143,7 @@ class TestSendToChat(unittest.IsolatedAsyncioTestCase):
         send.assert_awaited_once()
         call = send.await_args
         assert call is not None
-        self.assertEqual(call.args[0], b'\x89PNG')
+        self.assertEqual(call.args[0], b'\x89PNG\r\n\x1a\n')
         self.assertIn('sent to chat and stored', result)
         self.assertIn(self.STORED_PATH, result)
 
@@ -127,7 +172,7 @@ class TestAttachToContext(unittest.IsolatedAsyncioTestCase):
 
     async def _run(self, **kwargs):
         async def fake_generate(*args, **_):
-            return base64.b64encode(b'\x89PNG').decode()
+            return b'\x89PNG\r\n\x1a\n'
 
         async def fake_store(user_id, data, name):
             return self.STORED_PATH, None
@@ -148,7 +193,7 @@ class TestAttachToContext(unittest.IsolatedAsyncioTestCase):
         result = await self._run(add_to_context=True)
         assert isinstance(result, ToolCallResult)
         assert result.image is not None
-        self.assertEqual(result.image.data, b'\x89PNG')
+        self.assertEqual(result.image.data, b'\x89PNG\r\n\x1a\n')
         self.assertEqual(result.image.mime, 'image/png')
         self.assertIn(self.STORED_PATH, result.text)
 
@@ -162,7 +207,7 @@ class TestSubagentVariant(unittest.IsolatedAsyncioTestCase):
 
     async def _run(self):
         async def fake_generate(*args, **_):
-            return base64.b64encode(b'\x89PNG').decode()
+            return b'\x89PNG\r\n\x1a\n'
 
         async def fake_store(user_id, data, name):
             return self.STORED_PATH, None
@@ -203,7 +248,7 @@ class TestSubagentVariant(unittest.IsolatedAsyncioTestCase):
 
 class TestProviderParam(unittest.IsolatedAsyncioTestCase):
     # The provider parameter selects the image backend; the default is
-    # Cloudflare Phoenix.
+    # NVIDIA FLUX.3.
 
     def test_schema_exposes_provider_for_both_roles(self):
         from tool_registry import PARENT, SUBAGENT, tools_for
@@ -227,11 +272,10 @@ class TestProviderParam(unittest.IsolatedAsyncioTestCase):
     async def test_provider_reaches_the_backend(self):
         seen = {}
 
-        async def fake_generate(prompt, width=1024, height=1024, seed=0,
-                                steps=None, provider='unset',
-                                guidance=None, negative_prompt=None):
+        async def fake_generate(prompt, width=1024, height=1024,
+                                steps=None, provider='unset'):
             seen['provider'] = provider
-            return base64.b64encode(b'\x89PNG').decode()
+            return b'\x89PNG\r\n\x1a\n'
 
         async def fake_store(user_id, data, name):
             return '/workspace/uploads/generated_1.png', None
@@ -247,164 +291,205 @@ class TestProviderParam(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen.get('provider'), 'horde')
 
 
-class TestCloudflareProvider(unittest.IsolatedAsyncioTestCase):
-    # Phoenix params: prompt/width/height/num_steps, plus optional
-    # guidance (2-10), seed and negative_prompt. The endpoint answers
-    # with raw JPEG bytes or with {"result": {"image": "<base64>"}}.
+class TestProviderDispatch(unittest.IsolatedAsyncioTestCase):
+    # generate_image resolves each provider's URL, default steps and
+    # request shape; the render functions own the wire format.
 
-    def _response(self, body: bytes, content_type: str):
-        response = requests.Response()
-        response.status_code = 200
-        response.headers['Content-Type'] = content_type
-        response._content = body
-        response.encoding = 'utf-8'
-        return response
+    def _nvidia_body(self, image: bytes, finish: str = 'SUCCESS') -> bytes:
+        return ('{"artifacts": [%s]}' % json.dumps(
+            {'base64': base64.b64encode(image).decode(),
+             'finishReason': finish})).encode()
 
-    async def _generate(self, response, **kwargs):
-        with unittest.mock.patch.object(
-                image_gen.config, 'CLOUDFLARE_ACCOUNT_ID', 'acct'), \
-             unittest.mock.patch.object(
-                image_gen.config, 'CLOUDFLARE_API_TOKEN', 'tok'), \
-             unittest.mock.patch.object(
-                image_gen.requests, 'post',
-                return_value=response) as post:
-            result = await image_gen._generate_cloudflare('a cat', **kwargs)
-        return result, post
+    async def _post(self, response: http_client.Response, provider: str,
+                    **kwargs) -> tuple[bytes, unittest.mock.AsyncMock]:
+        post = unittest.mock.AsyncMock(return_value=response)
+        with _configured(), \
+             unittest.mock.patch.object(http_client, 'post', post):
+            data = await image_gen.generate_image('a cat', provider=provider,
+                                                  **kwargs)
+        return data, post
 
-    async def test_raw_jpeg_bytes_are_base64_encoded(self):
-        result, post = await self._generate(
-            self._response(b'\xff\xd8\xffdata', 'image/jpeg'))
-        self.assertEqual(result, base64.b64encode(b'\xff\xd8\xffdata').decode())
-        payload = post.call_args.kwargs['json']
-        self.assertEqual(payload['num_steps'], 25)
-        self.assertNotIn('guidance', payload)
-        self.assertNotIn('negative_prompt', payload)
-        self.assertNotIn('seed', payload)
-
-    async def test_json_base64_shape_and_optional_params(self):
-        body = ('{"result": {"image": "%s"}}'
-                % base64.b64encode(b'\xff\xd8\xffdata').decode()).encode()
-        result, post = await self._generate(
-            self._response(body, 'application/json'),
-            steps=30, seed=7, guidance=5,
-            negative_prompt='blurry')
-        self.assertEqual(result, base64.b64encode(b'\xff\xd8\xffdata').decode())
-        payload = post.call_args.kwargs['json']
-        self.assertEqual(payload['num_steps'], 30)
-        self.assertEqual(payload['seed'], 7)
-        self.assertEqual(payload['guidance'], 5)
-        self.assertEqual(payload['negative_prompt'], 'blurry')
-
-    async def test_invalid_steps_and_guidance_rejected(self):
-        response = self._response(b'\xff\xd8\xffdata', 'image/jpeg')
-        with self.assertRaises(ValueError):
-            await self._generate(response, steps=0)
-        with self.assertRaises(ValueError):
-            await self._generate(response, guidance=11)
-
-    async def test_missing_credentials_reported(self):
-        with unittest.mock.patch.object(
-                image_gen.config, 'CLOUDFLARE_ACCOUNT_ID', ''), \
-             unittest.mock.patch.object(
-                image_gen.config, 'CLOUDFLARE_API_TOKEN', 'tok'):
-            with self.assertRaises(RuntimeError):
-                await image_gen._generate_cloudflare('a cat')
-
-    async def test_dispatch_uses_cloudflare_defaults(self):
-        seen = {}
-
-        async def fake_cloudflare(prompt, width=1024, height=1024, seed=0,
-                                  steps=25, guidance=None,
-                                  negative_prompt=None):
-            seen.update(steps=steps, guidance=guidance,
-                        negative_prompt=negative_prompt)
-            return base64.b64encode(b'\xff\xd8\xffdata').decode()
-
-        with unittest.mock.patch.object(image_gen, '_generate_cloudflare',
-                                        fake_cloudflare):
-            result = await image_gen.generate_image(
-                'a cat', provider='cloudflare')
-        self.assertEqual(
-            result, base64.b64encode(b'\xff\xd8\xffdata').decode())
-        self.assertEqual(
-            seen, {'steps': 25, 'guidance': None, 'negative_prompt': None})
-
-
-class TestNvidiaProvider(unittest.IsolatedAsyncioTestCase):
-    # The FLUX-3 NIM endpoint rejects a ``seed`` field (HTTP 422
-    # ``extra_forbidden``), so no seed is ever sent.
-
-    async def test_payload_has_no_seed(self):
-        body = base64.b64encode(b'\x89PNG\r\n\x1a\napple').decode()
-        response = requests.Response()
-        response.status_code = 200
-        response.headers['Content-Type'] = 'application/json'
-        response._content = (
-            ('{"artifacts": [%s]}' % json.dumps(
-                {'base64': body, 'finishReason': 'SUCCESS'})).encode())
-        response.encoding = 'utf-8'
-        with unittest.mock.patch.object(
-                image_gen.requests, 'post',
-                return_value=response) as post:
-            result = await image_gen._generate_nvidia_flux3('an apple')
-        self.assertEqual(result, body)
+    async def test_nvidia_flux3_url_and_default_steps(self):
+        # FLUX-3 renders 50 steps by default and never sends a seed (the
+        # endpoint 422s an extra_forbidden field).
+        image = b'\x89PNG\r\n\x1a\napple'
+        data, post = await self._post(
+            _response(self._nvidia_body(image)), 'nvidia-flux3')
+        self.assertEqual(data, image)
         self.assertEqual(post.call_args.args[0],
                          image_gen.config.IMAGE_GEN_URL)
-        payload = post.call_args.kwargs['json']
-        self.assertEqual(payload['steps'], 50)
-        self.assertNotIn('seed', payload)
+        self.assertEqual(post.call_args.kwargs['json_body'],
+                         {'prompt': 'a cat', 'width': 1024, 'height': 1024,
+                          'steps': 50})
 
-
-class TestNvidiaFlux2Provider(unittest.IsolatedAsyncioTestCase):
-    # FLUX.2-Klein posts to its own NIM URL with prompt/width/height/steps
-    # and no seed (the endpoint 422s on it). Response shape matches the
-    # FLUX-3 endpoint: {"artifacts": [{"base64": ..., "finishReason": ...}]}.
-
-    def _response(self, artifact: dict):
-        response = requests.Response()
-        response.status_code = 200
-        response.headers['Content-Type'] = 'application/json'
-        response._content = (
-            ('{"artifacts": [%s]}' % json.dumps(artifact)).encode())
-        response.encoding = 'utf-8'
-        return response
-
-    async def test_payload_has_no_seed_and_defaults_to_4_steps(self):
-        body = base64.b64encode(b'\x89PNG\r\n\x1a\nfrog').decode()
-        with unittest.mock.patch.object(
-                image_gen.requests, 'post',
-                return_value=self._response(
-                    {'base64': body, 'finishReason': 'SUCCESS'})) as post:
-            result = await image_gen._generate_nvidia_flux2('a frog')
-        self.assertEqual(result, body)
+    async def test_nvidia_flux2_url_and_default_steps(self):
+        # FLUX.2-Klein posts to its own NIM URL with the same payload shape
+        # but a 4-step default.
+        image = b'\x89PNG\r\n\x1a\nfrog'
+        data, post = await self._post(
+            _response(self._nvidia_body(image)), 'nvidia-flux2')
+        self.assertEqual(data, image)
         self.assertEqual(post.call_args.args[0],
                          image_gen.config.NVIDIA_FLUX2_GEN_URL)
-        payload = post.call_args.kwargs['json']
-        self.assertEqual(payload['steps'], 4)
-        self.assertNotIn('seed', payload)
+        self.assertEqual(post.call_args.kwargs['json_body'],
+                         {'prompt': 'a cat', 'width': 1024, 'height': 1024,
+                          'steps': 4})
 
-    async def test_content_filter_raises(self):
-        body = base64.b64encode(b'nope').decode()
-        with unittest.mock.patch.object(
-                image_gen.requests, 'post',
-                return_value=self._response(
-                    {'base64': body, 'finishReason': 'CONTENT_FILTERED'})):
-            with self.assertRaises(RuntimeError):
-                await image_gen._generate_nvidia_flux2('a frog')
+    async def test_nvidia_explicit_steps_are_sent(self):
+        _, post = await self._post(
+            _response(self._nvidia_body(b'\x89PNG\r\n\x1a\nx')),
+            'nvidia-flux3', steps=10)
+        self.assertEqual(post.call_args.kwargs['json_body']['steps'], 10)
 
-    async def test_dispatch_defaults_to_4_steps(self):
-        seen = {}
+    async def test_content_filter_is_rejected(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            await self._post(
+                _response(self._nvidia_body(b'nope', 'CONTENT_FILTERED')),
+                'nvidia-flux2')
+        self.assertIn('content filter', str(ctx.exception))
 
-        async def fake_flux2(prompt, width=1024, height=1024, steps=4):
-            seen['steps'] = steps
-            return 'b64'
+    async def test_cloudflare_defaults_to_25_steps(self):
+        # Phoenix takes the step count as num_steps; without a JSON content
+        # type the raw body bytes are the image.
+        image = b'\xff\xd8\xffdata'
+        data, post = await self._post(
+            _response(image, 'image/jpeg'), 'cloudflare')
+        self.assertEqual(data, image)
+        self.assertEqual(post.call_args.kwargs['json_body'],
+                         {'prompt': 'a cat', 'width': 1024, 'height': 1024,
+                          'num_steps': 25})
 
-        with unittest.mock.patch.object(image_gen, '_generate_nvidia_flux2',
-                                        fake_flux2):
-            result = await image_gen.generate_image(
-                'a frog', provider='nvidia-flux2')
-        self.assertEqual(result, 'b64')
-        self.assertEqual(seen.get('steps'), 4)
+    async def test_cloudflare_json_base64_shape(self):
+        # Other Workers AI models answer with {"result": {"image": ...}}.
+        image = b'\xff\xd8\xffdata'
+        body = ('{"result": {"image": "%s"}}'
+                % base64.b64encode(image).decode()).encode()
+        data, _ = await self._post(_response(body), 'cloudflare')
+        self.assertEqual(data, image)
+
+    async def test_steps_out_of_range_is_rejected(self):
+        for provider in image_gen.IMAGE_PROVIDERS:
+            for steps in (0, 51):
+                with self.assertRaises(ValueError):
+                    await self._post(
+                        _response(self._nvidia_body(b'x')), provider,
+                        steps=steps)
+
+    async def test_unknown_provider_raises(self):
+        with self.assertRaises(ValueError):
+            await image_gen.generate_image('a cat', provider='bogus')
+
+
+class TestProviderCredentials(unittest.IsolatedAsyncioTestCase):
+    # Every backend checks its config up front, not just the ones whose
+    # first implementations happened to.
+
+    async def test_missing_setting_is_reported(self):
+        cases = [('nvidia-flux3', 'NVIDIA_API_KEY'),
+                 ('nvidia-flux2', 'NVIDIA_API_KEY'),
+                 ('horde', 'AI_HORDE_KEY'),
+                 ('cloudflare', 'CLOUDFLARE_ACCOUNT_ID'),
+                 ('cloudflare', 'CLOUDFLARE_API_TOKEN')]
+        for provider, attr in cases:
+            with _configured(**{attr: ''}):
+                with self.assertRaises(RuntimeError) as ctx:
+                    await image_gen.generate_image('a cat',
+                                                   provider=provider)
+            self.assertIn(attr, str(ctx.exception))
+
+class TestHordeProvider(unittest.IsolatedAsyncioTestCase):
+    # Submit + poll + fetch: every wait is an await, so the shared event
+    # loop is never blocked while a generation is queued.
+
+    IMAGE = b'RIFF\x00\x00\x00\x00WEBPdata'
+
+    async def _render(self, *, checks: tuple[dict, ...] = ({'finished': 1},),
+                      generations: list | None = None,
+                      extra_gets: tuple = ()) -> tuple[
+            bytes, unittest.mock.AsyncMock, unittest.mock.AsyncMock]:
+        if generations is None:
+            generations = [{'img': 'data:image/webp;base64,'
+                            + base64.b64encode(self.IMAGE).decode()}]
+        get_responses = [_response(json.dumps(c).encode())
+                         for c in checks]
+        get_responses.append(
+            _response(json.dumps({'generations': generations}).encode()))
+        get_responses.extend(extra_gets)
+        post = unittest.mock.AsyncMock(
+            return_value=_response(b'{"id": "req-1"}'))
+        get = unittest.mock.AsyncMock(side_effect=get_responses)
+        with _configured(), \
+             unittest.mock.patch.object(http_client, 'post', post), \
+             unittest.mock.patch.object(http_client, 'get', get):
+            data = await image_gen.generate_image('a cat', provider='horde')
+        return data, post, get
+
+    async def test_submit_payload_and_awaited_polling(self):
+        # Not finished on the first check: the poll interval is awaited
+        # (shortened here) rather than spun on a blocking request.
+        with unittest.mock.patch.object(image_gen, 'HORDE_POLL_INTERVAL', 0):
+            data, post, get = await self._render(
+                checks=({'finished': 0}, {'finished': 1}))
+        self.assertEqual(data, self.IMAGE)
+        self.assertEqual(post.call_args.args[0],
+                         _CREDENTIALS['AI_HORDE_API_URL'] + '/generate/async')
+        payload = post.call_args.kwargs['json_body']
+        self.assertEqual(payload['params']['steps'], 25)
+        self.assertEqual(payload['params']['n'], 1)
+        self.assertEqual(payload['nsfw'], False)
+        # Three GETs: two checks plus the status fetch.
+        self.assertEqual(get.await_count, 3)
+
+    async def test_image_served_from_a_url_is_downloaded(self):
+        image_get = _response(self.IMAGE, 'image/webp')
+        data, post, get = await self._render(
+            generations=[{'img': 'https://r2.test/img.webp'}],
+            extra_gets=(image_get,))
+        self.assertEqual(data, self.IMAGE)
+        assert get.await_args is not None
+        self.assertEqual(get.await_args.args[0], 'https://r2.test/img.webp')
+
+    async def test_faulted_generation_raises(self):
+        with self.assertRaises(RuntimeError):
+            await self._render(checks=({'finished': 0, 'faulted': True},))
+
+    async def test_no_generations_raises(self):
+        with self.assertRaises(RuntimeError):
+            await self._render(generations=[])
+
+    async def test_malformed_data_uri_is_reported(self):
+        # 'data:' without a comma would previously raise a bare IndexError.
+        with self.assertRaises(RuntimeError) as ctx:
+            await self._render(generations=[{'img': 'data:image/webp'}])
+        self.assertIn('malformed', str(ctx.exception))
+
+    async def test_http_error_from_the_endpoint_carries_the_body(self):
+        post = unittest.mock.AsyncMock(
+            return_value=_response(b'{"message": "not enough kudos"}',
+                                        status=429))
+        with _configured(), \
+             unittest.mock.patch.object(http_client, 'post', post):
+            with self.assertRaises(http_client.HttpStatusError):
+                await image_gen.generate_image('a cat', provider='horde')
+
+
+class TestGenerationDeadline(unittest.IsolatedAsyncioTestCase):
+    # No single generation may run unbounded: the deadline covers the whole
+    # render (submit, polling and any download together).
+
+    async def test_render_overrunning_the_deadline_is_stopped(self):
+        async def slow_post(*args, **kwargs):
+            await asyncio.sleep(5)
+            raise AssertionError('should have been cancelled')
+
+        with _configured(), \
+             unittest.mock.patch.object(image_gen,
+                                        'IMAGE_GENERATION_DEADLINE', 0.05), \
+             unittest.mock.patch.object(http_client, 'post', slow_post):
+            with self.assertRaises(RuntimeError) as ctx:
+                await image_gen.generate_image('a cat',
+                                               provider='nvidia-flux3')
+        self.assertIn('timed out', str(ctx.exception))
 
 
 class TestSniffFormat(unittest.IsolatedAsyncioTestCase):
@@ -421,13 +506,27 @@ class TestSniffFormat(unittest.IsolatedAsyncioTestCase):
             image_gen._sniff_format(b'RIFF\x00\x00\x00\x00WEBP rest'),
             ('webp', 'image/webp'))
 
-    def test_unknown_defaults_to_png(self):
-        self.assertEqual(image_gen._sniff_format(b'\x89PNG'),
-                         ('png', 'image/png'))
+    def test_unknown_container_raises(self):
+        # Guessing PNG for unknown bytes would store undeliverable files
+        # under a lying extension, so it is an explicit error instead.
+        for junk in (b'not an image at all', b'\x89PNG'):
+            with self.assertRaises(ValueError):
+                image_gen._sniff_format(junk)
+
+    async def test_unknown_container_reported_to_the_model(self):
+        async def fake_generate(*args, **_):
+            return b'not an image'
+
+        with unittest.mock.patch.object(image_gen, 'generate_image',
+                                        fake_generate):
+            result = await image_gen.generate_and_send_image(
+                mock_ctx(), 'a cat')
+        assert isinstance(result, str)
+        self.assertIn('unsupported image format', result)
 
     async def test_webp_stored_with_webp_extension_and_mime(self):
         async def fake_generate(*args, **_):
-            return base64.b64encode(b'RIFF\x00\x00\x00\x00WEBPdata').decode()
+            return b'RIFF\x00\x00\x00\x00WEBPdata'
 
         names = []
 
@@ -452,7 +551,7 @@ class TestSniffFormat(unittest.IsolatedAsyncioTestCase):
 
     async def test_webp_sent_as_document_not_photo(self):
         async def fake_generate(*args, **_):
-            return base64.b64encode(b'RIFF\x00\x00\x00\x00WEBPdata').decode()
+            return b'RIFF\x00\x00\x00\x00WEBPdata'
 
         async def fake_store(user_id, data, name):
             return '/workspace/uploads/' + name, None
