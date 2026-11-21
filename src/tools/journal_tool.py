@@ -266,10 +266,11 @@ async def journal_topic_edit(ctx: AgentContext, id: int,
     scope=BOTH,
     description=(
         "Search journal entries by text and topic; the way to recall past "
-        "notes. Newest first by default. Page with cursor (the "
-        "next_cursor id from the previous page); on the first page use "
-        "start (ISO 8601) to begin at a date. Returns up to limit "
-        "entries, plus next_cursor when more exist."),
+        "notes. Newest first by default. All parameters are optional. "
+        "Page with cursor (the next_cursor id from the previous page); "
+        "to start from a date instead, give start (ISO 8601) on a first "
+        "page. Returns up to limit entries, plus next_cursor when more "
+        "exist."),
     parameters={
         "cursor": {
             "type": "integer",
@@ -278,8 +279,9 @@ async def journal_topic_edit(ctx: AgentContext, id: int,
         },
         "start": {
             "type": "string",
-            "description": ("ISO 8601 datetime with timezone; first page "
-                            "only. Inclusive."),
+            "description": ("Optional ISO 8601 datetime with timezone for "
+                            "the first page; inclusive. Cannot be combined "
+                            "with cursor."),
         },
         "query": {
             "type": "string",
