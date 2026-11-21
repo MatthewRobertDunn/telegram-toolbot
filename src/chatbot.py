@@ -61,7 +61,14 @@ async def post_stop(application: Application):
     # The shared aiohttp session outlives any single request, so it needs
     # closing here: otherwise shutdown leaves its connector (and the
     # transport underneath) open for the lifetime of the process.
-    await http_client.aclose()
+    #
+    # PTB awaits post_stop unguarded, before its own shutdown(); an
+    # exception escaping here would skip Bot/Updater shutdown and the
+    # persistence flush, so a failed close must not escape.
+    try:
+        await http_client.aclose()
+    except Exception:
+        logger.warning('Could not close the HTTP session', exc_info=True)
 
 
 def main():

@@ -14,14 +14,12 @@ HELPER_DIR = "/opt/toolbot"
 BASH_OUTPUT_LIMIT = 6000
 MAX_ERROR_CHARS = 500
 
-# The helper protocol version the current helpers emit
-# (toolbot_protocol.py's PROTOCOL_VERSION), and the newest version this
-# code can parse. A missing version field is read as version 1 (helpers
-# from before the protocol existed), and versions up to
-# MAX_HELPER_PROTOCOL_VERSION are accepted - both keep a code-only
-# `pake publish` working against an older sandbox image. Only a helper
-# newer than this code is rejected, with a clear message.
-HELPER_PROTOCOL_VERSION = 1
+# The helpers in sandbox_image emit protocol version 1
+# (toolbot_protocol.py's PROTOCOL_VERSION); a missing version field is
+# read as version 1 (helpers from before the protocol existed), and
+# versions up to MAX_HELPER_PROTOCOL_VERSION are accepted - both keep a
+# code-only `pake publish` working against an older sandbox image. Only a
+# helper newer than this code is rejected, with a clear message.
 MAX_HELPER_PROTOCOL_VERSION = 2
 
 

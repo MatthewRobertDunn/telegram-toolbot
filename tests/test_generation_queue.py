@@ -180,6 +180,46 @@ class TestGenerateResponse(unittest.TestCase):
         self.assertTrue(item.done.is_set())
         self.assertEqual(ran, [], 'abandon must not run the job')
 
+    def test_worker_cancellation_releases_still_queued_items(self):
+        # The second drop path: the worker is cancelled while one job
+        # runs and another waits. The leftover must be released so its
+        # submitter wakes, and its thunk must never run.
+        async def main():
+            ctx = mock_ctx(user_id=5, bot=_Bot())
+            queue = gq.generation_queue(ctx)
+            running = asyncio.Event()
+
+            async def first_job():
+                running.set()
+                await asyncio.sleep(60)
+
+            ran: list = []
+
+            def dropped_thunk():
+                ran.append('built')
+
+                async def job():
+                    pass
+
+                return job()
+
+            driver = asyncio.ensure_future(gq.submit_task(ctx, first_job))
+            await running.wait()
+            queued = gq.WorkItem(ctx=ctx, job=dropped_thunk)
+            queue.put_nowait(queued)
+
+            worker = ctx.generation_worker
+            assert worker is not None
+            worker.cancel()
+            await asyncio.wait_for(driver, 5)
+
+            self.assertTrue(queued.done.is_set())
+            self.assertEqual(ran, [], 'a queued thunk must not run')
+            self.assertTrue(queue.empty())
+            self.assertIsNone(ctx.generation_worker)
+
+        asyncio.run(main())
+
     def test_stop_deletes_orphan_thinking(self):
         async def main():
             ctx = mock_ctx(user_id=5, bot=_Bot(),

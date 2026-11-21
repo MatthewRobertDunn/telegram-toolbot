@@ -258,8 +258,8 @@ class ChatUpdateContext(AgentContext):
         it gets its own ``UserData`` (empty: subagents need no template)
         plus its own ``ThreadData`` holding the subagent's conversation
         and a deepcopy of the parent's effective settings. The
-        parent thread's coordination state - inbox, wakeup flags,
-        conversation epoch, generation queue, subagents - and its sandbox
+        parent thread's coordination state - inbox, conversation epoch,
+        generation queue, subagents - and its sandbox
         read marks are not reachable from here (fresh empty set), which is
         what makes an accidental mutation impossible rather than merely
         discouraged.

@@ -123,6 +123,10 @@ If you don't need the sandbox, you can disable its tools by removing the `tools.
 | `SUBAGENT_MODEL` | *(falls back to the current `/model` setting)* | Optional override for the model used by the `subagent_start` tool |
 | `STREAM_DRAFTS` | `1` | Stream partial replies into the chat as they are generated (`0`/`false`/`off` to disable) |
 | `THINK_SPLIT_MODELS` | `big-pickle` | Comma-separated model IDs whose inline chain-of-thought is split out of the reply text |
+| `TEMPERATURE` | `1.0` | Sampling temperature for chat completions |
+| `TOP_P` | `0.95` | Nucleus sampling probability for chat completions |
+| `API_RETRY_TIME` | `36000` | Wall-clock seconds to keep retrying a failed completion (the router may reroute to another model); `0` disables retries |
+| `API_RETRY_MAX_DELAY` | `300` | Cap, in seconds, on a single retry backoff sleep |
 | `ALLOWED_IDS` | *(none — open to all)* | ⚠️ Comma-separated Telegram user IDs allowed to use the bot; a misspelled/empty value fails open |
 | `STORE_DB_PATH` | `store.db` in the project root | SQLite database shared by memory, user settings and journal |
 | `NVIDIA_API_KEY` | *(falls back to `OPENAI_API_KEY`)* | Key for NVIDIA Flux image generation |
