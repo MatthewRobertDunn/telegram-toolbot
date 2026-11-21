@@ -120,16 +120,15 @@ class TestSkillDiscovery(unittest.TestCase):
         self.assertEqual([s.name for s in skills], ['visible'])
 
     def test_depth_cutoff(self):
-        # The walk does not descend past the sixth directory level:
-        # SKILL.md five levels below the root is found, six is not.
-        deep_five = os.path.join(self.root, 'a', 'b', 'c', 'd')
-        deep_six = os.path.join(deep_five, 'e')
-        _write(os.path.join(deep_five, 'SKILL.md'), SKILL_MD)
-        _write(os.path.join(deep_six, 'SKILL.md'), SKILL_MD)
+        # The walk prunes directories at the sixth level, so a SKILL.md
+        # only at a/b/c/d/e/f is never found. Nothing else is in the
+        # tree, so pruning is the only thing under test here.
+        _write(os.path.join(self.root, 'a', 'b', 'c', 'd', 'e', 'f',
+                            'SKILL.md'), SKILL_MD)
 
         skills = self._load()
 
-        self.assertEqual([s.name for s in skills], ['d'])
+        self.assertEqual(skills, [])
 
     def test_skill_dir_is_not_searched_deeper(self):
         # Reference material inside a skill directory is not offered

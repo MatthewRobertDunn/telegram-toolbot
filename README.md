@@ -124,7 +124,7 @@ If you don't need the sandbox, you can disable its tools by removing the `tools.
 | `STREAM_DRAFTS` | `1` | Stream partial replies into the chat as they are generated (`0`/`false`/`off` to disable) |
 | `THINK_SPLIT_MODELS` | `big-pickle` | Comma-separated model IDs whose inline chain-of-thought is split out of the reply text |
 | `ALLOWED_IDS` | *(none — open to all)* | ⚠️ Comma-separated Telegram user IDs allowed to use the bot; a misspelled/empty value fails open |
-| `STORE_DB_PATH` | `store.db` next to the project root | SQLite database shared by memory, user settings and journal |
+| `STORE_DB_PATH` | `store.db` in the project root | SQLite database shared by memory, user settings and journal |
 | `NVIDIA_API_KEY` | *(falls back to `OPENAI_API_KEY`)* | Key for NVIDIA Flux image generation |
 | `IMAGE_GEN_URL` | `https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux-3-image-klein` | Endpoint for the default `nvidia-flux3` image provider |
 | `NVIDIA_FLUX2_GEN_URL` | `https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b` | NVIDIA FLUX.2-Klein endpoint (`provider: "nvidia-flux2"`) |
@@ -178,8 +178,12 @@ tiers run against an isolated per-run SQLite database: the runner
 (`tests/run.py`) exports `STORE_DB_PATH` to a temporary directory before
 any application module is imported, so the repo's `store.db` is never
 read or created by a test run. A guard also fails immediately if a test
-tries to open the real database. Plain `python -m unittest discover -s
-tests` works too — `tests/__init__.py` applies the same isolation.
+tries to open the real database, and the runner self-checks the
+isolation before discovery. Plain `python -m unittest discover -s
+tests -t .` works too — the `-t .` makes unittest import the `tests`
+package, whose `__init__.py` applies the same isolation (without
+`-t .` the modules load top-level, the package never runs, and the real
+database gets touched).
 
 ## Commands
 

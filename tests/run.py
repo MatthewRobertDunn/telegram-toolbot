@@ -1,6 +1,7 @@
 """Test runner: sets up the isolated test environment, then discovers.
 
-Usage:
+Usage (from any working directory):
+
     python tests/run.py                     # unit tier (tests/)
     python tests/run.py integration_tests   # integration tier
 
@@ -14,9 +15,15 @@ module is imported:
    forbids opening the repo's real databases, and creates the schema.
 2. unittest discovery runs for the requested start directory.
 
-The runner also self-checks the isolation (see ``--check``): if
+The runner also self-checks the isolation (``check_isolation``): if
 ``config.sql_db_path`` ever resolves to the repo database, the run
 fails loudly instead of silently testing against dev data.
+
+Plain unittest discovery works too, but the top-level directory must be
+the repo root so the ``tests`` package (and its isolation) is imported:
+``python -m unittest discover -s tests -t .``. Without ``-t .`` the
+modules load top-level, ``tests/__init__.py`` never runs, and the real
+database gets touched.
 """
 import os
 import sys

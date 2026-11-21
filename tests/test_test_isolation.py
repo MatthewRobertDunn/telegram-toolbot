@@ -105,9 +105,35 @@ class TestRealDatabaseGuard(unittest.TestCase):
 
     def test_relative_path_that_resolves_to_repo_db_raises(self):
         # A test hardcoding the default path with a relative spelling
-        # must be caught too (realpath, not string comparison).
+        # must be caught too (realpath, not string comparison). Relative
+        # paths resolve against the CWD, so pin it to the repo root for
+        # this test — the suite must pass no matter where it launched.
+        old_cwd = os.getcwd()
+        os.chdir(bootstrap._ROOT)
+        self.addCleanup(os.chdir, old_cwd)
         with self.assertRaises(RuntimeError):
             sqlite3.connect('store.db')
+
+    def test_file_uri_spelling_of_repo_db_raises(self):
+        # The guard must not be bypassable by a file:-URI spelling.
+        target = bootstrap.repo_path('store.db').replace('\\', '/')
+        with self.assertRaises(RuntimeError):
+            sqlite3.connect('file:' + target, uri=True)
+        with self.assertRaises(RuntimeError):
+            sqlite3.connect('file:///' + target + '?mode=ro', uri=True)
+
+    def test_file_uri_spelling_of_repo_db_raises_for_aiosqlite(self):
+        import asyncio
+
+        import aiosqlite
+
+        target = bootstrap.repo_path('store.db').replace('\\', '/')
+
+        async def attempt():
+            await aiosqlite.connect('file:///' + target, uri=True)
+
+        with self.assertRaises(RuntimeError):
+            asyncio.run(attempt())
 
     def test_old_integration_test_store_db_raises(self):
         with self.assertRaises(RuntimeError):

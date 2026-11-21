@@ -1,16 +1,18 @@
 """Shared setup for integration tests.
 
 Importing this module establishes the isolated test environment (same
-harness as the unit tier, see ``tests/_bootstrap.py``):
+harness as the unit tier, see ``tests/_bootstrap.py``). Import does
+have one filesystem effect: it creates the isolated per-run temporary
+database (and its schema). What it never touches is the repo's real
+``store.db`` — the old import-time delete/recreate of
+``integration_tests/test_store.db`` is gone, and a guard forbids
+opening any real database.
 
 * ``STORE_DB_PATH`` points at a fresh per-run temporary database
   outside the checkout, so integration tests never touch the repo's
-  ``store.db``. The database file and schema are created lazily on
-  first connect, so importing a test module has no filesystem side
-  effects and parallel runs (one process each) cannot collide.
+  ``store.db``. One directory per process, so parallel runs cannot
+  collide.
 * A guard forbids opening the repo's real databases.
-* The old import-time delete/recreate of
-  ``integration_tests/test_store.db`` is gone.
 
 Test modules import this module for its helpers only::
 

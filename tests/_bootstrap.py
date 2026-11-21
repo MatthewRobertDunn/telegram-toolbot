@@ -5,9 +5,12 @@ application module is imported:
 
 * ``python tests/run.py`` (what ``pake unittest`` / ``pake
   integration_test`` invoke) — explicit setup, then unittest discovery.
-* ``python -m unittest discover -s tests`` — ``tests/__init__.py``
-  calls :func:`setup` when the package is imported.
-* ``python -m unittest discover -s integration_tests`` — each test
+* ``python -m unittest discover -s tests -t .`` (from the repo root) —
+  ``-t .`` makes unittest import test modules as the ``tests`` package,
+  so ``tests/__init__.py`` runs and calls :func:`setup`. Without
+  ``-t .`` modules load top-level, the package never imports, and the
+  isolation never happens.
+* ``python -m unittest discover -s integration_tests -t .`` — each test
   module imports ``bootstrap``, which calls :func:`setup`.
 
 What :func:`setup` does, in order:
@@ -57,9 +60,42 @@ _setup_done = False
 _cleanup_registered = False
 
 
+def _uri_to_path(candidate: str) -> str:
+    """Strip a sqlite ``file:`` URI down to its path part.
+
+    SQLite accepts several spellings — ``file:/abs``, ``file:///abs``,
+    ``file://localhost/abs``, all optionally followed by ``?query`` — so
+    a real database referenced as a URI must not slip past the guard by
+    spelling. Only the path form is handled: percent-encoding of
+    forbidden-path characters is not honoured (none of the real paths
+    contain characters that would need it).
+    """
+    if not candidate.startswith('file:'):
+        return candidate
+    rest = candidate[len('file:'):]
+    if rest.startswith('//'):
+        rest = rest[2:]
+        # file://localhost/... is the same file as /...
+        if rest[:9].casefold() == 'localhost':
+            rest = rest[9:]
+    if (len(rest) >= 3 and rest[0] == '/'
+            and rest[1].isascii() and rest[1].isalpha() and rest[2] == ':'):
+        # file:///C:/... on Windows: drop the leading slash so abspath
+        # treats the drive-qualified path as absolute instead of
+        # drive-relative to the CWD.
+        rest = rest[1:]
+    # The query (e.g. ?mode=ro) is not part of the path.
+    return rest.split('?', 1)[0]
+
+
 def _realpath(path: object) -> str:
-    """Absolute, symlink-resolved, case-normalised path."""
-    return os.path.normcase(os.path.realpath(os.path.abspath(str(path))))
+    """Absolute, symlink-resolved, case-normalised path.
+
+    Accepts plain paths and ``file:`` URI spellings (see
+    :func:`_uri_to_path`).
+    """
+    return os.path.normcase(os.path.realpath(os.path.abspath(
+        _uri_to_path(str(path)))))
 
 
 def repo_path(*parts: str) -> str:
@@ -212,5 +248,8 @@ def setup() -> None:
     _install_connect_guard()
     ensure_schema()
 
-    # Keep expected warnings out of test output; failures still print.
-    logging.disable(logging.CRITICAL)
+    # aiosqlite logs every open/close at DEBUG; pin that one logger to
+    # WARNING so suite output stays readable. The root logger keeps its
+    # default configuration, so warnings from the code under test are
+    # still visible and assertLogs keeps working.
+    logging.getLogger('aiosqlite').setLevel(logging.WARNING)
