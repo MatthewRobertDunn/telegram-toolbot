@@ -11,7 +11,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from handlers import run_llm as run_llm_mod
-from agent_inbox import SubagentInbox, SubagentMessage
+from agent_inbox import (SubagentInbox, SubagentMessage, SubagentStatus,
+                         bump_conversation_epoch, clear_main_inbox,
+                         get_main_inbox)
 from chat_update_context import (AgentContext,
                                  ChatUpdateContext)
 from conversation import Conversation, ConversationMessageType
@@ -70,7 +72,7 @@ class TestInboxDrain(unittest.IsolatedAsyncioTestCase):
         ctx = _ctx()
         inbox = SubagentInbox()
         inbox.put_nowait(SubagentMessage(
-            id='abc', state='finished', description='T',
+            id='abc', state=SubagentStatus.FINISHED, description='T',
             result='done stuff'))
         captured = {}
         with unittest.mock.patch.object(
@@ -189,7 +191,7 @@ class TestSubagentContextWiring(unittest.IsolatedAsyncioTestCase):
         self.assertIs(sub_ctx.conversation, record.conversation)
         self.assertIsNot(sub_ctx.user_data, parent.user_data)
         self.assertEqual(captured['kwargs']['model'], 'sub-m')
-        self.assertEqual(record.status, 'done')
+        self.assertEqual(record.status, SubagentStatus.FINISHED)
         self.assertEqual(record.result, 'done')
 
     async def test_send_to_parent_uses_the_parent_context(self):
@@ -250,7 +252,7 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
 
             stopped = await subagent_stop(ctx, sid)
             self.assertIn('Stopped', stopped)
-            self.assertEqual(record.status, 'stopped')
+            self.assertEqual(record.status, SubagentStatus.STOPPED)
             self.assertIn('already stopped',
                           await subagent_stop(ctx, sid))
             self.assertIn('Error', await subagent_stop(ctx, 'nope'))
@@ -324,69 +326,185 @@ def _fake_bot():
 
 
 class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
+    # Always-enqueue wakeup protocol: every delivery schedules one wakeup
+    # job; there is no "loop active" flag left to leak. The first job
+    # drains the whole inbox, the rest no-op on the empty inbox.
 
     @staticmethod
-    async def _run_job_submit(ctx, job):
-        await job
+    def _draining_run_llm():
+        """A run_llm stand-in that drains the inbox like the real one."""
+        async def fake_run_llm(ctx, **kwargs):
+            inbox = kwargs.get('inbox')
+            if inbox is not None:
+                while True:
+                    try:
+                        message = inbox.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    ctx.conversation.add_user(message.format())
+            return 'ack'
+        return fake_run_llm
 
-    async def test_two_finishers_cause_one_wakeup(self):
+    async def _patch_generation(self, run_llm_mock=None):
         from handlers import generation_queue as gq
-        ctx = _ctx()
-        with unittest.mock.patch.object(
-                gq, 'submit_task',
-                unittest.mock.AsyncMock(
-                    side_effect=self._run_job_submit)) as submit, \
-            unittest.mock.patch.object(
-                gq, 'generate_response',
-                unittest.mock.AsyncMock(return_value=None)) as gen:
-            await subagent_mod._notify_parent(
-                ctx, SubagentMessage(id='x', state='running',
-                                     description='T', result='first done'))
-            # Let the wakeup task run to completion.
-            assert ctx.thread_data.wakeup_task is not None
-            await ctx.thread_data.wakeup_task
-            await subagent_mod._notify_parent(
-                ctx, SubagentMessage(id='x', state='running',
-                                     description='T', result='second done'))
-            wakeup = ctx.thread_data.wakeup_task
-            if wakeup is not None:
-                await wakeup
-        # First notify wakes; the second arrives while the loop is active
-        # (or its mail is drained by the same generation).
-        self.assertTrue(submit.await_count >= 1)
-        self.assertTrue(gen.await_count >= 1)
+        # The worker persists after every job; keep tests off sqlite.
+        saver = unittest.mock.patch.object(
+            gq, 'save_conversation', unittest.mock.AsyncMock())
+        run = unittest.mock.patch.object(
+            gq, 'run_llm', run_llm_mock or self._draining_run_llm())
+        send = unittest.mock.patch.object(
+            Messaging, 'send_message',
+            unittest.mock.AsyncMock(return_value=[1]))
+        return saver, run, send
 
-    async def test_stale_epoch_skips_generation(self):
-        from agent_inbox import bump_conversation_epoch
+    async def test_idle_mail_wakes_the_parent_and_drains_it(self):
         from handlers import generation_queue as gq
         ctx = _ctx()
         get_main_inbox(ctx).put_nowait(SubagentMessage(
-            id='x', state='finished', description='T', result='old report'))
-        with unittest.mock.patch.object(
-                gq, 'submit_task',
-                unittest.mock.AsyncMock(
-                    side_effect=self._run_job_submit)) as submit, \
-            unittest.mock.patch.object(
-                gq, 'generate_response',
-                unittest.mock.AsyncMock(return_value=None)) as gen:
-            bump_conversation_epoch(ctx)  # /start happened meanwhile
+            id='abc', state=SubagentStatus.FINISHED, description='T',
+            result='done stuff'))
+        saver, run, send = await self._patch_generation()
+        with saver, run, send:
             await subagent_mod._wakeup_parent(ctx, epoch=0)
-        submit.assert_awaited_once()
-        gen.assert_not_awaited()
+        # Mail was consumed by a real parent turn.
+        self.assertTrue(get_main_inbox(ctx).empty())
+        users = [m for m in ctx.conversation.messages if m['role'] == 'user']
+        self.assertIn('done stuff', users[0]['content'])
 
-    async def test_wakeup_skipped_when_inbox_empty(self):
+    async def test_busy_mail_queues_behind_the_current_job(self):
         from handlers import generation_queue as gq
         ctx = _ctx()
-        with unittest.mock.patch.object(
-                gq, 'submit_task',
-                unittest.mock.AsyncMock(
-                    side_effect=self._run_job_submit)) as submit, \
-            unittest.mock.patch.object(
-                gq, 'generate_response',
-                unittest.mock.AsyncMock(return_value=None)) as gen:
+        release = asyncio.Event()
+
+        async def blocker():
+            await release.wait()
+
+        async def main():
+            saver, run, send = await self._patch_generation()
+            with saver, run, send:
+                # The parent is busy: its job is in the worker already.
+                busy = asyncio.ensure_future(gq.submit_task(ctx, blocker))
+                await asyncio.sleep(0)
+                get_main_inbox(ctx).put_nowait(SubagentMessage(
+                    id='abc', state=SubagentStatus.FINISHED, description='T',
+                    result='late report'))
+                wakeup = subagent_mod.ensure_parent_wakeup(ctx)
+                await asyncio.sleep(0)  # the wakeup submits its own item
+                release.set()
+                await busy
+                await wakeup
+            # The queued wakeup ran after the busy job and drained the
+            # mail that arrived mid-job.
+            self.assertTrue(get_main_inbox(ctx).empty())
+            users = [m for m in ctx.conversation.messages
+                     if m['role'] == 'user']
+            self.assertIn('late report', users[0]['content'])
+
+        await asyncio.wait_for(main(), 5)
+
+    async def test_five_notifications_drain_without_loss(self):
+        ctx = _ctx()
+        inbox = get_main_inbox(ctx)
+        for i in range(5):
+            inbox.put_nowait(SubagentMessage(
+                id=f's{i}', state=SubagentStatus.FINISHED, description='T',
+                result=f'report {i}'))
+        saver, run, send = await self._patch_generation()
+        with saver, run, send:
+            wakeups = [subagent_mod.ensure_parent_wakeup(ctx)
+                       for _ in range(5)]
+            await asyncio.gather(*wakeups)
+        # Every delivery landed exactly once; the redundant wakeups
+        # no-oped instead of generating again.
+        self.assertTrue(inbox.empty())
+        users = [m for m in ctx.conversation.messages if m['role'] == 'user']
+        self.assertEqual(len(users), 5)
+
+    async def test_redundant_wakeup_jobs_never_send(self):
+        # A wakeup whose mail was already drained must not generate: it
+        # returns before any send or persistence decision.
+        from handlers import generation_queue as gq
+        ctx = _ctx()
+        captured: list = []
+
+        async def fake_submit(ctx, job):
+            captured.append(job)
+
+        run_llm_mock = unittest.mock.AsyncMock(return_value='ack')
+        get_main_inbox(ctx).put_nowait(SubagentMessage(
+            id='abc', state=SubagentStatus.FINISHED, description='T',
+            result='report'))
+        with unittest.mock.patch.object(gq, 'submit_task', fake_submit), \
+                unittest.mock.patch.object(gq, 'run_llm', run_llm_mock):
             await subagent_mod._wakeup_parent(ctx, epoch=0)
-        submit.assert_awaited_once()
-        gen.assert_not_awaited()
+            self.assertEqual(len(captured), 1)
+            # Drain the inbox before the queued job's turn comes up.
+            get_main_inbox(ctx).get_nowait()
+            await captured[0]()
+        run_llm_mock.assert_not_awaited()
+
+    async def test_stale_epoch_skips_entirely(self):
+        from handlers import generation_queue as gq
+        ctx = _ctx()
+        get_main_inbox(ctx).put_nowait(SubagentMessage(
+            id='abc', state=SubagentStatus.FINISHED, description='T',
+            result='old report'))
+        submitted: list = []
+
+        async def fake_submit(ctx, job):
+            submitted.append(job)
+
+        run_llm_mock = unittest.mock.AsyncMock(return_value='ack')
+        with unittest.mock.patch.object(gq, 'submit_task', fake_submit), \
+                unittest.mock.patch.object(gq, 'run_llm', run_llm_mock):
+            # /start bumped the epoch after this wakeup was scheduled.
+            bump_conversation_epoch(ctx)
+            await subagent_mod._wakeup_parent(ctx, epoch=0)
+        self.assertEqual(submitted, [])
+        run_llm_mock.assert_not_awaited()
+
+    async def test_empty_inbox_schedules_nothing(self):
+        from handlers import generation_queue as gq
+        ctx = _ctx()
+        submitted: list = []
+
+        async def fake_submit(ctx, job):
+            submitted.append(job)
+
+        with unittest.mock.patch.object(gq, 'submit_task', fake_submit):
+            await subagent_mod._wakeup_parent(ctx, epoch=0)
+        self.assertEqual(submitted, [])
+
+    async def test_cancel_all_clears_the_inbox(self):
+        ctx = _ctx()
+        inbox = get_main_inbox(ctx)
+        inbox.put_nowait(SubagentMessage(
+            id='abc', state=SubagentStatus.FINISHED, description='T',
+            result='report'))
+        cancel_all_subagents(ctx)
+        # Stale mail is dropped, so any wakeup already queued no-ops on
+        # the empty inbox instead of replying into a reset conversation.
+        # clear_main_inbox drops the queue rather than draining it, so
+        # the installed inbox is a fresh (empty) one - either way the
+        # report mail is gone; assert both facts so a no-op clear cannot
+        # hide behind get_main_inbox's auto-creation.
+        self.assertIsNot(get_main_inbox(ctx), inbox)
+        self.assertTrue(get_main_inbox(ctx).empty())
+
+    async def test_late_steer_to_finished_subagent_is_dropped(self):
+        ctx = _ctx()
+        record = SubagentRecord(id='abc', description='Job',
+                                conversation=Conversation(), parent=ctx)
+        record.finish(SubagentStatus.FINISHED)
+        ctx.thread_data.subagents['abc'] = record
+        with unittest.mock.patch.object(
+                subagent_mod, 'ensure_parent_wakeup') as wake:
+            result = await subagent_steer(ctx, 'abc', 'too late')
+        self.assertIn('Error', result)
+        self.assertTrue(record.inbox.empty())
+        wake.assert_not_called()
+        # And nothing reached the parent inbox either.
+        self.assertTrue(get_main_inbox(ctx).empty())
 
 
 class TestInboxCutoff(unittest.IsolatedAsyncioTestCase):
@@ -402,7 +520,7 @@ class TestInboxCutoff(unittest.IsolatedAsyncioTestCase):
             calls.append(kwargs)
             if len(calls) == 1:
                 inbox.put_nowait(SubagentMessage(
-                    id='xyz', state='finished', description='T',
+                    id='xyz', state=SubagentStatus.FINISHED, description='T',
                     result='done stuff'))
 
             async def stream():
@@ -449,7 +567,8 @@ class TestSubagentLimits(unittest.IsolatedAsyncioTestCase):
         for i in range(MAX_RECORDS):
             subs[f'old{i}'] = SubagentRecord(
                 id=f'old{i}', description='old',
-                conversation=Conversation(), status='done', parent=ctx)
+                conversation=Conversation(),
+                status=SubagentStatus.FINISHED, parent=ctx)
 
         async def hanging(*args, **kwargs):
             await asyncio.sleep(60)
@@ -517,7 +636,7 @@ class TestSubagentListDurations(unittest.IsolatedAsyncioTestCase):
             id='abc123', description='Research',
             conversation=Conversation(), parent=ctx,
             started_at=time.monotonic() - 125)
-        rec.finish('done')
+        rec.finish(SubagentStatus.FINISHED)
         # Pin the end so the assertion is deterministic.
         rec.ended_at = rec.started_at + 125
         ctx.thread_data.subagents = {'abc123': rec}
@@ -597,12 +716,12 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
         send = unittest.mock.AsyncMock(return_value=[9])
         ctx.messaging.send_collapsible = send
         drained = await run_llm_mod._drain_inbox(
-            ctx, conversation, inbox, ctx if announce else None)
+            conversation, inbox, ctx if announce else None)
         return drained, conversation, send
 
     @staticmethod
     def _report(result='report'):
-        return SubagentMessage(id='abc', state='finished',
+        return SubagentMessage(id='abc', state=SubagentStatus.FINISHED,
                                description='Job', result=result)
 
     async def test_receipt_posted_and_linked(self):
@@ -636,7 +755,7 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
 
     async def test_receipt_empty_body_falls_back_to_state(self):
         drained, conversation, send = await self._drain(
-            SubagentMessage(id='abc', state='stopped',
+            SubagentMessage(id='abc', state=SubagentStatus.STOPPED,
                             description='Job'), True)
         self.assertEqual(drained, 1)
         summary, body = send.call_args.args[0], send.call_args.args[1]
@@ -645,7 +764,7 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
 
     async def test_receipt_parent_note_summary(self):
         drained, conversation, send = await self._drain(
-            SubagentMessage(id='parent', state='running',
+            SubagentMessage(id='parent', state=SubagentStatus.RUNNING,
                             result='note'), True)
         self.assertEqual(drained, 1)
         summary, body = send.call_args.args[0], send.call_args.args[1]
@@ -654,7 +773,7 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
 
     async def test_receipt_running_omits_state_suffix(self):
         drained, conversation, send = await self._drain(
-            SubagentMessage(id='abc', state='running',
+            SubagentMessage(id='abc', state=SubagentStatus.RUNNING,
                             description='Job', result='halfway'), True)
         self.assertEqual(drained, 1)
         summary = send.call_args.args[0]
@@ -696,7 +815,7 @@ class TestAgentMessageUndo(unittest.IsolatedAsyncioTestCase):
         # A subagent report arrives and gets answered.
         from agent_inbox import SubagentMessage
         ctx.conversation.add_user(
-            SubagentMessage(id='abc', state='finished',
+            SubagentMessage(id='abc', state=SubagentStatus.FINISHED,
                             description='Job', result='report').format(),
             message_type=ConversationMessageType.AGENT_MESSAGE)
         ctx.conversation.add_assistant('noted')

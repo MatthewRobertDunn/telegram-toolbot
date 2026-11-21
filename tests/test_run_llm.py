@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import os
 import sys
 import unittest
@@ -7,7 +9,9 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+import config
 from handlers import run_llm as run_llm_mod
+from chat_update_context import AgentContext, ThreadData, UserData
 from conversation import Conversation
 from messaging import Messaging
 from mock_context import mock_ctx
@@ -277,6 +281,312 @@ class TestThinkingMessages(unittest.IsolatedAsyncioTestCase):
         send.assert_not_called()
         self.assertFalse(any(is_thinking_message(m)
                              for m in ctx.conversation.messages))
+
+
+class TestToolArgumentJson(unittest.IsolatedAsyncioTestCase):
+    # Malformed model-provided JSON is answered as a tool result (the
+    # model can retry with fixed arguments) instead of killing the
+    # whole queued job.
+
+    async def test_bad_json_becomes_a_tool_result(self):
+        calls: list = []
+        streams = [
+            [_tool_chunk('t', '{not json')],
+            [_chunk('done')],
+        ]
+        tool_defs = [{"type": "function",
+                      "function": {"name": "t", "parameters": {}}}]
+
+        async def fake_tool():
+            return 'unused'
+
+        with unittest.mock.patch.object(
+                run_llm_mod, 'client',
+                _fake_client_calls(calls, streams)), \
+                unittest.mock.patch.object(
+                    run_llm_mod, 'functions_for',
+                    lambda role: {'t': fake_tool}):
+            result = await run_llm_mod.run_llm(
+                mock_ctx(settings=SETTINGS, conversation=[]),
+                tools=tool_defs)
+        # The loop survived and gave the model a chance to fix it.
+        self.assertEqual(result, 'done')
+        self.assertEqual(len(calls), 2)
+        tool_messages = [m for m in calls[1]['messages']
+                         if m.get('role') == 'tool']
+        self.assertEqual(len(tool_messages), 1)
+        self.assertIn("not valid JSON", tool_messages[0]['content'])
+        self.assertIn('call the tool again', tool_messages[0]['content'])
+
+    async def test_unknown_tool_is_reported_not_raised(self):
+        calls: list = []
+        streams = [
+            [_tool_chunk('no_such_tool', '{}')],
+            [_chunk('done')],
+        ]
+        tool_defs = [{"type": "function",
+                      "function": {"name": "no_such_tool", "parameters": {}}}]
+        with unittest.mock.patch.object(
+                run_llm_mod, 'client',
+                _fake_client_calls(calls, streams)), \
+                unittest.mock.patch.object(
+                    run_llm_mod, 'functions_for', lambda role: {}):
+            result = await run_llm_mod.run_llm(
+                mock_ctx(settings=SETTINGS, conversation=[]),
+                tools=tool_defs)
+        self.assertEqual(result, 'done')
+        tool_messages = [m for m in calls[1]['messages']
+                         if m.get('role') == 'tool']
+        self.assertIn('Unknown tool', tool_messages[0]['content'])
+
+
+class _FakeStatusError(Exception):
+    """A stand-in for openai.APIStatusError carrying a status code."""
+
+    def __init__(self, status: int):
+        super().__init__(f'fake status {status}')
+        self.status_code = status
+
+
+class _FakeClock:
+    """Deterministic monotonic clock for retry-budget tests."""
+
+    def __init__(self):
+        self.now = 100.0
+
+    def time(self) -> float:
+        return self.now
+
+
+def _failing_client(errors: list):
+    """A client whose create() raises each error in turn (the last one
+    forever), or consumes a chunk list when the entry is a list."""
+    calls: list = []
+
+    async def create(**kwargs):
+        calls.append(kwargs)
+        error = errors[len(calls) - 1 if len(calls) <= len(errors) else -1]
+        if isinstance(error, BaseException):
+            raise error
+
+        async def stream():
+            for c in error:
+                yield c
+        return stream()
+
+    client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=create)))
+    return client, calls
+
+
+def _completion_cfg() -> run_llm_mod.RunConfig:
+    return run_llm_mod.RunConfig(model='m')
+
+
+class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
+    # The budget is intentionally huge in production (router failover);
+    # these tests fake the clock so no test waits in real time.
+
+    def _patched(self, clock: _FakeClock, sleeps: list):
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+            clock.now += delay
+
+        stack = contextlib.ExitStack()
+        stack.enter_context(unittest.mock.patch.object(
+            run_llm_mod, '_loop_time', clock.time))
+        stack.enter_context(unittest.mock.patch.object(
+            run_llm_mod, '_sleep', fake_sleep))
+        return stack
+
+    async def _run_one(self, errors: list, budget: float,
+                       clock: _FakeClock | None = None):
+        clock = clock or _FakeClock()
+        sleeps: list = []
+        client, calls = _failing_client(errors)
+        with self._patched(clock, sleeps), \
+                unittest.mock.patch.object(run_llm_mod, 'client', client):
+            result = await run_llm_mod._one_completion(
+                _completion_cfg(), Conversation(),
+                SETTINGS,  # type: ignore[arg-type]
+                'm', offer_tools=False,
+                streamer=run_llm_mod.NullDraftSink(),
+                strip_thinking=False, budget=budget)
+        return result, sleeps, clock
+
+    async def test_auth_error_fails_immediately(self):
+        result, sleeps, _ = await self._run_one(
+            [_FakeStatusError(401)], budget=1000)
+        self.assertIsNone(result)
+        # No point waiting out the budget on a 401: rerouting cannot fix
+        # the key.
+        self.assertEqual(sleeps, [])
+
+    async def test_permission_error_fails_immediately(self):
+        result, sleeps, _ = await self._run_one(
+            [_FakeStatusError(403)], budget=1000)
+        self.assertIsNone(result)
+        self.assertEqual(sleeps, [])
+
+    async def test_construction_error_fails_immediately(self):
+        # Fail-fast is scoped to request construction: a bad kwarg or
+        # malformed tool schema reproduces identically forever, so
+        # waiting is pointless.
+        clock = _FakeClock()
+        sleeps: list = []
+        client, calls = _failing_client([_FakeStatusError(502)])
+        with self._patched(clock, sleeps), \
+                unittest.mock.patch.object(run_llm_mod, 'client', client), \
+                unittest.mock.patch.object(
+                    run_llm_mod, '_request_kwargs',
+                    unittest.mock.Mock(
+                        side_effect=TypeError('unexpected kwarg'))):
+            result = await run_llm_mod._one_completion(
+                _completion_cfg(), Conversation(),
+                SETTINGS,  # type: ignore[arg-type]
+                'm', offer_tools=False,
+                streamer=run_llm_mod.NullDraftSink(),
+                strip_thinking=False, budget=1000)
+        self.assertIsNone(result)
+        self.assertEqual(sleeps, [])
+        # The client was never reached: construction failed first.
+        self.assertEqual(calls, [])
+
+    async def test_typeerror_from_the_sdk_or_stream_is_retried(self):
+        # The same exception types arriving after construction - from the
+        # SDK or mid-stream - are presumed transient: a stream ValueError
+        # must not become NO_RESPONSE_MESSAGE with zero retries.
+        result, sleeps, _ = await self._run_one(
+            [TypeError('stream blew up')], budget=1000)
+        self.assertIsNone(result)  # budget ran out, not fail-fast
+        self.assertGreaterEqual(len(sleeps), 3)
+
+    async def test_zero_or_negative_budget_means_no_retries(self):
+        # A misconfigured (<= 0) api_retry_time must not turn into an
+        # unbounded retry loop: one attempt runs, the first failure
+        # gives up.
+        result, sleeps, _ = await self._run_one(
+            [_FakeStatusError(502)], budget=0)
+        self.assertIsNone(result)
+        # No sleep at all: the failure was recognized as terminal at
+        # once, not as the start of another wait.
+        self.assertEqual(sleeps, [])
+
+    async def test_server_errors_retry_until_budget_spent(self):
+        result, sleeps, clock = await self._run_one(
+            [_FakeStatusError(500)], budget=10)
+        self.assertIsNone(result)
+        # Retried (not given up on the first error), and only until the
+        # wall-clock budget ran out.
+        self.assertGreaterEqual(len(sleeps), 3)
+        self.assertGreaterEqual(clock.now, 110.0)
+
+    async def test_backoff_is_clamped_to_the_max_delay(self):
+        clock = _FakeClock()
+        sleeps: list = []
+        client, _ = _failing_client([_FakeStatusError(429)])
+        with self._patched(clock, sleeps), \
+                unittest.mock.patch.object(
+                    run_llm_mod, '_retry_max_delay', lambda: 3.0), \
+                unittest.mock.patch.object(run_llm_mod, 'client', client):
+            result = await run_llm_mod._one_completion(
+                _completion_cfg(), Conversation(),
+                SETTINGS,  # type: ignore[arg-type]
+                'm', offer_tools=False,
+                streamer=run_llm_mod.NullDraftSink(),
+                strip_thinking=False, budget=100)
+        self.assertIsNone(result)
+        # 1.2x growth with a hard per-sleep cap.
+        self.assertLessEqual(max(sleeps), 3.0)
+        self.assertIn(3.0, sleeps)
+
+    async def test_cancellation_interrupts_the_retry_sleep(self):
+        # subagent_stop / /stop cancel the task; the cancellation must
+        # come out of the retry loop immediately, not be swallowed as a
+        # retryable failure.
+        clock = _FakeClock()
+        sleeps: list = []
+        client, _ = _failing_client([_FakeStatusError(502)])
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+            clock.now += delay
+            raise asyncio.CancelledError
+
+        with unittest.mock.patch.object(run_llm_mod, '_loop_time',
+                                        clock.time), \
+                unittest.mock.patch.object(run_llm_mod, '_sleep',
+                                           fake_sleep), \
+                unittest.mock.patch.object(run_llm_mod, 'client', client):
+            with self.assertRaises(asyncio.CancelledError):
+                await run_llm_mod._one_completion(
+                    _completion_cfg(), Conversation(),
+                    SETTINGS,  # type: ignore[arg-type]
+                    'm', offer_tools=False,
+                    streamer=run_llm_mod.NullDraftSink(),
+                    strip_thinking=False, budget=1000)
+        # It was mid-retry (at least one sleep) when the stop landed.
+        self.assertGreaterEqual(len(sleeps), 1)
+
+    async def test_budget_is_the_same_for_both_context_kinds(self):
+        # One budget for everyone: the "subagents retry forever" design
+        # is deferred until subagent state is persisted/resumable, so a
+        # silent AgentContext must not get special treatment here. Both
+        # kinds run the real retry loop and stop at the same configured
+        # budget with the same number of attempts.
+        budget = 5.0
+        attempts: dict[str, int] = {}
+
+        async def run_until_spent(kind: str, ctx) -> None:
+            client, calls = _failing_client([_FakeStatusError(502)])
+            clock = _FakeClock()
+            sleeps: list = []
+            with unittest.mock.patch.object(config, 'api_retry_time',
+                                            budget), \
+                    unittest.mock.patch.object(run_llm_mod, '_loop_time',
+                                               clock.time), \
+                    unittest.mock.patch.object(run_llm_mod, '_sleep',
+                                               _advance(clock, sleeps)), \
+                    unittest.mock.patch.object(run_llm_mod, 'client',
+                                               client):
+                result = await run_llm_mod.run_llm(ctx)
+            attempts[kind] = len(calls)
+            self.assertIs(result, run_llm_mod.NO_RESPONSE_MESSAGE)
+            # The stop was budget-driven: the clock ran past the budget,
+            # and more than one attempt was made.
+            self.assertGreaterEqual(clock.now - 100.0, budget)
+            self.assertGreater(len(calls), 1)
+
+        await run_until_spent('interactive',
+                              mock_ctx(settings=SETTINGS, conversation=[]))
+        agent = AgentContext(
+            user_id=1, user_data=UserData(),
+            thread_data=ThreadData(  # type: ignore[arg-type]
+                conversation=Conversation(),
+                settings=SETTINGS))  # type: ignore[arg-type]
+        await run_until_spent('subagent', agent)
+        self.assertEqual(attempts['interactive'], attempts['subagent'])
+
+    async def test_run_llm_returns_no_response_when_budget_spent(self):
+        ctx = mock_ctx(settings=SETTINGS, conversation=[])
+        sleeps: list = []
+        clock = _FakeClock()
+        client, _ = _failing_client([_FakeStatusError(500)])
+        with unittest.mock.patch.object(run_llm_mod, '_loop_time',
+                                        clock.time), \
+                unittest.mock.patch.object(run_llm_mod, '_sleep',
+                                           _advance(clock, sleeps)), \
+                unittest.mock.patch.object(run_llm_mod, 'client', client), \
+                unittest.mock.patch.object(config, 'api_retry_time', 5):
+            result = await run_llm_mod.run_llm(ctx)
+        self.assertEqual(result, run_llm_mod.NO_RESPONSE_MESSAGE)
+
+
+def _advance(clock: _FakeClock, sleeps: list):
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+        clock.now += delay
+    return fake_sleep
 
 
 if __name__ == '__main__':

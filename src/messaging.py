@@ -125,29 +125,47 @@ class Messaging:
                     message_ids.append(message.message_id)
         return message_ids
 
-    async def send_preformatted_message(self, text: str) -> None:
+    async def send_preformatted_message(self, text: str) -> list[int]:
+        """Send monospaced text (e.g. /memory dumps) chunked to fit.
+
+        Returns the message ids of every posted chunk, like send_message.
+        """
         overhead = len("<pre></pre>")
-        chunk_len = MAX_MSG_LEN - overhead
+        chunk_len = max(1, MAX_MSG_LEN - overhead)
+        message_ids = []
         for chunk in _split_at_linebreak(text, chunk_len):
-            await self._ctx.bot.send_message(
+            message = await self._ctx.bot.send_message(
                 chat_id=self._ctx.chat_id,
                 text=f"<pre>{html.escape(chunk)}</pre>",
                 parse_mode="HTML",
                 message_thread_id=self._ctx.message_thread_id,
             )
+            if getattr(message, 'message_id', None) is not None:
+                message_ids.append(message.message_id)
+        return message_ids
 
-    async def send_image(self, photo: bytes, caption: str = "") -> None:
-        await self._ctx.bot.send_photo(
+    async def send_image(self, photo: bytes, caption: str = "") -> list[int]:
+        """Post a photo. Returns its message id, so the caller can link it
+        to the conversation turn it belongs to."""
+        message = await self._ctx.bot.send_photo(
             chat_id=self._ctx.chat_id,
             photo=photo,
             caption=caption,
             message_thread_id=self._ctx.message_thread_id,
         )
+        if getattr(message, 'message_id', None) is None:
+            return []
+        return [message.message_id]
 
-    async def send_document(self, document: bytes, filename: str) -> None:
-        await self._ctx.bot.send_document(
+    async def send_document(self, document: bytes,
+                            filename: str) -> list[int]:
+        """Post a file. Returns its message id, like send_image."""
+        message = await self._ctx.bot.send_document(
             chat_id=self._ctx.chat_id, document=document, filename=filename,
             message_thread_id=self._ctx.message_thread_id)
+        if getattr(message, 'message_id', None) is None:
+            return []
+        return [message.message_id]
 
     async def delete_message(self, message_id: int) -> None:
         await self._ctx.bot.delete_message(self._ctx.chat_id, message_id)
@@ -166,6 +184,14 @@ class Messaging:
             await asyncio.sleep(5)
 
     async def run_with_typing(self, coro):
+        """Run coro with a typing indicator until it finishes.
+
+        The indicator task is cancelled and then reaped through gather:
+        cancelling alone would leave it un-reaped, and awaiting it
+        directly would raise its CancelledError here and mask whatever
+        the wrapped coroutine did (including a /stop cancellation it must
+        propagate - see generate_response).
+        """
         typing_stop = asyncio.Event()
         typing_task = asyncio.create_task(
             self._send_typing_periodically(typing_stop))
@@ -173,16 +199,29 @@ class Messaging:
             return await coro
         finally:
             typing_stop.set()
-            await typing_task
+            typing_task.cancel()
+            await asyncio.gather(typing_task, return_exceptions=True)
 
 
 def _split_at_linebreak(text: str, limit: int) -> list[str]:
+    """Split into chunks of at most ``limit`` chars, preferring line breaks.
+
+    A degenerate limit (0 or negative) would spin forever - no chunking
+    could ever shrink the text - so anything that cannot make progress is
+    returned whole instead of hanging the bot. Chunks are never empty: a
+    text starting with a newline would otherwise yield a blank leading
+    chunk and post an empty message.
+    """
+    if limit <= 0 or len(text) <= limit:
+        return [text] if text else []
     chunks = []
     while len(text) > limit:
         break_at = text.rfind("\n", 0, limit)
         if break_at == -1:
             break_at = limit
-        chunks.append(text[:break_at])
+        chunk = text[:break_at]
+        if chunk:
+            chunks.append(chunk)
         text = text[break_at:]
         if text.startswith("\n"):
             text = text[1:]

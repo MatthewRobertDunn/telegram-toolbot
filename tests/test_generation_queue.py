@@ -3,13 +3,17 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from conversation import CUSTOM, Conversation
+from agent_inbox import SubagentInbox, SubagentMessage, SubagentStatus, \
+    get_main_inbox
 from handlers import generation_queue as gq
+from messaging import Messaging, _split_at_linebreak
 from mock_context import mock_ctx
 
 
@@ -31,6 +35,9 @@ def tearDownModule():
 class _Bot:
     def __init__(self):
         self.sent: list = []
+        self.send_chat_action: Any = mock.AsyncMock()
+        self.send_photo: Any = mock.AsyncMock()
+        self.send_document: Any = mock.AsyncMock()
 
     async def send_message(self, chat_id, text, **kwargs):
         self.sent.append(text)
@@ -123,9 +130,45 @@ class TestGenerateResponse(unittest.TestCase):
         async def after():
             order.append('ran')
 
-        asyncio.run(gq.submit_task(ctx, boom()))
-        asyncio.run(gq.submit_task(ctx, after()))
+        # The worker keeps going; the submitter of the failed job is the
+        # one who sees the error now.
+        with self.assertRaises(RuntimeError):
+            asyncio.run(gq.submit_task(ctx, boom))
+        asyncio.run(gq.submit_task(ctx, after))
         self.assertEqual(order, ['ran'])
+
+    def test_submit_task_reraises_the_job_error(self):
+        ctx = mock_ctx(user_id=5, bot=_Bot())
+
+        async def boom():
+            raise ValueError('nope')
+
+        with self.assertRaises(ValueError):
+            asyncio.run(gq.submit_task(ctx, boom))
+
+    def test_legacy_eager_coroutine_jobs_still_work(self):
+        # conversation_handlers builds its coroutines in the call
+        # expression; submit_task wraps them so they still run once and
+        # are closed properly if dropped.
+        ctx = mock_ctx(user_id=5, bot=_Bot())
+        ran: list = []
+
+        async def job():
+            ran.append('x')
+
+        asyncio.run(gq.submit_task(ctx, job()))
+        self.assertEqual(ran, ['x'])
+
+    def test_abandon_closes_the_eager_coroutine(self):
+        ctx = mock_ctx(user_id=5, bot=_Bot())
+        coro = asyncio.sleep(0)
+        item = gq.WorkItem(ctx=ctx, job=lambda: coro, _pending=coro)
+        item.abandon()
+        self.assertTrue(item.done.is_set())
+        self.assertIsNone(item._pending)
+        # Closure is observable: a closed coroutine releases its frame,
+        # so the dropped job can never be awaited or warn about it.
+        self.assertIsNone(coro.cr_frame)
 
     def test_stop_deletes_orphan_thinking(self):
         async def main():
@@ -167,7 +210,8 @@ class TestStopCommand(unittest.TestCase):
         from handlers.command_handlers import stop_command
         bot = _Bot()
         ctx = mock_ctx(user_id=5, bot=bot)
-        items = [gq.WorkItem(ctx=ctx, job=asyncio.sleep(0)) for _ in range(2)]
+        items = [gq.WorkItem(ctx=ctx, job=lambda: asyncio.sleep(0))
+                 for _ in range(2)]
         for item in items:
             gq.generation_queue(ctx).put_nowait(item)
 
@@ -183,6 +227,210 @@ class TestStopCommand(unittest.TestCase):
         ctx = mock_ctx(user_id=5, bot=bot)
         asyncio.run(stop_command(ctx))
         self.assertIn('No response', bot.sent[-1])
+
+
+class TestMessagingTyping(unittest.IsolatedAsyncioTestCase):
+    # run_with_typing must reap its typing task without swallowing what
+    # the wrapped coroutine did (an exception, or a /stop cancellation).
+
+    def _ctx(self):
+        bot = _Bot()
+        return mock_ctx(user_id=5, bot=bot)
+
+    async def test_returns_the_coroutine_result(self):
+        ctx = self._ctx()
+
+        async def ok():
+            # Yield once so the typing task gets its first send in.
+            await asyncio.sleep(0)
+            return 'value'
+
+        self.assertEqual(await ctx.messaging.run_with_typing(ok()), 'value')
+        bot = ctx.bot
+        assert isinstance(bot, _Bot)
+        assert isinstance(bot.send_chat_action, mock.AsyncMock)
+        bot.send_chat_action.assert_awaited()
+
+    async def test_wrapped_exception_propagates(self):
+        ctx = self._ctx()
+
+        async def boom():
+            raise RuntimeError('inner')
+
+        with self.assertRaises(RuntimeError):
+            await ctx.messaging.run_with_typing(boom())
+        # The typing task was reaped: nothing but this test task remains.
+        leftover = [t for t in asyncio.all_tasks()
+                    if t is not asyncio.current_task() and not t.done()]
+        self.assertEqual(leftover, [])
+
+    async def test_cancellation_propagates(self):
+        ctx = self._ctx()
+
+        async def hang():
+            await asyncio.sleep(60)
+
+        task = asyncio.ensure_future(ctx.messaging.run_with_typing(hang()))
+        await asyncio.sleep(0)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        leftover = [t for t in asyncio.all_tasks()
+                    if t is not asyncio.current_task() and not t.done()]
+        self.assertEqual(leftover, [])
+
+
+class TestMessagingReturnShapes(unittest.IsolatedAsyncioTestCase):
+    # The chat-posting helpers all return the posted message ids, so the
+    # caller can link them to the conversation turn (/undo, /retry).
+
+    def _bot(self):
+        bot = _Bot()
+        photo = bot.send_photo
+        document = bot.send_document
+        assert isinstance(photo, mock.AsyncMock)
+        assert isinstance(document, mock.AsyncMock)
+        photo.return_value = SimpleNamespace(message_id=11)
+        document.return_value = SimpleNamespace(message_id=12)
+        return bot
+
+    async def test_preformatted_returns_ids(self):
+        ctx = mock_ctx(user_id=5, bot=self._bot())
+        ids = await ctx.messaging.send_preformatted_message('hello')
+        self.assertEqual(ids, [7])
+
+    async def test_image_returns_id(self):
+        ctx = mock_ctx(user_id=5, bot=self._bot())
+        self.assertEqual(await ctx.messaging.send_image(b'png'), [11])
+
+    async def test_document_returns_id(self):
+        ctx = mock_ctx(user_id=5, bot=self._bot())
+        self.assertEqual(
+            await ctx.messaging.send_document(b'pdf', 'f.pdf'), [12])
+
+
+class TestSplitAtLinebreak(unittest.TestCase):
+
+    def test_degenerate_limit_makes_progress(self):
+        # limit <= 0 used to spin forever; it now returns the text whole.
+        self.assertEqual(_split_at_linebreak('abc', 0), ['abc'])
+        self.assertEqual(_split_at_linebreak('abc', -5), ['abc'])
+
+    def test_leading_newline_produces_no_empty_chunk(self):
+        self.assertEqual(_split_at_linebreak('\nabc', 3), ['abc'])
+        self.assertEqual(_split_at_linebreak('a\n\nb', 1), ['a', 'b'])
+
+    def test_splits_without_newlines(self):
+        self.assertEqual(_split_at_linebreak('abcdef', 4), ['abcd', 'ef'])
+
+    def test_prefers_line_breaks(self):
+        self.assertEqual(_split_at_linebreak('ab\ncdef', 4), ['ab', 'cdef'])
+
+    def test_short_and_empty_text(self):
+        self.assertEqual(_split_at_linebreak('ab', 10), ['ab'])
+        self.assertEqual(_split_at_linebreak('', 10), [])
+
+
+SETTINGS = SimpleNamespace(
+    show_tool_output=False, model='m', temperature=1.0, top_p=0.95,
+    thinking_keep=False)
+
+
+class TestStopLeavesInboxConsistent(unittest.IsolatedAsyncioTestCase):
+    # Drain ordering: the turn is committed to the conversation and the
+    # message consumed from the inbox in one synchronous step, so a stop
+    # can neither lose the message nor duplicate it.
+
+    async def test_stop_after_drain_keeps_the_turn_answerable(self):
+        from handlers import run_llm as run_llm_mod
+        ctx = mock_ctx(user_id=5, bot=_Bot(), conversation=[],
+                       settings=SETTINGS)
+        conversation = ctx.conversation
+        inbox = get_main_inbox(ctx)
+        inbox.put_nowait(SubagentMessage(
+            id='abc', state=SubagentStatus.FINISHED, description='T',
+            result='the report'))
+        # The drain (what run_llm does at the top of every iteration)...
+        await run_llm_mod._drain_inbox(conversation, inbox)
+        self.assertTrue(inbox.empty())
+        # ...then a /stop cancels the run: the committed turn survives.
+        users = [m for m in conversation.messages if m['role'] == 'user']
+        self.assertEqual(len(users), 1)
+        self.assertIn('the report', users[0]['content'])
+        # And the next request (/retry) answers it - the turn is in the
+        # history the model sees.
+        with mock.patch.object(gq, 'run_llm',
+                               mock.AsyncMock(return_value='ack')):
+            await gq.generate_response(ctx)
+        self.assertEqual(conversation.messages[-1]['content'], 'ack')
+
+    async def test_stop_before_drain_keeps_mail_for_the_next_run(self):
+        from handlers import run_llm as run_llm_mod
+        ctx = mock_ctx(user_id=5, bot=_Bot(), conversation=[],
+                       settings=SETTINGS)
+        inbox = get_main_inbox(ctx)
+        inbox.put_nowait(SubagentMessage(
+            id='abc', state=SubagentStatus.FINISHED, description='T',
+            result='queued report'))
+
+        # /stop lands before the run even starts: the task is cancelled
+        # before its first step, so no drain happened at all.
+        task = asyncio.ensure_future(run_llm_mod.run_llm(ctx, inbox=inbox))
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        # Not lost: still queued for the next turn.
+        self.assertFalse(inbox.empty())
+        self.assertEqual([m for m in ctx.conversation.messages
+                          if m['role'] == 'user'], [])
+        with mock.patch.object(
+                run_llm_mod, 'client',
+                SimpleNamespace(chat=SimpleNamespace(
+                    completions=SimpleNamespace(
+                        create=_create_ok_stream)))):
+            result = await run_llm_mod.run_llm(ctx, inbox=inbox)
+        self.assertEqual(result, 'ok')
+        self.assertTrue(inbox.empty())
+        self.assertIn('queued report',
+                      [m['content'] for m in ctx.conversation.messages
+                       if m['role'] == 'user'][0])
+
+    async def test_stop_mid_run_after_drain_keeps_the_turn(self):
+        # Cancellation during the completion (after the top-of-loop
+        # drain): the turn stays committed, the inbox is empty, and the
+        # next request answers the turn.
+        from handlers import run_llm as run_llm_mod
+        ctx = mock_ctx(user_id=5, bot=_Bot(), conversation=[],
+                       settings=SETTINGS)
+        inbox = get_main_inbox(ctx)
+        inbox.put_nowait(SubagentMessage(
+            id='abc', state=SubagentStatus.FINISHED, description='T',
+            result='queued report'))
+
+        async def cancelled_create(**kwargs):
+            raise asyncio.CancelledError
+
+        with mock.patch.object(run_llm_mod, 'client', SimpleNamespace(
+                chat=SimpleNamespace(
+                    completions=SimpleNamespace(
+                        create=cancelled_create)))):
+            with self.assertRaises(asyncio.CancelledError):
+                await run_llm_mod.run_llm(ctx, inbox=inbox)
+        self.assertTrue(inbox.empty())
+        users = [m for m in ctx.conversation.messages if m['role'] == 'user']
+        self.assertEqual(len(users), 1)
+        self.assertIn('queued report', users[0]['content'])
+
+
+def _create_ok_stream(**kwargs):
+    async def create(**_kwargs):
+        async def stream():
+            yield SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content='ok', reasoning_content=None, tool_calls=None),
+                finish_reason=None)])
+        return stream()
+    return create(**kwargs)
 
 
 if __name__ == '__main__':
