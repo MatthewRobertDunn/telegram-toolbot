@@ -224,9 +224,7 @@ class RunConfig:
 
     @property
     def offer_tools(self) -> bool:
-        """Whether tools were offered this run: ``tools`` given and
-        non-empty. A property, not a field, so it cannot drift from
-        ``tools``."""
+        """Whether tools were offered this run."""
         return self.tools is not None and len(self.tools) > 0
 
 
