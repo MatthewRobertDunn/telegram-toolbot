@@ -213,8 +213,6 @@ class RunConfig:
     # constructor passes it by keyword.
     conversation: Conversation
     model: str | None = None
-    reasoning_effort: str | None = None
-    extra_body: dict | None = None
     tools: list[dict] | None = None
     inbox: SubagentInbox | None = None
     stream_drafts: bool = True
@@ -288,10 +286,6 @@ def _request_kwargs(cfg: RunConfig, settings: UserSettings) -> dict:
     if cfg.offer_tools:
         create_kwargs["tools"] = cfg.tools  # type: ignore
         create_kwargs["tool_choice"] = "auto"
-    if cfg.reasoning_effort is not None:
-        create_kwargs["reasoning_effort"] = cfg.reasoning_effort
-    if cfg.extra_body is not None:
-        create_kwargs["extra_body"] = cfg.extra_body
     return create_kwargs
 
 
@@ -423,8 +417,6 @@ async def _dispatch_tool_calls(ctx: AgentContext,
 
 async def run_llm(ctx: AgentContext,
                   model: str | None = None,
-                  reasoning_effort: str | None = None,
-                  extra_body: dict | None = None,
                   conversation: Conversation | None = None,
                   tools: list[dict] | None = None,
                   inbox: SubagentInbox | None = None,
@@ -454,8 +446,7 @@ async def run_llm(ctx: AgentContext,
     """
     conversation = (conversation if conversation is not None
                     else ctx.conversation)
-    cfg = RunConfig(model=model, reasoning_effort=reasoning_effort,
-                    extra_body=extra_body, conversation=conversation,
+    cfg = RunConfig(model=model, conversation=conversation,
                     tools=tools, inbox=inbox, stream_drafts=stream_drafts,
                     announce_tools=announce_tools)
     settings = ctx.settings
