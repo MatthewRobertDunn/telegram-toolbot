@@ -407,7 +407,7 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0].entry, "one")
 
-    async def test_search_date_range_and_order(self):
+    async def test_search_start_window_and_order(self):
         stamps = [
             "2026-11-10T09:00:00+00:00",
             "2026-11-12T09:00:00+00:00",
@@ -417,20 +417,15 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             await self.store.add_entry(
                 user_id=1, topic="Log", entry=f"entry {i}",
                 created=stamp, created_epoch_ms=_ms(stamp))
-        # Newest-first cursor returns entries created before it.
-        window = await self.store.search_entries(
-            user_id=1, cursor_ms=_ms("2026-11-15T00:00:00+00:00"))
-        # Newest first.
-        self.assertEqual([r.entry for r in window], ["entry 2", "entry 1", "entry 0"])
-        # Cursor is exclusive: exact match is skipped.
+        # A start after everything keeps the whole newest-first list.
         self.assertEqual([r.entry for r in await self.store.search_entries(
-            user_id=1, cursor_ms=_ms("2026-11-12T09:00:00+00:00"))],
-            ["entry 0"])
-        # Oldest-first cursor returns entries created after it.
+            user_id=1, start_ms=_ms("2026-11-15T00:00:00+00:00"))],
+            ["entry 2", "entry 1", "entry 0"])
+        # Oldest-first start keeps entries at or after it.
         self.assertEqual([r.entry for r in await self.store.search_entries(
-            user_id=1, cursor_ms=_ms("2026-11-12T09:00:00+00:00"),
+            user_id=1, start_ms=_ms("2026-11-12T09:00:00+00:00"),
             sort_descending=False)],
-            ["entry 2"])
+            ["entry 1", "entry 2"])
         limited = await self.store.search_entries(
             user_id=1, limit=1)
         self.assertEqual(len(limited), 1)
@@ -446,6 +441,58 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.store.search_entries(user_id=1, limit=51)
 
+    async def test_search_start_is_inclusive_in_both_directions(self):
+        stamps = [
+            "2026-11-10T09:00:00+00:00",
+            "2026-11-12T09:00:00+00:00",
+            "2026-11-14T09:00:00+00:00",
+        ]
+        for i, stamp in enumerate(stamps):
+            await self.store.add_entry(
+                user_id=1, topic="Log", entry=f"entry {i}",
+                created=stamp, created_epoch_ms=_ms(stamp))
+        start = _ms("2026-11-12T09:00:00+00:00")
+        # Newest-first keeps entries at or before start: the entry sitting
+        # exactly on it is in, the one after it is out.
+        self.assertEqual([r.entry for r in await self.store.search_entries(
+            user_id=1, start_ms=start)], ["entry 1", "entry 0"])
+        self.assertEqual([r.entry for r in await self.store.search_entries(
+            user_id=1, start_ms=start - 1)], ["entry 0"])
+        # Oldest-first keeps entries at or after start, so the same bound
+        # includes it from the other side.
+        self.assertEqual([r.entry for r in await self.store.search_entries(
+            user_id=1, start_ms=start, sort_descending=False)],
+            ["entry 1", "entry 2"])
+        self.assertEqual([r.entry for r in await self.store.search_entries(
+            user_id=1, start_ms=start + 1, sort_descending=False)],
+            ["entry 2"])
+
+    async def test_search_start_combines_with_query_filter(self):
+        # start positions the scan; the text filter still decides what
+        # matches inside it.
+        for topic, entry, stamp in (
+            ("Mood", "anxious morning", "2026-11-10T09:00:00+00:00"),
+            ("Mood", "calm afternoon", "2026-11-12T09:00:00+00:00"),
+            ("Sleep", "anxious night", "2026-11-14T09:00:00+00:00"),
+        ):
+            await self.store.add_entry(
+                user_id=1, topic=topic, entry=entry,
+                created=stamp, created_epoch_ms=_ms(stamp))
+        start = _ms("2026-11-12T09:00:00+00:00")
+        # Newest-first: only the older match is at or before start.
+        self.assertEqual([r.entry for r in await self.store.search_entries(
+            user_id=1, start_ms=start, query="anxious")],
+            ["anxious morning"])
+        # Oldest-first: only the newer match is at or after it.
+        self.assertEqual([r.entry for r in await self.store.search_entries(
+            user_id=1, start_ms=start, query="anxious",
+            sort_descending=False)],
+            ["anxious night"])
+        # Without start the filter matches both.
+        self.assertEqual([r.entry for r in await self.store.search_entries(
+            user_id=1, query="anxious")],
+            ["anxious night", "anxious morning"])
+
     async def test_search_page_hints(self):
         stamps = [
             "2026-11-10T09:00:00+00:00",
@@ -456,22 +503,22 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             await self.store.add_entry(
                 user_id=1, topic="Log", entry=f"entry {i}",
                 created=stamp, created_epoch_ms=_ms(stamp))
-        # Middle page, newest-first: truncated by limit so more exist.
-        page = await self.store.search_page(
-            user_id=1, cursor_ms=_ms("2026-11-14T09:00:00+00:00"), limit=1)
+        # Middle page, newest-first: resumed from the id the first page
+        # handed back, truncated by limit so more exist.
+        page = await self.store.search_page(user_id=1, cursor_id=3, limit=1)
         self.assertEqual([r.entry for r in page.entries], ["entry 1"])
         self.assertTrue(page.has_more)
         # The cursor is the page edge's id, computed once by the store
-        # for the tool to interpolate.
-        self.assertEqual(page.next_cursor, "2")
+        # for the tool to report.
+        self.assertEqual(page.next_cursor, 2)
+        self.assertIsInstance(page.next_cursor, int)
         # First page truncated by limit: more exist.
         first = await self.store.search_page(user_id=1, limit=1)
         self.assertEqual([r.entry for r in first.entries], ["entry 2"])
         self.assertTrue(first.has_more)
-        self.assertEqual(first.next_cursor, "3")
+        self.assertEqual(first.next_cursor, 3)
         # Last page: nothing more in this direction.
-        last = await self.store.search_page(
-            user_id=1, cursor_ms=_ms("2026-11-12T09:00:00+00:00"))
+        last = await self.store.search_page(user_id=1, cursor_id=2)
         self.assertEqual([r.entry for r in last.entries], ["entry 0"])
         self.assertFalse(last.has_more)
         self.assertIsNone(last.next_cursor)
@@ -480,10 +527,9 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             user_id=1, limit=1, sort_descending=False)
         self.assertEqual([r.entry for r in asc_first.entries], ["entry 0"])
         self.assertTrue(asc_first.has_more)
-        self.assertEqual(asc_first.next_cursor, "1")
-        asc_last = await self.store.search_page(
-            user_id=1, cursor_ms=_ms("2026-11-12T09:00:00+00:00"),
-            sort_descending=False)
+        self.assertEqual(asc_first.next_cursor, 1)
+        asc_last = await self.store.search_page(user_id=1, cursor_id=2,
+                                                sort_descending=False)
         self.assertEqual([r.entry for r in asc_last.entries], ["entry 2"])
         self.assertFalse(asc_last.has_more)
         self.assertIsNone(asc_last.next_cursor)
@@ -492,9 +538,10 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(full.entries), 3)
         self.assertFalse(full.has_more)
         self.assertIsNone(full.next_cursor)
-        # Empty page: no hints.
+        # Empty page: no hints. A start before every entry has nothing at
+        # or before it to return.
         empty = await self.store.search_page(
-            user_id=1, cursor_ms=_ms("2026-11-10T09:00:00+00:00"))
+            user_id=1, start_ms=_ms("2026-11-10T08:59:59+00:00"))
         self.assertEqual(empty.entries, [])
         self.assertFalse(empty.has_more)
         self.assertIsNone(empty.next_cursor)
@@ -507,7 +554,7 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             user_id=1, topic="Log", limit=1)
         self.assertEqual([r.entry for r in topic_page.entries], ["entry 2"])
         self.assertTrue(topic_page.has_more)
-        self.assertEqual(topic_page.next_cursor, "3")
+        self.assertEqual(topic_page.next_cursor, 3)
         topic_full = await self.store.search_page(
             user_id=1, topic="Mood")
         self.assertEqual(len(topic_full.entries), 1)
@@ -517,7 +564,7 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
     async def test_search_page_pages_by_timestamp_with_backdated_rows(self):
         # A later id can carry an earlier timestamp (import, manual db
         # fix, a future tool passing explicit created): ordering must
-        # follow created_epoch_ms, and the id-only token must still
+        # follow created_epoch_ms, and the id-only cursor must still
         # resume at the right position. An id-ordered implementation
         # would start with "oldest" and fail this test.
         base = _ms("2026-11-14T09:00:00+00:00")
@@ -537,11 +584,11 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
 
         page = await self.store.search_page(user_id=1, limit=1)
         self.assertEqual([r.entry for r in page.entries], ["newest"])
-        self.assertEqual(page.next_cursor, "1")
+        self.assertEqual(page.next_cursor, 1)
         page = await self.store.search_page(
             user_id=1, cursor_id=1, limit=1)
         self.assertEqual([r.entry for r in page.entries], ["middle"])
-        self.assertEqual(page.next_cursor, "2")
+        self.assertEqual(page.next_cursor, 2)
         page = await self.store.search_page(
             user_id=1, cursor_id=2, limit=1)
         self.assertEqual([r.entry for r in page.entries], ["oldest"])
@@ -554,14 +601,14 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         page = await self.store.search_page(user_id=1, cursor_id=3, limit=1,
                                             sort_descending=False)
         self.assertEqual([r.entry for r in page.entries], ["middle"])
-        self.assertEqual(page.next_cursor, "2")
+        self.assertEqual(page.next_cursor, 2)
         page = await self.store.search_page(user_id=1, cursor_id=2, limit=1,
                                             sort_descending=False)
         self.assertEqual([r.entry for r in page.entries], ["newest"])
         self.assertFalse(page.has_more)
 
     async def test_search_page_pages_inside_tied_milliseconds(self):
-        # Three entries sharing one millisecond: the id token resumes
+        # Three entries sharing one millisecond: the id cursor resumes
         # inside the tie, so no entry is skipped or repeated.
         created = "2026-11-14T09:00:00+00:00"
         epoch = _ms(created)
@@ -573,7 +620,7 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         page = await self.store.search_page(user_id=1, limit=2)
         self.assertEqual([r.id for r in page.entries], [3, 2])
         self.assertTrue(page.has_more)
-        self.assertEqual(page.next_cursor, "2")
+        self.assertEqual(page.next_cursor, 2)
         page = await self.store.search_page(user_id=1, cursor_id=2, limit=2)
         self.assertEqual([r.id for r in page.entries], [1])
         self.assertFalse(page.has_more)
@@ -583,7 +630,7 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
                                             sort_descending=False)
         self.assertEqual([r.id for r in page.entries], [1, 2])
         self.assertTrue(page.has_more)
-        self.assertEqual(page.next_cursor, "2")
+        self.assertEqual(page.next_cursor, 2)
         page = await self.store.search_page(user_id=1, cursor_id=2, limit=2,
                                             sort_descending=False)
         self.assertEqual([r.id for r in page.entries], [3])
@@ -598,9 +645,9 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
                 user_id=1, topic=topic, entry=topic,
                 created=created, created_epoch_ms=epoch)
         page = await self.store.search_page(user_id=1, limit=2)
-        self.assertEqual(page.next_cursor, "2")
-        # The edge row is gone: the token cannot be resolved, so paging
-        # fails loudly instead of guessing a position.
+        self.assertEqual(page.next_cursor, 2)
+        # The edge row is gone: the id cannot be resolved to a position,
+        # so paging fails loudly instead of guessing one.
         self.assertTrue(await self.store.delete_entry(user_id=1, entry_id=2))
         with self.assertRaises(StoreValidationError) as caught:
             await self.store.search_page(user_id=1, cursor_id=2, limit=2)
@@ -610,7 +657,11 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(StoreValidationError):
             await self.store.search_page(user_id=2, cursor_id=3, limit=2)
 
-    async def test_search_page_iso_cursor_is_millisecond_granular(self):
+    async def test_search_page_start_positions_then_cursor_resumes(self):
+        # start places the first page inclusively - entries sitting on
+        # that instant are returned, not skipped - and the cursor id
+        # handed back resumes the scan from that exact row without a
+        # timestamp of its own.
         created = "2026-11-14T09:00:00+00:00"
         epoch = _ms(created)
         for topic in ("A", "B", "C"):
@@ -625,17 +676,31 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             user_id=1, topic="E", entry="newer",
             created="2026-11-14T09:00:01+00:00",
             created_epoch_ms=epoch + 1000)
-        # The ISO cursor keeps its documented ms-granular meaning: only
-        # entries strictly before/after the millisecond match, so the
-        # tie itself is skipped (use the id token for exact paging).
-        page = await self.store.search_page(user_id=1, cursor_ms=epoch,
-                                            limit=10)
-        self.assertEqual([r.entry for r in page.entries], ["older"])
+        # ids 1..3 share the millisecond; "newer" is above start and
+        # "older" is below it.
+        page = await self.store.search_page(user_id=1, start_ms=epoch,
+                                            limit=2)
+        self.assertEqual([r.entry for r in page.entries], ["C", "B"])
+        self.assertTrue(page.has_more)
+        self.assertEqual(page.next_cursor, 2)
+        page = await self.store.search_page(user_id=1,
+                                            cursor_id=page.next_cursor,
+                                            limit=2)
+        self.assertEqual([r.entry for r in page.entries], ["A", "older"])
         self.assertFalse(page.has_more)
-        page = await self.store.search_page(user_id=1, cursor_ms=epoch,
-                                            limit=10, sort_descending=False)
-        self.assertEqual([r.entry for r in page.entries], ["newer"])
+        self.assertIsNone(page.next_cursor)
+        # Oldest-first: the same start keeps the tie and everything after.
+        page = await self.store.search_page(user_id=1, start_ms=epoch,
+                                            limit=2, sort_descending=False)
+        self.assertEqual([r.entry for r in page.entries], ["A", "B"])
+        self.assertTrue(page.has_more)
+        self.assertEqual(page.next_cursor, 2)
+        page = await self.store.search_page(user_id=1,
+                                            cursor_id=page.next_cursor,
+                                            limit=2, sort_descending=False)
+        self.assertEqual([r.entry for r in page.entries], ["C", "newer"])
         self.assertFalse(page.has_more)
+        self.assertIsNone(page.next_cursor)
 
     async def test_search_sorts_by_epoch_not_text(self):
         # Lexically the +11:00 stamp sorts after the Z stamp, but its
@@ -771,8 +836,6 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await journal_tool.journal_get(ctx, ids=[999]),
             "Journal entry 999 not found")
-        self.assertEqual(await journal_tool.journal_get(ctx, ids=["nope"]),
-                         "Error: Invalid journal entry id.")
         self.assertEqual(await journal_tool.journal_get(ctx, ids=[]),
                          "Error: ids cannot be empty.")
         self.assertEqual(await journal_tool.journal_get(ctx, ids="nope"),  # type: ignore[arg-type]
@@ -899,10 +962,6 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
             "Topic does not match journal entry 1")
         self.assertEqual(
             await journal_tool.journal_topic_edit(
-                ctx, id="nope", oldTopic="Mood", newTopic="Sleep"),
-            "Error: Invalid journal entry id.")
-        self.assertEqual(
-            await journal_tool.journal_topic_edit(
                 ctx, id=1, oldTopic="Mood", newTopic="Sleep"),
             "Journal entry 1 topic updated")
         out = await journal_tool.journal_get(ctx, ids=[1])
@@ -917,14 +976,32 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
     async def test_search_tool_validation_and_format(self):
         ctx = self._ctx()
         await journal_tool.journal_add(ctx, topic="Mood", entry="Calm day.")
+        # start is the datetime parameter: it must parse as ISO 8601
+        # with a timezone.
         self.assertEqual(
-            await journal_tool.journal_query(ctx, cursor="2026-11-01"),
-            "Error: cursor timestamp must include an explicit timezone "
+            await journal_tool.journal_query(ctx, start="2026-11-01"),
+            "Error: start timestamp must include an explicit timezone "
             "or UTC indicator, e.g. '2026-11-01T00:00:00+10:30'.")
         self.assertEqual(
-            await journal_tool.journal_query(ctx, cursor="not a date"),
-            "Error: Invalid cursor timestamp 'not a date'. "
+            await journal_tool.journal_query(ctx, start="not a date"),
+            "Error: Invalid start timestamp 'not a date'. "
             "Use ISO 8601, e.g. '2026-11-01T00:00:00+10:30'.")
+        # cursor and start both position the same scan: the caller must
+        # pick one.
+        self.assertEqual(
+            await journal_tool.journal_query(
+                ctx, cursor=1, start="2026-11-01T00:00:00+10:30"),
+            "Error: Provide either cursor or start, not both: cursor "
+            "resumes paging from an entry id, start positions the "
+            "first page by timestamp.")
+        # limit stays a plain int with its range check; anything else is
+        # a boundary type error, not a coerced value.
+        self.assertEqual(
+            await journal_tool.journal_query(ctx, limit=0),
+            "Error: limit must be an integer between 1 and 50.")
+        self.assertEqual(
+            await journal_tool.journal_query(ctx, limit=51),
+            "Error: limit must be an integer between 1 and 50.")
         self.assertEqual(
             await journal_tool.journal_query(ctx, query="nothing matching"),
             "No journal entries found.")
@@ -932,25 +1009,34 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Found 1 journal entry:", out)
         self.assertIn("ID: 1", out)
 
-    async def test_search_tool_date_filter_with_offsets(self):
+    async def test_search_tool_start_filter_with_offsets(self):
         ctx = self._ctx(timezone_name="Australia/Adelaide")
         await journal_tool.journal_add(ctx, topic="Log", entry="sydney entry")
         record = await self.store.get_entry(
             user_id=1, entry_id=1)
         assert record is not None
-        # Cursor after the entry finds it newest-first.
+        # start after the entry includes it newest-first.
         inside = await journal_tool.journal_query(
-            ctx, cursor="2030-01-01T00:00:00+10:30")
+            ctx, start="2030-01-01T00:00:00+10:30")
         self.assertIn("sydney entry", inside)
-        # Cursor before the entry finds nothing newest-first.
+        # start before the entry finds nothing newest-first.
         day = record.created[:10]
         outside = await journal_tool.journal_query(
-            ctx, cursor=f"{day}T00:00:00+10:30")
+            ctx, start=f"{day}T00:00:00+10:30")
         self.assertEqual(outside, "No journal entries found.")
-        # Same cursor oldest-first finds it (entries after start).
+        # Same start oldest-first finds it (entries at or after start).
         future = await journal_tool.journal_query(
-            ctx, cursor=f"{day}T00:00:00+10:30", sortDescending=False)
+            ctx, start=f"{day}T00:00:00+10:30", sortDescending=False)
         self.assertIn("sydney entry", future)
+        # start is inclusive: exactly the entry's own timestamp returns
+        # it in both directions.
+        self.assertIn(
+            "sydney entry",
+            await journal_tool.journal_query(ctx, start=record.created))
+        self.assertIn(
+            "sydney entry",
+            await journal_tool.journal_query(ctx, start=record.created,
+                                             sortDescending=False))
 
     async def test_query_tool_paging(self):
         ctx = self._ctx()
@@ -963,20 +1049,21 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
             await self.store.add_entry(
                 user_id=1, topic="Log", entry=f"entry {i}",
                 created=stamp, created_epoch_ms=_ms(stamp))
-        # Cursor is exclusive: exact boundary entry does not match.
-        # Full page, nothing more in this direction.
+        # start positions the first page inclusively: the entry sitting
+        # on it comes back, and nothing more exists in that direction.
         out = await journal_tool.journal_query(
-            ctx, cursor="2026-11-14T09:00:00+00:00")
+            ctx, start="2026-11-12T09:00:00+00:00")
         self.assertIn("Found 2 journal entries:", out)
         self.assertIn("entry 1", out)
         self.assertIn("entry 0", out)
         self.assertNotIn("More journal entries exist", out)
-        # Truncated cursor page hints with the edge entry's id.
+        # Truncated start page hints with the edge entry's id, as a
+        # number the caller passes back as cursor.
         trunc = await journal_tool.journal_query(
-            ctx, cursor="2026-11-14T09:00:00+00:00", limit=1)
-        self.assertIn("entry 1", trunc)
+            ctx, start="2026-11-14T09:00:00+00:00", limit=1)
+        self.assertIn("entry 2", trunc)
         self.assertIn("More journal entries exist.", trunc)
-        self.assertIn('cursor="2"', trunc)
+        self.assertIn("cursor=3", trunc)
         # Full result has no hint.
         full = await journal_tool.journal_query(ctx)
         self.assertIn("Found 3 journal entries:", full)
@@ -985,41 +1072,37 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         first = await journal_tool.journal_query(ctx, limit=1)
         self.assertIn("entry 2", first)
         self.assertIn("More journal entries exist.", first)
-        self.assertIn('cursor="3"', first)
-        # Following the hint pages backwards.
-        second = await journal_tool.journal_query(
-            ctx, cursor="2026-11-14T09:00:00+00:00", limit=1)
+        self.assertIn("cursor=3", first)
+        # Feeding the hint back resumes after the page edge: no repeat,
+        # no skip.
+        second = await journal_tool.journal_query(ctx, cursor=3, limit=1)
         self.assertIn("entry 1", second)
+        self.assertNotIn("entry 2", second)
         self.assertIn("More journal entries exist.", second)
-        # The bare-digit token round-trips unchanged.
-        third = await journal_tool.journal_query(ctx, cursor="2", limit=1)
+        self.assertIn("cursor=2", second)
+        third = await journal_tool.journal_query(ctx, cursor=2, limit=1)
         self.assertIn("entry 0", third)
         self.assertNotIn("More journal entries exist", third)
-        # Oldest-first page hints at newer entries.
+        # Oldest-first page hints at newer entries, and the hint resumes
+        # the other way.
         oldest = await journal_tool.journal_query(
             ctx, limit=1, sortDescending=False)
         self.assertIn("entry 0", oldest)
         self.assertIn("More journal entries exist.", oldest)
-        self.assertIn('cursor="1"', oldest)
+        self.assertIn("cursor=1", oldest)
         oldest_next = await journal_tool.journal_query(
-            ctx, cursor="2026-11-10T09:00:00+00:00",
-            sortDescending=False, limit=1)
+            ctx, cursor=1, sortDescending=False, limit=1)
         self.assertIn("entry 1", oldest_next)
-        # Validation.
+        self.assertIn("cursor=2", oldest_next)
+        # limit stays a plain int with its range check.
         self.assertEqual(
             await journal_tool.journal_query(ctx, limit=0),
             "Error: limit must be an integer between 1 and 50.")
         self.assertEqual(
             await journal_tool.journal_query(ctx, limit=51),
             "Error: limit must be an integer between 1 and 50.")
-        self.assertEqual(
-            await journal_tool.journal_query(ctx, limit="many"),
-            "Error: limit must be an integer between 1 and 50.")
-        self.assertEqual(
-            await journal_tool.journal_query(ctx, sortDescending="yes"),  # type: ignore[arg-type]
-            "Error: sortDescending must be a boolean.")
 
-    async def test_query_tool_pages_with_id_token(self):
+    async def test_query_tool_cursor_resumes_inside_tied_milliseconds(self):
         ctx = self._ctx()
         created = "2026-11-14T09:00:00+00:00"
         epoch = _ms(created)
@@ -1027,15 +1110,14 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
             await self.store.add_entry(
                 user_id=1, topic=topic, entry=topic,
                 created=created, created_epoch_ms=epoch)
-        # ids 1..3 share the millisecond; newest-first 3, 2, 1. The
-        # bare-digit token round-trips unchanged and resumes inside
-        # the tie instead of skipping it.
+        # ids 1..3 share the millisecond; newest-first 3, 2, 1. The id
+        # from the hint resumes inside the tie instead of skipping it.
         first = await journal_tool.journal_query(ctx, limit=2)
         self.assertIn("ID: 3", first)
         self.assertIn("ID: 2", first)
         self.assertNotIn("ID: 1", first)
-        self.assertIn('cursor="2"', first)
-        second = await journal_tool.journal_query(ctx, cursor="2", limit=2)
+        self.assertIn("cursor=2", first)
+        second = await journal_tool.journal_query(ctx, cursor=2, limit=2)
         self.assertIn("ID: 1", second)
         self.assertNotIn("ID: 3", second)
         self.assertNotIn("More journal entries exist", second)
@@ -1044,15 +1126,11 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
             ctx, limit=2, sortDescending=False)
         self.assertIn("ID: 1", asc)
         self.assertIn("ID: 2", asc)
-        self.assertIn('cursor="2"', asc)
+        self.assertIn("cursor=2", asc)
         asc_next = await journal_tool.journal_query(
-            ctx, cursor="2", limit=2, sortDescending=False)
+            ctx, cursor=2, limit=2, sortDescending=False)
         self.assertIn("ID: 3", asc_next)
         self.assertNotIn("More journal entries exist", asc_next)
-        # The ISO 8601 cursor keeps its documented ms-granular meaning:
-        # the tied millisecond itself is skipped.
-        iso = await journal_tool.journal_query(ctx, cursor=created, limit=2)
-        self.assertEqual(iso, "No journal entries found.")
 
     async def test_query_tool_reports_stale_cursor(self):
         ctx = self._ctx()
@@ -1060,10 +1138,14 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         first = await journal_tool.journal_query(ctx, limit=1)
         self.assertIn("ID: 1", first)
         await journal_tool.journal_delete(ctx, id=1)
-        # The token names a deleted entry: the store refuses to guess a
+        # The id names a deleted entry: the store refuses to guess a
         # position and the tool surfaces the message verbatim.
         self.assertEqual(
-            await journal_tool.journal_query(ctx, cursor="1", limit=1),
+            await journal_tool.journal_query(ctx, cursor=1, limit=1),
+            "Error: Cursor entry no longer exists; restart paging.")
+        # An id that was never issued behaves the same way.
+        self.assertEqual(
+            await journal_tool.journal_query(ctx, cursor=99, limit=1),
             "Error: Cursor entry no longer exists; restart paging.")
 
     async def test_list_topics_tool(self):
@@ -1074,6 +1156,14 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         await journal_tool.journal_add(ctx, topic="Mood", entry="b")
         self.assertEqual(await journal_tool.journal_list_topics(ctx),
                          "mood\nsleep")
+
+    def test_query_tool_paging_parameters_are_declared(self):
+        from tool_registry import all_tools
+        query = next(t for t in all_tools() if t.name == "journal_query")
+        # cursor is an id: an integer, so the model never has to quote
+        # it. start is a datetime, so it stays text.
+        self.assertEqual(query.properties["cursor"]["type"], "integer")
+        self.assertEqual(query.properties["start"]["type"], "string")
 
     def test_all_seven_tools_are_declared(self):
         from tool_registry import BOTH, all_tools

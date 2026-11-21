@@ -64,12 +64,12 @@ class SearchPage:
     # in the requested sort direction.
     has_more: bool
     # Resume point for the next page when has_more is true (None
-    # otherwise): the edge entry's id as a decimal string. The paging
-    # comparison resolves that row's timestamp and uses the full
-    # (created_epoch_ms, id) position, so the token is exact across
-    # same-millisecond ties. Pass it back to search_page as cursor_id,
-    # or to the journal_query tool as its cursor.
-    next_cursor: str | None = None
+    # otherwise): the edge entry's id. The paging comparison resolves
+    # that row's timestamp and uses the full (created_epoch_ms, id)
+    # position, so the id is exact across same-millisecond ties. Pass it
+    # back to search_page as cursor_id, or to the journal_query tool as
+    # its cursor.
+    next_cursor: int | None = None
 
 
 MAX_TOPIC_LENGTH = 128
@@ -317,37 +317,36 @@ class JournalStore(AsyncSQLiteStore):
             raise StoreValidationError(
                 f"Limit must be between 1 and {SEARCH_LIMIT}")
 
-    def _search_query(self, *, user_id: int, cursor_ms: int | None,
-                      query: str | None, topic: str | None,
-                      sort_descending: bool, limit: int,
-                      cursor_id: int | None = None
+    def _search_query(self, *, user_id: int,
+                      start_ms: int | None = None,
+                      after: tuple[int, int] | None = None,
+                      query: str | None = None, topic: str | None = None,
+                      sort_descending: bool = True, limit: int = SEARCH_LIMIT,
                       ) -> tuple[str, tuple[object, ...]]:
         """The shared search SELECT with its bound parameters.
 
-        The cursor is exclusive and direction-aware, comparing the same
-        (created_epoch_ms, id) position the ORDER BY uses: with
-        newest-first ordering only entries positioned before the cursor
-        match, with oldest-first ordering only entries after it. The
-        token cursor (``cursor_id``) is exact - its timestamp was
-        resolved from the row it names - while a bare ``cursor_ms``
-        (the ISO 8601 path) is millisecond-granular and skips entries
-        sharing that millisecond.
+        Two bounds, each with one meaning. ``after`` is the exclusive
+        keyset position of a cursor id - the (created_epoch_ms, id) pair
+        read back from that row, compared in the same direction as the
+        ORDER BY, so entries sharing a millisecond page without being
+        skipped or repeated. ``start_ms`` is the inclusive range bound
+        that positions a first page by timestamp: with newest-first
+        ordering entries at or before it match, with oldest-first
+        ordering entries at or after it.
         """
         conditions, params = self._search_filter_clauses(
             user_id=user_id, query=query, topic=topic)
-        if cursor_ms is not None:
-            if cursor_id is not None:
-                comparison = "<" if sort_descending else ">"
-                conditions.append(
-                    f"(created_epoch_ms {comparison} ? "
-                    f"OR (created_epoch_ms = ? AND id {comparison} ?))")
-                params.extend([cursor_ms, cursor_ms, cursor_id])
-            elif sort_descending:
-                conditions.append("created_epoch_ms < ?")
-                params.append(cursor_ms)
-            else:
-                conditions.append("created_epoch_ms > ?")
-                params.append(cursor_ms)
+        if after is not None:
+            comparison = "<" if sort_descending else ">"
+            cursor_ms, cursor_id = after
+            conditions.append(
+                f"(created_epoch_ms {comparison} ? "
+                f"OR (created_epoch_ms = ? AND id {comparison} ?))")
+            params.extend([cursor_ms, cursor_ms, cursor_id])
+        if start_ms is not None:
+            comparison = "<=" if sort_descending else ">="
+            conditions.append(f"created_epoch_ms {comparison} ?")
+            params.append(start_ms)
         direction = "DESC" if sort_descending else "ASC"
         sql = ("SELECT id, user_id, created, created_epoch_ms, topic, entry "
                "FROM journal_entries WHERE " + " AND ".join(conditions)
@@ -357,7 +356,7 @@ class JournalStore(AsyncSQLiteStore):
         return sql, tuple(params)
 
     async def search_entries(self, *, user_id: int,
-                             cursor_ms: int | None = None,
+                             start_ms: int | None = None,
                              query: str | None = None,
                              topic: str | None = None,
                              limit: int = SEARCH_LIMIT,
@@ -365,27 +364,29 @@ class JournalStore(AsyncSQLiteStore):
                              ) -> list[JournalEntry]:
         """Return matching entries, newest-first by default.
 
-        The cursor is exclusive and direction-aware: with newest-first
-        ordering only entries created before ``cursor_ms`` match, with
-        oldest-first ordering only entries created after it. At most
-        ``limit`` entries are returned.
+        ``start_ms`` is an inclusive bound on created_epoch_ms: with
+        newest-first ordering only entries created at or before it
+        match, with oldest-first ordering only entries at or after it.
+        At most ``limit`` entries are returned. Paging an unbounded
+        result set is search_page's job - it takes the cursor id that
+        keeps same-millisecond ties intact.
         """
         self._validate_limit(limit)
         sql, params = self._search_query(
-            user_id=user_id, cursor_ms=cursor_ms, query=query,
+            user_id=user_id, start_ms=start_ms, query=query,
             topic=topic, sort_descending=sort_descending, limit=limit)
         db = await self._ready()
         cursor = await db.execute(sql, params)
         return [self._row_to_entry(row) for row in await cursor.fetchall()]
 
-    async def _resolve_cursor_timestamp(self, *, user_id: int,
-                                        cursor_id: int) -> int:
-        """The timestamp half of a token cursor's (created_epoch_ms, id)
-        position, read from the row the token names.
+    async def _resolve_cursor_position(self, *, user_id: int,
+                                       cursor_id: int) -> tuple[int, int]:
+        """A cursor id's (created_epoch_ms, id) position, read from the
+        row it names.
 
         Raises StoreValidationError when the row is gone (deleted) or
-        not visible to this user: the token would be ambiguous, so
-        paging must restart rather than guess."""
+        not visible to this user: the id would be ambiguous, so paging
+        must restart rather than guess."""
         db = await self._ready()
         cursor = await db.execute(
             "SELECT created_epoch_ms FROM journal_entries "
@@ -394,11 +395,11 @@ class JournalStore(AsyncSQLiteStore):
         if row is None:
             raise StoreValidationError(
                 "Cursor entry no longer exists; restart paging.")
-        return row["created_epoch_ms"]
+        return (row["created_epoch_ms"], cursor_id)
 
     async def search_page(self, *, user_id: int,
-                          cursor_ms: int | None = None,
                           cursor_id: int | None = None,
+                          start_ms: int | None = None,
                           query: str | None = None,
                           topic: str | None = None,
                           limit: int = SEARCH_LIMIT,
@@ -410,24 +411,25 @@ class JournalStore(AsyncSQLiteStore):
         returned page in the requested sort direction, detected by
         fetching one row beyond ``limit`` rather than re-running the
         filtered query. ``next_cursor`` is the resume point for that
-        next page - the edge entry's id as a decimal string, None when
-        there is nothing to resume. The token is exact: on resume its
-        timestamp is read back from the row it names and the comparison
-        uses the full (created_epoch_ms, id) position the ORDER BY
-        uses, so entries sharing a millisecond page without loss in
-        either direction; a token whose row no longer exists (deleted,
-        or not visible to this user) raises StoreValidationError. A
-        bare ``cursor_ms`` (the ISO 8601 path) is millisecond-granular
-        and skips entries sharing that millisecond. When both are
-        given, the token wins.
+        next page - the edge entry's id, None when there is nothing to
+        resume. The id is an exact resume point: its timestamp is read
+        back from the row it names and the comparison uses the full
+        (created_epoch_ms, id) position the ORDER BY uses, so entries
+        sharing a millisecond page without loss in either direction; an
+        id whose row no longer exists (deleted, or not visible to this
+        user) raises StoreValidationError. ``start_ms`` instead
+        positions the first page by timestamp, inclusively (at or
+        before it newest-first, at or after it oldest-first); later
+        pages resume from the cursor id, which needs no timestamp.
         """
         self._validate_limit(limit)
+        after = None
         if cursor_id is not None:
-            cursor_ms = await self._resolve_cursor_timestamp(
+            after = await self._resolve_cursor_position(
                 user_id=user_id, cursor_id=cursor_id)
         # One extra row answers "is there another page?" cheaply.
         sql, params = self._search_query(
-            user_id=user_id, cursor_ms=cursor_ms, cursor_id=cursor_id,
+            user_id=user_id, start_ms=start_ms, after=after,
             query=query, topic=topic, sort_descending=sort_descending,
             limit=limit + 1)
         db = await self._ready()
@@ -442,7 +444,7 @@ class JournalStore(AsyncSQLiteStore):
         else:
             edge = max(entries, key=lambda r: (r.created_epoch_ms, r.id))
         return SearchPage(entries=entries, has_more=True,
-                          next_cursor=str(edge.id))
+                          next_cursor=edge.id)
 
     async def list_topics(self, *, user_id: int) -> list[str]:
         db = await self._ready()
