@@ -245,6 +245,65 @@ class SettingsDecoratorTest(_TempDbTest):
         self.assertEqual((await load_settings(1, None)).model, 'new')  # type: ignore[union-attr]
 
 
+class SettingsAliasingFlagTest(_TempDbTest):
+    """The two settings-aliasing decisions, pinned by the ThreadData flag.
+
+    Unthreaded chats share the template object (writes go to both);
+    threaded chats own a deep copy. ``settings_is_template`` names which
+    one a thread is in, so the aliasing is visible state, not an
+    undocumented identity accident.
+    """
+
+    async def test_unthreaded_thread_shares_the_template_object(self):
+        template = UserSettings.default()
+        template.model = 'template-model'
+        await save_settings(1, None, template)
+        ctx = _ptb_pair({}, None)
+        await middleware.init_conversation(ctx)
+        self.assertTrue(ctx.thread_data.settings_is_template)
+        self.assertIs(ctx.thread_data.settings, ctx.user_data.settings)
+
+    async def test_threaded_thread_owns_a_deep_copy(self):
+        template = UserSettings.default()
+        template.model = 'template-model'
+        await save_settings(1, None, template)
+        ctx = _ptb_pair({}, 2)
+        await middleware.init_conversation(ctx)
+        self.assertFalse(ctx.thread_data.settings_is_template)
+        self.assertIsNot(ctx.thread_data.settings, ctx.user_data.settings)
+
+    async def test_unthreaded_swap_leaves_the_thread_on_the_template(self):
+        # /settings_reset-style swap: the command replaces the object
+        # through ctx.settings (flag False mid-command), then the settings
+        # decorator re-shares the new object with the template.
+        ctx = _ptb_pair({}, None)
+        await middleware.init_conversation(ctx)
+
+        @middleware.settings
+        async def _swap(inner_ctx):
+            inner_ctx.settings = UserSettings.default()
+
+        with mock.patch.object(middleware, 'save_settings',
+                               mock.AsyncMock()):
+            await _swap(ctx)
+        self.assertTrue(ctx.thread_data.settings_is_template)
+        self.assertIs(ctx.thread_data.settings, ctx.user_data.settings)
+
+    async def test_threaded_swap_keeps_the_thread_off_the_template(self):
+        ctx = _ptb_pair({}, 2)
+        await middleware.init_conversation(ctx)
+
+        @middleware.settings
+        async def _swap(inner_ctx):
+            inner_ctx.settings = UserSettings.default()
+
+        with mock.patch.object(middleware, 'save_settings',
+                               mock.AsyncMock()):
+            await _swap(ctx)
+        self.assertFalse(ctx.thread_data.settings_is_template)
+        self.assertIsNot(ctx.thread_data.settings, ctx.user_data.settings)
+
+
 class SubagentSnapshotTest(unittest.TestCase):
 
     def test_subagent_gets_thread_settings_snapshot(self):

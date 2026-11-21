@@ -37,14 +37,22 @@ def _run(ctx):
 
 class TestTimezoneSetting(unittest.TestCase):
 
+    @staticmethod
+    def _timezone_ctx(bot, text: str = ''):
+        ctx = mock_ctx(user_id=5, bot=bot, conversation=[],
+                       settings=UserSettings.default())
+        ctx.command_text = text
+        # The bare name PTB would have matched (and what usage lines
+        # render); mock_ctx defaults it to ''.
+        ctx.command_name = 'timezone'
+        return ctx
+
     def test_default_timezone_is_utc(self):
         self.assertEqual(UserSettings.default().timezone, 'UTC')
 
     def test_set_valid_timezone(self):
         bot = _Bot()
-        ctx = mock_ctx(user_id=5, bot=bot, conversation=[],
-                       settings=UserSettings.default())
-        ctx.command_text = 'Australia/Sydney'
+        ctx = self._timezone_ctx(bot, 'Australia/Sydney')
         save = _run(ctx)
         self.assertEqual(ctx.settings.timezone, 'Australia/Sydney')
         self.assertEqual(bot.sent, ['Timezone set to `Australia/Sydney`.'])
@@ -52,9 +60,7 @@ class TestTimezoneSetting(unittest.TestCase):
 
     def test_invalid_timezone_is_rejected(self):
         bot = _Bot()
-        ctx = mock_ctx(user_id=5, bot=bot, conversation=[],
-                       settings=UserSettings.default())
-        ctx.command_text = 'Not/AZone'
+        ctx = self._timezone_ctx(bot, 'Not/AZone')
         _run(ctx)
         self.assertEqual(ctx.settings.timezone, 'UTC')
         self.assertTrue(bot.sent[0].startswith("Unknown timezone"))
@@ -66,8 +72,10 @@ class TestTimezoneSetting(unittest.TestCase):
         ctx = mock_ctx(user_id=5, bot=bot, conversation=[],
                        settings=settings)
         ctx.command_text = ''
+        ctx.command_name = 'timezone'
         _run(ctx)
         self.assertIn('America/New_York', bot.sent[0])
+        self.assertIn('/timezone <IANA timezone', bot.sent[0])
         self.assertEqual(ctx.settings.timezone, 'America/New_York')
 
     def test_timezone_survives_json_round_trip(self):
