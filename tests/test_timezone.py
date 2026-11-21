@@ -8,7 +8,9 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+import config
 import handlers.middleware as middleware
+import user_settings
 from handlers.command_handlers import timezone_command
 from mock_context import mock_ctx
 from user_settings import UserSettings
@@ -73,6 +75,75 @@ class TestTimezoneSetting(unittest.TestCase):
         settings.timezone = 'Pacific/Auckland'
         restored = UserSettings.from_json(settings.to_json())
         self.assertEqual(restored.timezone, 'Pacific/Auckland')
+
+
+class TestUserSettingsDefaults(unittest.TestCase):
+    """What an untouched settings object resolves to, and what is rejected."""
+
+    def test_defaults_come_from_the_module_and_config(self):
+        settings = UserSettings.default()
+        self.assertEqual(settings.model, config.LLM_MODEL)
+        self.assertEqual(settings.temperature, config.temperature)
+        self.assertEqual(settings.top_p, config.top_p)
+        self.assertEqual(settings.system_prompt,
+                         user_settings.DEFAULT_SYSTEM_PROMPT)
+        self.assertEqual(settings.timezone, user_settings.DEFAULT_TIMEZONE)
+        self.assertTrue(settings.show_tool_output)
+        self.assertFalse(settings.thinking_keep)
+        self.assertIsNone(settings.user_profile)
+        self.assertEqual(settings.subagent_model,
+                         config.SUBAGENT_MODEL or config.LLM_MODEL)
+
+    def test_default_prompt_is_read_at_call_time(self):
+        # chatbot.py replaces the module default at startup; settings built
+        # before that must still resolve to the replacement.
+        original = user_settings.DEFAULT_SYSTEM_PROMPT
+        self.addCleanup(setattr, user_settings,
+                        'DEFAULT_SYSTEM_PROMPT', original)
+        user_settings.DEFAULT_SYSTEM_PROMPT = 'replaced at startup'
+        self.assertEqual(UserSettings.default().system_prompt,
+                         'replaced at startup')
+
+    def test_blank_model_is_rejected(self):
+        settings = UserSettings.default()
+        for blank in ('', '   '):
+            with self.subTest(value=repr(blank)):
+                with self.assertRaises(ValueError):
+                    settings.model = blank
+        # None is the reset, not a blank value.
+        settings.model = None
+        self.assertEqual(settings.model, config.LLM_MODEL)
+
+    def test_blank_system_prompt_is_rejected(self):
+        settings = UserSettings.default()
+        with self.assertRaises(ValueError):
+            settings.system_prompt = ''
+        settings.system_prompt = None
+        self.assertEqual(settings.system_prompt,
+                         user_settings.DEFAULT_SYSTEM_PROMPT)
+
+    def test_every_setting_survives_a_json_round_trip(self):
+        settings = UserSettings.default()
+        settings.model = 'some-model'
+        settings.temperature = 0.3
+        settings.top_p = 0.4
+        settings.system_prompt = 'be brief'
+        settings.user_profile = 'a tea person'
+        settings.show_tool_output = False
+        settings.thinking_keep = True
+        settings.subagent_model = 'other-model'
+        settings.timezone = 'Australia/Sydney'
+
+        restored = UserSettings.from_json(settings.to_json())
+        self.assertEqual(restored.model, 'some-model')
+        self.assertAlmostEqual(restored.temperature, 0.3)
+        self.assertAlmostEqual(restored.top_p, 0.4)
+        self.assertEqual(restored.system_prompt, 'be brief')
+        self.assertEqual(restored.user_profile, 'a tea person')
+        self.assertFalse(restored.show_tool_output)
+        self.assertTrue(restored.thinking_keep)
+        self.assertEqual(restored.subagent_model, 'other-model')
+        self.assertEqual(restored.timezone, 'Australia/Sydney')
 
 
 if __name__ == '__main__':

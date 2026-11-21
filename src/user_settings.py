@@ -1,3 +1,17 @@
+"""Per-user, per-thread LLM settings.
+
+The user keeps an override for each setting or leaves it unset (None in the
+serialized form); reading a setting resolves it against the module default.
+The defaults live here: the module-level constants below are the one
+resolution point, and ``UserSettings`` properties fall back to them (or to
+the matching config value) when the stored value is unset.
+
+``DEFAULT_SYSTEM_PROMPT`` stays a plain module global rather than a frozen
+default object because chatbot.py replaces it at startup with the contents
+of the ./system_prompt file; the property reads it at call time so a
+replacement takes effect for settings created before and after.
+"""
+
 from __future__ import annotations
 import json
 from dataclasses import dataclass, asdict, fields
@@ -36,15 +50,32 @@ class UserSettingsSerialized:
 
 
 class UserSettings:
+    """One user's (or one thread's) settings, resolved against the defaults."""
+
     def __init__(self, raw_user_settings: UserSettingsSerialized) -> None:
         self._settings = raw_user_settings
+
+    @staticmethod
+    def _text(name: str, value: str | None) -> str | None:
+        """None clears the setting; what is set must not be blank."""
+        if value is not None and not value.strip():
+            raise ValueError(f"{name} must not be empty")
+        return value
+
+    @staticmethod
+    def _bounded(name: str, value: float | None,
+                 low: float, high: float) -> float | None:
+        if value is not None and not (low <= value <= high):
+            raise ValueError(f"{name} must be between {low} and {high}")
+        return value
+
     @property
     def model(self) -> str:
         return self._settings.model or config.LLM_MODEL
-    
+
     @model.setter
     def model(self, value: str | None):
-        self._settings.model = value
+        self._settings.model = self._text('model', value)
 
     @property
     def subagent_model(self) -> str:
@@ -56,7 +87,7 @@ class UserSettings:
 
     @subagent_model.setter
     def subagent_model(self, value: str | None):
-        self._settings.subagent_model = value
+        self._settings.subagent_model = self._text('subagent_model', value)
 
     @property
     def timezone(self) -> str:
@@ -75,23 +106,22 @@ class UserSettings:
 
     @property
     def temperature(self) -> float:
-        return config.temperature if self._settings.temperature is None else self._settings.temperature
-    
+        return (config.temperature if self._settings.temperature is None
+                else self._settings.temperature)
+
     @temperature.setter
     def temperature(self, value: float | None):
-        if value is not None and not (0.0 <= value <= 2.0):
-            raise ValueError("temperature must be between 0.0 and 2.0")
-        self._settings.temperature = value
+        self._settings.temperature = self._bounded(
+            'temperature', value, 0.0, 2.0)
 
     @property
     def top_p(self) -> float:
-         return config.top_p if self._settings.top_p is None else self._settings.top_p
-    
+        return (config.top_p if self._settings.top_p is None
+                else self._settings.top_p)
+
     @top_p.setter
     def top_p(self, value: float | None):
-        if value is not None and not (0.0 <= value <= 1.0):
-            raise ValueError("top_p must be between 0.0 and 1.0")
-        self._settings.top_p = value
+        self._settings.top_p = self._bounded('top_p', value, 0.0, 1.0)
 
     @property
     def user_profile(self) -> str | None:
@@ -107,8 +137,8 @@ class UserSettings:
 
     @system_prompt.setter
     def system_prompt(self, value: str | None):
-        self._settings.system_prompt = value  
-    
+        self._settings.system_prompt = self._text('system_prompt', value)
+
     @property
     def show_tool_output(self) -> bool:
         return True if self._settings.show_tool_output is None else self._settings.show_tool_output
@@ -128,12 +158,12 @@ class UserSettings:
     @classmethod
     def from_json(cls, json_str: str) -> UserSettings:
         raw = UserSettingsSerialized.from_json(json_str)
-        return cls(raw) 
-    
+        return cls(raw)
+
     def to_json(self) -> str:
         return self._settings.to_json()
-    
+
     @classmethod
     def default(cls) -> UserSettings:
+        """Every setting unset: the module defaults above apply."""
         return cls(UserSettingsSerialized())
-        
