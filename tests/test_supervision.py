@@ -129,13 +129,9 @@ class TestRunTracked(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await supervisor
         self.assertEqual(bot.sent, [])
+        # Cancelled before its first step, the body never ran: no inner
+        # task was ever created or tracked.
         self.assertIsNone(ctx.generation_task)
-        # The inner task was created before the cancel landed; take it
-        # down so the loop shuts down cleanly.
-        inner = ctx.generation_task
-        if inner is not None:
-            inner.cancel()
-            await asyncio.gather(inner, return_exceptions=True)
 
     async def test_tracking_is_cleared_when_the_work_fails(self):
         bot = _Bot()

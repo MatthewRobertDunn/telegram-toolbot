@@ -192,22 +192,33 @@ def split_for_compaction(
     of it fits in `keep_tokens`, or the summarized part would be trivial
     (choose_boundary refuses).
     """
+    split = _split(conversation, keep_tokens)
+    return None if isinstance(split, str) else split
+
+
+def _split(conversation: Conversation | list,
+           keep_tokens: int) -> "CompactionSplit | str":
+    """split_for_compaction, with the user-facing refusal message in
+    place of None: a transcript below the floor is genuinely too small,
+    while a custom keep budget can be refused because keeping that much
+    would leave too little to summarize."""
     entries = []
     for message in conversation:
         text = message_to_text(message)
         if text:
             entries.append(_Entry(message, text, token_count(text)))
     if not entries:
-        return None
+        return 'Context too small to compact'
     transcript_tokens = sum(entry.tokens for entry in entries)
     if transcript_tokens < MIN_COMPACT_TOKENS or \
             transcript_tokens <= keep_tokens:
-        return None
+        return 'Context too small to compact'
 
     boundary = choose_boundary(entries, keep_tokens=keep_tokens,
                                transcript_tokens=transcript_tokens)
     if boundary is None:
-        return None
+        return (f'Nothing to compact: keeping {keep_tokens:,} tokens '
+                'would summarize too little of the context')
 
     return CompactionSplit(
         older_text='\n\n'.join(entry.text for entry in entries[:boundary]),
@@ -232,13 +243,14 @@ async def compact_context(
     so it never overlaps a running generation; the queue slot means it
     cannot be busy and no CompactionBusyError exists anymore.
 
-    Raises CompactionError when the context is too small to compact or
-    the summary fails. `on_start`, when given, is awaited just before the
+    Raises CompactionError when there is nothing to compact - the context
+    is too small, or the keep budget would summarize too little - or the
+    summary fails. `on_start`, when given, is awaited just before the
     summarizing call begins.
     """
-    split = split_for_compaction(ctx.conversation, keep_tokens)
-    if split is None:
-        raise CompactionError('Context too small to compact')
+    split = _split(ctx.conversation, keep_tokens)
+    if isinstance(split, str):
+        raise CompactionError(split)
 
     return await _run_compaction(ctx, split, on_start)
 

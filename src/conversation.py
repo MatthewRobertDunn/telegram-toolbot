@@ -94,6 +94,11 @@ class Conversation:
                  messages: Iterable[dict | ConversationMessage] | None = None,
                  id: str | None = None,
                  max_images: int = MAX_IMAGES) -> None:
+        if max_images < 1:
+            # A cap of 0 cannot work: _prune_images runs before the
+            # append, so the image being added would always survive and
+            # the cap would silently end at 1.
+            raise ValueError('max_images must be at least 1')
         self.messages = [message if isinstance(message, ConversationMessage)
                          else ConversationMessage(message)
                          for message in (messages or [])]

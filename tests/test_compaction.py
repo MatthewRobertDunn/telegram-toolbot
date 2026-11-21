@@ -61,23 +61,32 @@ class TestTokenCount(unittest.TestCase):
         self.assertEqual(estimate_message_tokens(message), 102)
 
 
+OMISSION_SENTENCE = (
+    'Leave out instructions and setup the assistant was given '
+    'rather than told by the user, such as system prompt text and '
+    'environment details.')
+CHECKPOINT_SENTENCE = (
+    'If the conversation transcript contains a compaction summary, '
+    'build the new summary on top of it, carrying forward only what '
+    'is still relevant.')
+
+
 class TestSummaryPrompt(unittest.TestCase):
-    """The assembled prompt is coherent prose: two complete instructions,
-    no wedged sentence fragments, no misspellings."""
+    """The assembled prompt is coherent prose: two complete instructions
+    in the intended order, no wedged sentence fragments, no misspellings."""
 
     def test_omission_instruction_is_one_complete_sentence(self):
-        self.assertIn(
-            'Leave out instructions and setup the assistant was given '
-            'rather than told by the user, such as system prompt text and '
-            'environment details.',
-            compaction.SUMMARY_PROMPT)
+        self.assertIn(OMISSION_SENTENCE, compaction.SUMMARY_PROMPT)
 
     def test_checkpoint_instruction_is_one_complete_sentence(self):
-        self.assertIn(
-            'If the conversation transcript contains a compaction summary, '
-            'build the new summary on top of it, carrying forward only what '
-            'is still relevant.',
-            compaction.SUMMARY_PROMPT)
+        self.assertIn(CHECKPOINT_SENTENCE, compaction.SUMMARY_PROMPT)
+
+    def test_omission_instruction_precedes_the_checkpoint_instruction(self):
+        # Substring presence cannot catch a re-wedged sentence order (the
+        # original bug): the order is asserted explicitly.
+        prompt = compaction.SUMMARY_PROMPT
+        self.assertLess(prompt.index(OMISSION_SENTENCE),
+                        prompt.index(CHECKPOINT_SENTENCE))
 
     def test_no_misspelled_transcript(self):
         self.assertNotIn('trnacript', compaction.SUMMARY_PROMPT)
@@ -415,6 +424,61 @@ class TestCompactContext(unittest.IsolatedAsyncioTestCase):
                 await compaction.compact_context(ctx)
 
         self.assertEqual(ctx.conversation, conversation)
+
+    async def test_custom_keep_budget_refusal_names_the_budget(self):
+        # /compact 40000 on a ~40k transcript: it clears the size floor,
+        # but keeping 40k of it would summarize only the first exchange -
+        # a fraction too small to be worth a summary call. The refusal
+        # must say that, not "context too small", which would be false.
+        conversation = [
+            {'role': 'system', 'content': 'system prompt'},
+            {'role': 'user', 'content': _text(8_000) + ' q1'},
+            {'role': 'assistant', 'content': _text(8_000) + ' a1'},
+            {'role': 'user', 'content': _text(8_000) + ' q2'},
+            {'role': 'assistant', 'content': _text(8_000) + ' a2'},
+            {'role': 'user', 'content': _text(8_000) + ' q3'},
+        ]
+        ctx = mock_ctx(conversation=conversation)
+
+        async def fail_run_llm(ctx, **kwargs):
+            self.fail('run_llm must not be called for a refused compaction')
+
+        with unittest.mock.patch.object(compaction, 'run_llm', fail_run_llm):
+            with self.assertRaises(compaction.CompactionError) as raised:
+                await compaction.compact_context(ctx, keep_tokens=40_000)
+
+        self.assertEqual(
+            str(raised.exception),
+            'Nothing to compact: keeping 40,000 tokens would '
+            'summarize too little of the context')
+        self.assertEqual(ctx.conversation, conversation)
+
+    async def test_keep_fraction_refusal_also_names_the_budget(self):
+        # A keep budget over three quarters of the transcript trips
+        # MIN_SUMMARY_FRACTION the same way, on a transcript that clears
+        # the floor on its own (66k transcript, 52k keep).
+        conversation = [
+            {'role': 'system', 'content': 'system prompt'},
+            {'role': 'user', 'content': _text(8_000) + ' q1'},
+            {'role': 'assistant', 'content': _text(8_000) + ' a1'},
+            {'role': 'user', 'content': _text(8_000) + ' q2'},
+            {'role': 'assistant', 'content': _text(8_000) + ' a2'},
+            {'role': 'user', 'content': _text(8_000) + ' q3'},
+            {'role': 'assistant', 'content': _text(8_000) + ' a3'},
+            {'role': 'user', 'content': _text(8_000) + ' q4'},
+            {'role': 'assistant', 'content': _text(10_000) + ' a4'},
+        ]
+        ctx = mock_ctx(conversation=conversation)
+
+        async def fail_run_llm(ctx, **kwargs):
+            self.fail('run_llm must not be called for a refused compaction')
+
+        with unittest.mock.patch.object(compaction, 'run_llm', fail_run_llm):
+            with self.assertRaisesRegex(
+                    compaction.CompactionError,
+                    'Nothing to compact: keeping 52,000 tokens would '
+                    'summarize too little of the context'):
+                await compaction.compact_context(ctx, keep_tokens=52_000)
 
     async def test_empty_summary_fails_and_keeps_conversation(self):
         conversation = _big_conversation()

@@ -43,9 +43,19 @@ def custom_of(message: dict) -> dict:
 
 def message_type_of(message: dict) -> ConversationMessageType | None:
     """What produced the message (see ConversationMessageType), or None
-    when untagged. Works for plain dicts and ConversationMessage alike."""
+    when untagged. Works for plain dicts and ConversationMessage alike.
+
+    An unknown persisted tag (a hand-edited or older history) reads as
+    None - the tag is not coerced to a known type - so comparisons like
+    "is this the impersonation turn?" fail safe the way the old string
+    comparison did, instead of failing to load the history."""
     raw = custom_of(message).get('message_type')
-    return ConversationMessageType(raw) if raw else None
+    if not raw:
+        return None
+    try:
+        return ConversationMessageType(raw)
+    except ValueError:
+        return None
 
 
 def set_message_type(message: dict,
@@ -84,7 +94,12 @@ def is_thinking(message: dict) -> bool:
     """Whether the message is a kept thinking block: tagged THINKING in
     its custom metadata. Tag-only on purpose (fail-closed): anything so
     tagged is display-only and never sent to the endpoint, whatever role
-    it carries. Works for plain dicts and ConversationMessage alike."""
+    it carries. Works for plain dicts and ConversationMessage alike.
+
+    An unknown message_type value is treated as not-thinking: it can
+    never be display-only, so it must reach the endpoint like any
+    ordinary message. The unknown tag is not coerced to a known type -
+    message_type_of reports it as None."""
     return message_type_of(message) is ConversationMessageType.THINKING
 
 

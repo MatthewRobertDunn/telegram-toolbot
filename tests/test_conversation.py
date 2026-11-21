@@ -156,6 +156,16 @@ class TestMessageType(unittest.TestCase):
         self.assertEqual(conversation.to_openai(),
                          [{'role': 'user', 'content': 'hi'}])
 
+    def test_unknown_persisted_tag_is_not_a_known_type(self):
+        # A hand-edited or older history can carry a tag value the enum
+        # no longer knows. It reads as None - not coerced to a known type
+        # - so nothing fails on load and no comparison misfires.
+        message = ConversationMessage({
+            'role': 'user', 'content': 'hi',
+            CUSTOM: {'message_type': 'defunct-kind'}})
+        self.assertIsNone(message.message_type)
+        self.assertFalse(is_thinking_message(message))
+
 
 class TestConversationAddImage(unittest.TestCase):
 
@@ -179,6 +189,15 @@ class TestConversationAddImage(unittest.TestCase):
 
     def test_max_images_defaults_to_MAX_IMAGES(self):
         self.assertEqual(Conversation().max_images, MAX_IMAGES)
+
+    def test_max_images_below_one_is_rejected(self):
+        # A cap of 0 cannot be honoured: the prune runs before the append,
+        # so the image being added would always survive and the cap would
+        # silently end at 1. Nonsensical caps are refused outright.
+        for bad in (0, -1):
+            with self.assertRaisesRegex(ValueError,
+                                        'max_images must be at least 1'):
+                Conversation(max_images=bad)
 
     def test_add_image_appends_a_caption_and_base64_image(self):
         conversation = Conversation()
@@ -354,6 +373,18 @@ class TestThinkingMessages(unittest.TestCase):
         self.assertEqual(conversation.to_openai(),
                          [{'role': 'user', 'content': 'hi'},
                           {'role': 'assistant', 'content': 'final'}])
+
+    def test_unknown_tag_is_treated_as_not_thinking(self):
+        # The old string comparison returned False for any unknown
+        # message_type value; a hand-edited or older persisted history
+        # must keep loading instead of raising on a stale tag. The tag
+        # is not coerced to a known type - it simply cannot be
+        # display-only, so it reaches the endpoint like any message.
+        message = {'role': 'assistant', 'content': 'hi',
+                   CUSTOM: {'message_type': 'defunct-kind'}}
+        self.assertFalse(is_thinking_message(message))
+        self.assertEqual(Conversation([message]).to_openai(),
+                         [{'role': 'assistant', 'content': 'hi'}])
 
     def test_token_estimate_skips_thinking(self):
         conversation = Conversation()
