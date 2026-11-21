@@ -35,7 +35,7 @@ from typing import Any
 from agent_inbox import get_main_inbox
 from chat_update_context import ChatUpdateContext
 from settings_store import save_conversation
-from tools.subagent import get_parent_tool_defs
+from tool_registry import PARENT, surface_for
 from .run_llm import run_llm
 
 logger = logging.getLogger(__name__)
@@ -145,7 +145,7 @@ async def generate_response(ctx: ChatUpdateContext, content: str | None = None,
         ctx.generation_task = inner = asyncio.create_task(
             ctx.messaging.run_with_typing(
                 run_llm(ctx,
-                        tools=get_parent_tool_defs(),
+                        tools=surface_for(PARENT),
                         inbox=get_main_inbox(ctx))))
         try:
             gpt_response = await inner

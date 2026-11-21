@@ -25,7 +25,7 @@ from agent_inbox import (PARENT_ID, SubagentStatus, clear_main_inbox,
 from chat_update_context import AgentContext, ChatUpdateContext
 from conversation import Conversation
 from handlers.run_llm import run_llm
-from tool_registry import BOTH, PARENT, SUBAGENT, agent_tool, definitions_for
+from tool_registry import BOTH, PARENT, SUBAGENT, agent_tool, surface_for
 
 logger = logging.getLogger(__name__)
 
@@ -136,22 +136,6 @@ def _running_count(ctx: ChatUpdateContext) -> int:
                if r.status is SubagentStatus.RUNNING)
 
 
-def get_parent_tool_defs() -> list[dict]:
-    """Every tool the parent agent is offered."""
-    return definitions_for(PARENT)
-
-
-def get_subagent_tool_defs() -> list[dict]:
-    """The tools a subagent may use: the shared toolbox plus its own
-    variants of the tools that would otherwise post to the chat.
-
-    A subagent never sees a chat-writing tool: those are declared
-    parent-only, and the shared ones are declared once per audience so the
-    model-facing name stays the same for both agents.
-    """
-    return definitions_for(SUBAGENT)
-
-
 def ensure_parent_wakeup(ctx: ChatUpdateContext) -> asyncio.Task:
     """Queue a wakeup job for a delivery, whatever the parent is doing.
 
@@ -220,7 +204,7 @@ async def _run_subagent(parent: ChatUpdateContext, record: SubagentRecord,
             parent.new_subagent_context(record.conversation),
             model=model,
             conversation=record.conversation,
-            tools=get_subagent_tool_defs(),
+            tools=surface_for(SUBAGENT),
             inbox=record.inbox,
             stream_drafts=False,
             announce_tools=False,

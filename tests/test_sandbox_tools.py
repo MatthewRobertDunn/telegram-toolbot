@@ -27,6 +27,7 @@ from tools.sandbox import common, files, media, search, shell
 from tools import python_runner
 from sandbox import SandboxManager
 from tool_result import ImageAttachment, ToolCallResult
+from tool_registry import ToolSurface
 import upload_cache
 
 
@@ -1076,9 +1077,6 @@ class TestToolResultImageContract(unittest.IsolatedAsyncioTestCase):
                       "function": {"name": 'read_image',
                                    "parameters": {}}}]
         with _patched_manager(manager), \
-             unittest.mock.patch.object(
-                 run_llm_mod, 'functions_for',
-                 lambda role: {'read_image': media.read_image}), \
              unittest.mock.patch.object(run_llm_mod, 'client', fake_client):
             ctx = mock_ctx(bot=bot, conversation=[])
             ctx.user_data.settings = SimpleNamespace(  # type: ignore[assignment]
@@ -1086,7 +1084,9 @@ class TestToolResultImageContract(unittest.IsolatedAsyncioTestCase):
                 thinking_keep=False)
             conversation = Conversation()
             result = await run_llm_mod.run_llm(
-                ctx, conversation=conversation, tools=tool_defs)
+                ctx, conversation=conversation,
+                tools=ToolSurface(definitions=tool_defs,
+                                  functions={'read_image': media.read_image}))
 
         self.assertEqual(result, 'It is a space scene.')
         tool_messages = [m for m in conversation if m['role'] == 'tool']

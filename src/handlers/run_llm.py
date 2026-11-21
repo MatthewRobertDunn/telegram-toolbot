@@ -7,7 +7,7 @@ from typing import Any
 import config
 from agent_inbox import (PARENT_ID, TERMINAL_STATES, SubagentInbox,
                          SubagentMessage)
-from tool_registry import functions_for, role_for
+from tool_registry import ToolSurface
 from chat_update_context import AgentContext, ChatUpdateContext
 from conversation import Conversation, ConversationMessageType
 from user_settings import UserSettings
@@ -184,19 +184,6 @@ async def _maybe_post_thinking(conversation: Conversation,
     conversation.add_thinking(telegram_message_ids=message_ids)
 
 
-def _tool_map_for(tool_defs: list[dict], role: str) -> dict:
-    """The executable map matching the offered definitions.
-
-    Derived from the role's registry view on demand, so a model that
-    hallucinates a non-offered tool name cannot execute it: it simply is
-    not in the map. The role matters because one name can have an
-    implementation per audience (``read_image``).
-    """
-    offered = {t.get("function", {}).get("name") for t in tool_defs}
-    return {name: func for name, func in functions_for(role).items()
-            if name in offered}
-
-
 @dataclass(frozen=True)
 class RunConfig:
     """Everything one run_llm call can vary, with today's defaults.
@@ -213,7 +200,7 @@ class RunConfig:
     # constructor passes it by keyword.
     conversation: Conversation
     model: str | None = None
-    tools: list[dict] | None = None
+    tools: ToolSurface | None = None
     inbox: SubagentInbox | None = None
     stream_drafts: bool = True
     announce_tools: bool = True
@@ -221,7 +208,7 @@ class RunConfig:
     @property
     def offer_tools(self) -> bool:
         """Whether tools were offered this run."""
-        return self.tools is not None and len(self.tools) > 0
+        return self.tools is not None
 
 
 @dataclass(frozen=True)
@@ -283,8 +270,9 @@ def _request_kwargs(cfg: RunConfig, settings: UserSettings) -> dict:
             "x-opencode-session": cfg.conversation.id,
         },
     )
-    if cfg.offer_tools:
-        create_kwargs["tools"] = cfg.tools  # type: ignore
+    tools = cfg.tools
+    if tools is not None:
+        create_kwargs["tools"] = tools.definitions
         create_kwargs["tool_choice"] = "auto"
     return create_kwargs
 
@@ -418,7 +406,7 @@ async def _dispatch_tool_calls(ctx: AgentContext,
 async def run_llm(ctx: AgentContext,
                   model: str | None = None,
                   conversation: Conversation | None = None,
-                  tools: list[dict] | None = None,
+                  tools: ToolSurface | None = None,
                   inbox: SubagentInbox | None = None,
                   stream_drafts: bool = True,
                   announce_tools: bool = True) -> str:
@@ -430,11 +418,9 @@ async def run_llm(ctx: AgentContext,
     an interactive context; everything else (history, tools, inbox) is
     identical for both agents.
 
-    tools=None means no tools are offered to the model (used for nested
-    calls such as context compaction). Pass an explicit tool list otherwise;
-    there is intentionally no "all tools" default. Only the passed
-    definitions are offered to the model, and only those names are
-    executable.
+    tools is a ToolSurface (see tool_registry.surface_for); None means
+    no tools (nested calls such as compaction). A model that
+    hallucinates a name outside the surface simply gets 'Unknown tool'.
 
     inbox, when given, is drained into the conversation as user turns at
     the top of every loop iteration - the only injection point, so queued
@@ -452,7 +438,7 @@ async def run_llm(ctx: AgentContext,
     settings = ctx.settings
     effective_model = cfg.model if cfg.model is not None else settings.model
 
-    tool_map = _tool_map_for(cfg.tools, role_for(ctx)) if cfg.tools else {}
+    tool_map = cfg.tools.functions if cfg.tools else {}
     caps = _capabilities(ctx, cfg)
     await caps.streamer.start()
 

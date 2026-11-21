@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import config
 from handlers import run_llm as run_llm_mod
+from tool_registry import ToolSurface
 from chat_update_context import AgentContext, ThreadData, UserData
 from conversation import Conversation
 from messaging import Messaging
@@ -46,12 +47,16 @@ def _fake_client(captured: dict, chunks: list):
 class TestRunLlmReplies(unittest.IsolatedAsyncioTestCase):
 
     async def test_tools_offered_by_default_and_omitted_on_request(self):
-        # Tools are offered only when the caller passes an explicit list;
-        # tools=None (the default) means no tools (e.g. nested calls like
-        # compaction or impersonation).
+        # Tools are offered only when the caller passes an explicit
+        # surface; tools=None (the default) means no tools (e.g. nested
+        # calls like compaction or impersonation).
         tool_defs = [{"type": "function",
                       "function": {"name": "x", "parameters": {}}}]
-        for tools, expected in ((tool_defs, True), (None, False)):
+
+        def surface() -> ToolSurface:
+            return ToolSurface(definitions=tool_defs, functions={})
+
+        for tools, expected in ((surface(), True), (None, False)):
             with self.subTest(tools=bool(tools)):
                 captured: dict = {}
                 with unittest.mock.patch.object(
@@ -177,7 +182,7 @@ class TestReasoningContentPassback(unittest.IsolatedAsyncioTestCase):
                 _fake_client_calls(captured, streams)):
             result = await run_llm_mod.run_llm(
                 mock_ctx(settings=SETTINGS, conversation=[]),
-                tools=tool_defs)
+                tools=ToolSurface(definitions=tool_defs, functions={}))
         self.assertEqual(result, 'done')
         return next(m for m in captured[1]['messages']
                     if m.get('role') == 'assistant' and m.get('tool_calls'))
@@ -212,7 +217,9 @@ class TestToolCallAnnouncements(unittest.IsolatedAsyncioTestCase):
                 ])):
             with unittest.mock.patch.object(
                     Messaging, 'send_json', send):
-                await run_llm_mod.run_llm(ctx, tools=tool_defs)
+                await run_llm_mod.run_llm(
+                    ctx, tools=ToolSurface(definitions=tool_defs,
+                                           functions={}))
         assistant = next(m for m in ctx.conversation.messages
                          if m.get('tool_calls'))
         self.assertEqual(assistant['custom'],
@@ -302,13 +309,11 @@ class TestToolArgumentJson(unittest.IsolatedAsyncioTestCase):
 
         with unittest.mock.patch.object(
                 run_llm_mod, 'client',
-                _fake_client_calls(calls, streams)), \
-                unittest.mock.patch.object(
-                    run_llm_mod, 'functions_for',
-                    lambda role: {'t': fake_tool}):
+                _fake_client_calls(calls, streams)):
             result = await run_llm_mod.run_llm(
                 mock_ctx(settings=SETTINGS, conversation=[]),
-                tools=tool_defs)
+                tools=ToolSurface(definitions=tool_defs,
+                                  functions={'t': fake_tool}))
         # The loop survived and gave the model a chance to fix it.
         self.assertEqual(result, 'done')
         self.assertEqual(len(calls), 2)
@@ -328,12 +333,10 @@ class TestToolArgumentJson(unittest.IsolatedAsyncioTestCase):
                       "function": {"name": "no_such_tool", "parameters": {}}}]
         with unittest.mock.patch.object(
                 run_llm_mod, 'client',
-                _fake_client_calls(calls, streams)), \
-                unittest.mock.patch.object(
-                    run_llm_mod, 'functions_for', lambda role: {}):
+                _fake_client_calls(calls, streams)):
             result = await run_llm_mod.run_llm(
                 mock_ctx(settings=SETTINGS, conversation=[]),
-                tools=tool_defs)
+                tools=ToolSurface(definitions=tool_defs, functions={}))
         self.assertEqual(result, 'done')
         tool_messages = [m for m in calls[1]['messages']
                          if m.get('role') == 'tool']

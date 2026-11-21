@@ -332,11 +332,6 @@ def _takes_interactive_context(func: Callable) -> bool:
                                                        ChatUpdateContext)
 
 
-def role_for(ctx: AgentContext) -> str:
-    """Which audience a context belongs to."""
-    return PARENT if isinstance(ctx, ChatUpdateContext) else SUBAGENT
-
-
 def tools_for(role: str) -> list[Tool]:
     """The tools one audience is offered, in declaration order."""
     return registry.tools_for(role)
@@ -350,6 +345,21 @@ def definitions_for(role: str) -> list[dict]:
 def functions_for(role: str) -> dict[str, Callable[..., object]]:
     """The implementations one audience may execute, by tool name."""
     return registry.functions_for(role)
+
+
+@dataclass(frozen=True)
+class ToolSurface:
+    """The tools one agent may call: definitions offered to the model,
+    and the executable implementations by name."""
+
+    definitions: list[dict]
+    functions: dict[str, Callable[..., object]]
+
+
+def surface_for(role: str) -> ToolSurface:
+    """The registry's view for one audience, as a ToolSurface."""
+    return ToolSurface(definitions=definitions_for(role),
+                       functions=functions_for(role))
 
 
 def all_tools() -> list[Tool]:

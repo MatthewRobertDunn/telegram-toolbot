@@ -19,7 +19,7 @@ from chat_update_context import (AgentContext,
 from conversation import Conversation, ConversationMessageType
 from messaging import Messaging
 from mock_context import mock_ctx
-from tool_registry import PARENT, SUBAGENT
+from tool_registry import PARENT, SUBAGENT, ToolSurface, surface_for
 from tool_registration import register_tools
 from tools import subagent as subagent_mod
 from tools.subagent import (
@@ -29,8 +29,6 @@ from tools.subagent import (
     cancel_all_subagents,
     format_duration,
     get_main_inbox,
-    get_parent_tool_defs,
-    get_subagent_tool_defs,
     subagent_list,
     subagent_send_to_parent,
     subagent_start,
@@ -110,12 +108,12 @@ class TestToolSets(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        # Register the real tool surface once; get_*_tool_defs read the
+        # Register the real tool surface once; surface_for reads the
         # registry.
         register_tools()
 
     def test_parent_tools_exclude_send_to_parent(self):
-        names = {t['function']['name'] for t in get_parent_tool_defs()}
+        names = {t['function']['name'] for t in surface_for(PARENT).definitions}
         self.assertIn('subagent_start', names)
         self.assertIn('subagent_list', names)
         self.assertIn('subagent_stop', names)
@@ -126,7 +124,7 @@ class TestToolSets(unittest.TestCase):
         self.assertNotIn('subagent_send_to_parent', names)
 
     def test_subagent_tools_have_no_subagent_controls(self):
-        names = {t['function']['name'] for t in get_subagent_tool_defs()}
+        names = {t['function']['name'] for t in surface_for(SUBAGENT).definitions}
         self.assertIn('subagent_send_to_parent', names)
         # Shared toolbox: file, sandbox, web, journal and memory work.
         for name in ('bash', 'read', 'write', 'web_search', 'python',
@@ -144,20 +142,17 @@ class TestToolSets(unittest.TestCase):
         self.assertNotIn('read_image_subagent', names)
         self.assertNotIn('generate_image_subagent', names)
 
-    def test_map_filtered_to_offered_definitions(self):
-        # A model hallucinating a non-offered tool cannot execute it.
-        active = run_llm_mod._tool_map_for(get_subagent_tool_defs(),
-                                           SUBAGENT)
-        self.assertIn('subagent_send_to_parent', active)
-        for name in ('subagent_start', 'subagent_list', 'subagent_stop',
-                     'subagent_steer'):
-            self.assertNotIn(name, active)
-        self.assertEqual(run_llm_mod._tool_map_for([], PARENT), {})
+    def test_surface_pairs_definitions_with_implementations(self):
+        # definitions and functions come from one registry view, so a
+        # name the model is offered is always executable and vice versa.
+        for role in (PARENT, SUBAGENT):
+            surface = surface_for(role)
+            names = {t['function']['name'] for t in surface.definitions}
+            self.assertEqual(set(surface.functions), names)
 
     def test_each_role_executes_its_own_implementation(self):
-        parent = run_llm_mod._tool_map_for(get_parent_tool_defs(), PARENT)
-        subagent = run_llm_mod._tool_map_for(get_subagent_tool_defs(),
-                                             SUBAGENT)
+        parent = surface_for(PARENT).functions
+        subagent = surface_for(SUBAGENT).functions
         for name in ('read_image', 'generate_image'):
             with self.subTest(tool=name):
                 self.assertIsNot(parent[name], subagent[name])
@@ -289,17 +284,12 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Error', result)
 
     async def test_send_to_parent_is_subagent_only(self):
-        # The parent loop never offers it; only the subagent map can
+        # The parent loop never offers it; only the subagent surface can
         # execute it.
-        parent = {t['function']['name'] for t in get_parent_tool_defs()}
+        parent = surface_for(PARENT).functions
         self.assertNotIn('subagent_send_to_parent', parent)
-        subagent = {t['function']['name'] for t in get_subagent_tool_defs()}
+        subagent = surface_for(SUBAGENT).functions
         self.assertIn('subagent_send_to_parent', subagent)
-        for role, defs in ((PARENT, get_parent_tool_defs()),
-                           (SUBAGENT, get_subagent_tool_defs())):
-            active = run_llm_mod._tool_map_for(defs, role)
-            self.assertEqual('subagent_send_to_parent' in active,
-                             role == SUBAGENT)
 
     async def test_cancel_all(self):
         ctx = _ctx()
@@ -681,12 +671,12 @@ class TestAnnounceTools(unittest.IsolatedAsyncioTestCase):
             show_tool_output=True, model='m', temperature=1.0, top_p=0.95)
         send = unittest.mock.AsyncMock(return_value=[9])
         with unittest.mock.patch.object(
-                run_llm_mod, 'functions_for', lambda role: {'t': fake_tool}), \
-            unittest.mock.patch.object(
                 run_llm_mod, 'client', fake_client), \
             unittest.mock.patch.object(Messaging, 'send_json', send):
             result = await run_llm_mod.run_llm(
-                ctx, conversation=Conversation(), tools=tool_defs,
+                ctx, conversation=Conversation(),
+                tools=ToolSurface(definitions=tool_defs,
+                                  functions={'t': fake_tool}),
                 announce_tools=announce)
         return result, send
 
