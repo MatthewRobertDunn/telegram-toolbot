@@ -18,10 +18,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import tool_registry
+import tool_registration
+from tool_registration import register_tools
 from chat_update_context import AgentContext, ChatUpdateContext
 from tool_registry import (BOTH, PARENT, SUBAGENT, ToolRegistry, agent_tool,
                            all_tools, definitions_for, tools_for)
-from tool_registration import register_tools
+import tool_registration
 
 CHAT_WRITING_TOOLS = (
     'send_file',
@@ -298,6 +300,50 @@ class TestRegistryLifecycle(unittest.TestCase):
                 tools_for(PARENT)
         self.assertEqual(len(calls), 2)
 
+    def test_failed_load_reports_the_real_error_not_a_clash(self):
+        # A loader that declares first and fails second must not leave its
+        # declarations behind: the retry would otherwise die on a
+        # misleading "declared twice" clash.
+        def declaring_failing_loader() -> None:
+            @agent_tool(description="x", parameters={"q": {"type": "string"}})
+            async def flaky_tool(q: str) -> str:
+                return q
+
+            raise RuntimeError("tool module import failed")
+
+        registry = self._isolated(loader=declaring_failing_loader)
+        for _ in range(2):
+            with self.assertRaises(RuntimeError) as caught:
+                tools_for(PARENT)
+            self.assertNotIn('declared twice', str(caught.exception))
+            self.assertIn('tool module import failed', str(caught.exception))
+            # The partial declarations were rolled back.
+            self.assertEqual(registry.declared(), [])
+
+    def test_retry_after_failed_load_succeeds(self):
+        attempts: list[int] = []
+
+        def flaky_loader() -> None:
+            attempts.append(1)
+
+            @agent_tool(description="x", name='flaky_tool',
+                        parameters={"q": {"type": "string"}})
+            async def flaky_tool(q: str) -> str:
+                return q
+
+            if len(attempts) == 1:
+                raise RuntimeError("import failed mid-module")
+
+        self._isolated(loader=flaky_loader)
+        with self.assertRaises(RuntimeError):
+            tools_for(PARENT)
+
+        # The retry re-declares from the restored (empty) registry, so the
+        # tool joins the surface instead of clashing with itself.
+        self.assertEqual([t.name for t in tools_for(PARENT)],
+                         ['flaky_tool'])
+        self.assertEqual(len(attempts), 2)
+
     def test_successful_load_is_sticky(self):
         calls: list[int] = []
         self._isolated(loader=lambda: calls.append(1))
@@ -357,6 +403,38 @@ class TestRegistryLifecycle(unittest.TestCase):
         self._isolated()
         with self.assertRaises(ValueError):
             tools_for('everyone')
+
+    def test_default_loader_is_bound_to_its_registry(self):
+        # ToolRegistry() must build a loader for itself, not for the
+        # module-global registry.
+        module_registry = self._isolated()
+        fresh = tool_registry.ToolRegistry()
+
+        with unittest.mock.patch.object(tool_registration,
+                                        'load_tools') as load:
+            fresh.load()
+
+        self.assertEqual(load.call_args,
+                         unittest.mock.call(fresh))
+        self.assertIs(tool_registry.registry, module_registry)
+
+    def test_default_loader_fills_a_fresh_registry(self):
+        # End to end: the fresh registry ends up with the declared tools,
+        # and the module registry is neither filled nor left swapped.
+        module_registry = self._isolated()
+        self.assertEqual(module_registry.declared(), [])
+
+        fresh = tool_registry.ToolRegistry()
+        # The tool modules declare once per process; drop them so the
+        # fresh registry is genuinely populated by its own load, as it
+        # would be in a process that had not imported them yet.
+        for name in tool_registration.TOOL_MODULES:
+            sys.modules.pop(name, None)
+        fresh.load()
+
+        self.assertIn('web_search', {t.name for t in fresh.all_tools()})
+        self.assertEqual(module_registry.declared(), [])
+        self.assertIs(tool_registry.registry, module_registry)
 
 
 if __name__ == '__main__':

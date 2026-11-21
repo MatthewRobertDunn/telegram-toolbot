@@ -131,9 +131,11 @@ ALLOWED_IDS_STR = os.environ.get("ALLOWED_IDS", "")
 ALLOWED_IDS = _int_list_env("ALLOWED_IDS", "")
 
 # SQLite database shared by the agent's memory, user settings, and journal.
+# STORE_DB_PATH is the env var that feeds it (see tests/test_config.py);
+# there is deliberately no STORE_DB_PATH module attribute: a one-time copy
+# would not track this value, and the stores read sql_db_path at call time.
 sql_db_path = os.environ.get(
     "STORE_DB_PATH", os.path.join(os.path.dirname(os.path.realpath(__file__)), '../store.db'))
-STORE_DB_PATH = sql_db_path
 
 SANDBOX_IMAGE = os.environ.get("SANDBOX_IMAGE", "elpechos/toolbot-sandbox:latest")
 # Seconds of inactivity after which a sandbox is stopped. Stopping keeps the

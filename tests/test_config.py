@@ -96,6 +96,16 @@ class ConfigEnvTest(unittest.TestCase):
         self.assertEqual(config.SANDBOX_CPUS, '8.0')
         self.assertEqual(config.ALLOWED_IDS, [])
 
+    def test_store_db_path_env_var_feeds_sql_db_path(self):
+        load_with_env(STORE_DB_PATH='/data/agent.db')
+        self.assertEqual(config.sql_db_path, '/data/agent.db')
+
+    def test_store_db_path_is_not_a_stale_copy(self):
+        # There is deliberately no STORE_DB_PATH module attribute: a
+        # one-time copy would silently ignore patches and drift from
+        # sql_db_path, which is what the stores read at call time.
+        self.assertFalse(hasattr(config, 'STORE_DB_PATH'))
+
     def test_nvidia_key_falls_back_to_the_openai_key(self):
         # The README's single-key deployment keeps working.
         load_with_env(OPENAI_API_KEY='sk-openai')

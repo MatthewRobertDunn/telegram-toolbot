@@ -95,10 +95,20 @@ class Tool:
         }
 
 
-def _default_loader() -> None:
-    """Import the tool modules; kept lazy to avoid an import cycle."""
-    from tool_registration import load_tools
-    load_tools()
+def _default_loader(registry: "ToolRegistry") -> Callable[[], None]:
+    """Build the lazy loader that imports the tool modules into *registry*.
+
+    The loader is bound to the instance that asked for it: a fresh
+    ToolRegistry must fill itself, not the module-global one. The binding
+    is passed through to tool_registration.load_tools, which points
+    tool_registry.registry at the target while the modules import (their
+    decorators call the module-level agent_tool).
+    """
+    def load() -> None:
+        from tool_registration import load_tools
+        load_tools(registry)
+
+    return load
 
 
 class ToolRegistry:
@@ -116,7 +126,7 @@ class ToolRegistry:
 
     def __init__(self, loader: Callable[[], None] | None = None) -> None:
         self._loader: Callable[[], None] = (
-            loader if loader is not None else _default_loader)
+            loader if loader is not None else _default_loader(self))
         self._declared: list[Tool] = []
         self._by_role: dict[str, dict[str, Tool]] | None = None
         self._loaded = False
@@ -204,9 +214,19 @@ class ToolRegistry:
         """
         if self._loaded or self._loading:
             return
+        # A loader that raises must leave nothing behind: its partial
+        # declarations would make the retry fail with a misleading
+        # "declared twice" clash instead of the real error, and the failed
+        # module's tools could never join the surface.
+        declared_before = list(self._declared)
+        index_before = self._by_role
         self._loading = True
         try:
             self._loader()
+        except BaseException:
+            self._declared = declared_before
+            self._by_role = index_before
+            raise
         finally:
             self._loading = False
         self._loaded = True
