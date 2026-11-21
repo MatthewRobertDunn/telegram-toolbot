@@ -220,10 +220,14 @@ async def _run_item(item: WorkItem) -> None:
         except Exception as e:
             item.error = e
             logger.error('Queued work failed', exc_info=True)
-        # Single persistence point: every queued mutation (replies,
-        # /undo, /regenerate, /retry, /impersonate, /compact) lands here,
-        # so a save here covers them all. Only when the thread actually
-        # has a conversation: a bare context (none loaded) has nothing to
+        # Single persistence point: every dequeued job is persisted once,
+        # right here - replies, /undo, /regenerate, /retry, /impersonate,
+        # /compact, and parent wakeups alike. A wakeup that finds an
+        # empty inbox still triggers this save (a harmless rewrite of an
+        # unchanged conversation): the pre-enqueue check makes that race
+        # rare, and a per-job persist opt-out would special-case one job
+        # type for no correctness gain. Only when the thread actually has
+        # a conversation: a bare context (none loaded) has nothing to
         # persist and reading ctx.conversation would trip its assert.
         # Never let a DB failure kill the worker loop.
         conversation = item.ctx.thread_data.conversation

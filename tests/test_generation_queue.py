@@ -166,6 +166,9 @@ class TestGenerateResponse(unittest.TestCase):
         item.abandon()
         self.assertTrue(item.done.is_set())
         self.assertIsNone(item._pending)
+        # Closure is observable: a closed coroutine releases its frame,
+        # so the dropped job can never be awaited or warn about it.
+        self.assertIsNone(coro.cr_frame)
 
     def test_stop_deletes_orphan_thinking(self):
         async def main():

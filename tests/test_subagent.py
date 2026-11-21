@@ -477,12 +477,18 @@ class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancel_all_clears_the_inbox(self):
         ctx = _ctx()
-        get_main_inbox(ctx).put_nowait(SubagentMessage(
+        inbox = get_main_inbox(ctx)
+        inbox.put_nowait(SubagentMessage(
             id='abc', state=SubagentStatus.FINISHED, description='T',
             result='report'))
         cancel_all_subagents(ctx)
         # Stale mail is dropped, so any wakeup already queued no-ops on
         # the empty inbox instead of replying into a reset conversation.
+        # clear_main_inbox drops the queue rather than draining it, so
+        # the installed inbox is a fresh (empty) one - either way the
+        # report mail is gone; assert both facts so a no-op clear cannot
+        # hide behind get_main_inbox's auto-creation.
+        self.assertIsNot(get_main_inbox(ctx), inbox)
         self.assertTrue(get_main_inbox(ctx).empty())
 
     async def test_late_steer_to_finished_subagent_is_dropped(self):

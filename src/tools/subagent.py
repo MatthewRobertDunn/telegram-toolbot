@@ -244,9 +244,12 @@ async def _run_subagent(parent: ChatUpdateContext, record: SubagentRecord,
     except Exception as e:
         record.finish(SubagentStatus.FAILED)
         record.result = f"Subagent error: {e}"
+        # Log the failure whoever owns the user-visible notice: the
+        # notification claim only gates the inbox receipt, never the
+        # operator log.
+        logger.warning('subagent %s failed: %s', record.id, e,
+                       exc_info=True)
         if record.mark_notified():
-            logger.warning('subagent %s failed: %s', record.id, e,
-                           exc_info=True)
             try:
                 await _notify_parent(
                     parent,

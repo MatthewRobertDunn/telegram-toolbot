@@ -403,7 +403,7 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
                        clock: _FakeClock | None = None):
         clock = clock or _FakeClock()
         sleeps: list = []
-        client, _ = _failing_client(errors)
+        client, calls = _failing_client(errors)
         with self._patched(clock, sleeps), \
                 unittest.mock.patch.object(run_llm_mod, 'client', client):
             result = await run_llm_mod._one_completion(
@@ -429,9 +429,47 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sleeps, [])
 
     async def test_construction_error_fails_immediately(self):
-        result, sleeps, _ = await self._run_one(
-            [TypeError('unexpected kwarg')], budget=1000)
+        # Fail-fast is scoped to request construction: a bad kwarg or
+        # malformed tool schema reproduces identically forever, so
+        # waiting is pointless.
+        clock = _FakeClock()
+        sleeps: list = []
+        client, calls = _failing_client([_FakeStatusError(502)])
+        with self._patched(clock, sleeps), \
+                unittest.mock.patch.object(run_llm_mod, 'client', client), \
+                unittest.mock.patch.object(
+                    run_llm_mod, '_request_kwargs',
+                    unittest.mock.Mock(
+                        side_effect=TypeError('unexpected kwarg'))):
+            result = await run_llm_mod._one_completion(
+                _completion_cfg(), Conversation(),
+                SETTINGS,  # type: ignore[arg-type]
+                'm', offer_tools=False,
+                streamer=run_llm_mod.NullDraftSink(),
+                strip_thinking=False, budget=1000)
         self.assertIsNone(result)
+        self.assertEqual(sleeps, [])
+        # The client was never reached: construction failed first.
+        self.assertEqual(calls, [])
+
+    async def test_typeerror_from_the_sdk_or_stream_is_retried(self):
+        # The same exception types arriving after construction - from the
+        # SDK or mid-stream - are presumed transient: a stream ValueError
+        # must not become NO_RESPONSE_MESSAGE with zero retries.
+        result, sleeps, _ = await self._run_one(
+            [TypeError('stream blew up')], budget=1000)
+        self.assertIsNone(result)  # budget ran out, not fail-fast
+        self.assertGreaterEqual(len(sleeps), 3)
+
+    async def test_zero_or_negative_budget_means_no_retries(self):
+        # A misconfigured (<= 0) api_retry_time must not turn into an
+        # unbounded retry loop: one attempt runs, the first failure
+        # gives up.
+        result, sleeps, _ = await self._run_one(
+            [_FakeStatusError(502)], budget=0)
+        self.assertIsNone(result)
+        # No sleep at all: the failure was recognized as terminal at
+        # once, not as the start of another wait.
         self.assertEqual(sleeps, [])
 
     async def test_server_errors_retry_until_budget_spent(self):
@@ -493,28 +531,41 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
     async def test_budget_is_the_same_for_both_context_kinds(self):
         # One budget for everyone: the "subagents retry forever" design
         # is deferred until subagent state is persisted/resumable, so a
-        # silent AgentContext must not get special treatment here.
-        captured: list = []
+        # silent AgentContext must not get special treatment here. Both
+        # kinds run the real retry loop and stop at the same configured
+        # budget with the same number of attempts.
+        budget = 5.0
+        attempts: dict[str, int] = {}
 
-        async def spy(cfg, *args, **kwargs):
-            captured.append(kwargs['budget'])
-            return None
+        async def run_until_spent(kind: str, ctx) -> None:
+            client, calls = _failing_client([_FakeStatusError(502)])
+            clock = _FakeClock()
+            sleeps: list = []
+            with unittest.mock.patch.object(config, 'api_retry_time',
+                                            budget), \
+                    unittest.mock.patch.object(run_llm_mod, '_loop_time',
+                                               clock.time), \
+                    unittest.mock.patch.object(run_llm_mod, '_sleep',
+                                               _advance(clock, sleeps)), \
+                    unittest.mock.patch.object(run_llm_mod, 'client',
+                                               client):
+                result = await run_llm_mod.run_llm(ctx)
+            attempts[kind] = len(calls)
+            self.assertIs(result, run_llm_mod.NO_RESPONSE_MESSAGE)
+            # The stop was budget-driven: the clock ran past the budget,
+            # and more than one attempt was made.
+            self.assertGreaterEqual(clock.now - 100.0, budget)
+            self.assertGreater(len(calls), 1)
 
+        await run_until_spent('interactive',
+                              mock_ctx(settings=SETTINGS, conversation=[]))
         agent = AgentContext(
             user_id=1, user_data=UserData(),
             thread_data=ThreadData(  # type: ignore[arg-type]
                 conversation=Conversation(),
                 settings=SETTINGS))  # type: ignore[arg-type]
-        with unittest.mock.patch.object(config, 'api_retry_time', 36000), \
-                unittest.mock.patch.object(run_llm_mod, '_one_completion',
-                                           spy):
-            await run_llm_mod.run_llm(mock_ctx(settings=SETTINGS,
-                                               conversation=[]))
-            await run_llm_mod.run_llm(agent)
-        # Interactive and silent contexts both run on the same
-        # configured budget; _retry_budget takes no context at all.
-        self.assertEqual(captured, [36000.0, 36000.0])
-        self.assertEqual(run_llm_mod._retry_budget(), 36000.0)
+        await run_until_spent('subagent', agent)
+        self.assertEqual(attempts['interactive'], attempts['subagent'])
 
     async def test_run_llm_returns_no_response_when_budget_spent(self):
         ctx = mock_ctx(settings=SETTINGS, conversation=[])

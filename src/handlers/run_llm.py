@@ -79,19 +79,19 @@ def _retry_budget() -> float:
 def _non_retryable(error: Exception) -> bool:
     """Whether waiting cannot fix this error: give up immediately.
 
-    Authentication/permission failures (401/403) fail for every model the
-    router could reroute to, and a request-construction TypeError/
-    ValueError (bad argument, bad kwarg - raised while building the
-    request, not by the server) reproduces identically forever; retrying
-    either only burns the serialized worker's slot. Everything else is
-    presumed transient per the rationale above: timeouts, connection
-    errors, 429, 5xx, and 400-class responses the router may route to
-    another model all keep retrying.
+    Only authentication/permission failures (401/403): they fail for
+    every model the router could reroute to, so retrying just burns the
+    serialized worker's slot. Everything else is presumed transient per
+    the rationale above - timeouts, connection errors, 429, 5xx, 400-class
+    responses the router may route to another model, and even TypeError/
+    ValueError arriving from the SDK or the stream handling (a mid-stream
+    parsing hiccup is transient; failing it with zero retries would turn
+    a router blip into a dropped reply). Request-construction TypeError/
+    ValueError are checked separately in _one_completion, where they are
+    known to be deterministic.
     """
     status = getattr(error, 'status_code', None)
-    if isinstance(status, int) and status in (401, 403):
-        return True
-    return isinstance(error, (TypeError, ValueError))
+    return isinstance(status, int) and status in (401, 403)
 
 
 async def execute_tool_call(ctx: AgentContext, tool_call,
@@ -302,31 +302,45 @@ async def _one_completion(cfg: RunConfig, conversation: Conversation,
     """One completion request under the module retry policy.
 
     Retries within the wall-clock ``budget`` (config.api_retry_time for
-    every context kind; see the rationale at the top of this module),
-    except for errors waiting cannot fix (_non_retryable), which
-    return None right away. Backoff grows 1.2x per attempt, clamped to a
-    per-sleep maximum so one sleep cannot swallow hours of the budget.
-    Returns the consumed stream, or None when the budget is spent or a
-    non-retryable error came back (the caller turns that into
-    NO_RESPONSE_MESSAGE). Cancellation propagates immediately, so
-    /stop and subagent_stop interrupt the retry sleep.
+    every context kind; see the rationale at the top of this module);
+    a budget of zero or less means a single attempt and no retries.
+    Backoff grows 1.2x per attempt, clamped to a per-sleep maximum so
+    one sleep cannot swallow hours of the budget. Returns the consumed
+    stream, or None when the budget is spent or a non-retryable error
+    came back (the caller turns that into NO_RESPONSE_MESSAGE).
+    Cancellation propagates immediately, so /stop and subagent_stop
+    interrupt the retry sleep.
 
-    The completion itself is guarded end to end - request construction
-    included - so a TypeError/ValueError from building a malformed
-    request surfaces as NO_RESPONSE_MESSAGE instead of killing the
-    queued job.
+    Fail-fast is scoped to deterministic errors only: 401/403 from the
+    server, and TypeError/ValueError raised while building the request.
+    The same exception types arriving later - from the transport, stream
+    parsing, or the draft sink - are presumed transient and retried.
     """
-    give_up_at = _loop_time() + budget if budget > 0 else None
+    # A non-positive budget means "no retries", never "unbounded": the
+    # first attempt always runs, and the first failure gives up.
+    budget = max(0.0, float(budget))
+    give_up_at = _loop_time() + budget
     time_to_wait = 1.0
     attempt = 0
     while True:
-        if give_up_at is not None and _loop_time() >= give_up_at:
+        # The first attempt always runs; after that, no attempt starts
+        # once the budget is spent.
+        if attempt and _loop_time() >= give_up_at:
             break
         attempt += 1
         try:
-            streamer.new_round()
             create_kwargs = _request_kwargs(cfg, conversation, settings,
                                             effective_model, offer_tools)
+        except (TypeError, ValueError) as e:
+            # Deterministic: rebuilding the same request fails the same
+            # way forever, so waiting is pointless. The same exception
+            # types from the SDK or stream handling below are retried -
+            # those are not deterministic.
+            logger.warning('request construction failed (%s: %s); '
+                           'not retrying', type(e).__name__, e)
+            return None
+        try:
+            streamer.new_round()
             response: Any = await client.chat.completions.create(
                 **create_kwargs)
             message = await consume_stream(
@@ -342,15 +356,14 @@ async def _one_completion(cfg: RunConfig, conversation: Conversation,
                     '(%s, status %s): %s; not retrying',
                     type(e).__name__, getattr(e, 'status_code', '-'), e)
                 return None
-            if give_up_at is None:
-                logger.warning(
-                    'completion attempt %d failed (%s: %s); retrying '
-                    'with no deadline', attempt, type(e).__name__, e)
-            else:
-                logger.warning(
-                    'completion attempt %d failed (%s: %s); %.0fs of '
-                    'retry budget left', attempt, type(e).__name__, e,
-                    max(0.0, give_up_at - _loop_time()))
+            logger.warning(
+                'completion attempt %d failed (%s: %s); %.0fs of '
+                'retry budget left', attempt, type(e).__name__, e,
+                max(0.0, give_up_at - _loop_time()))
+            if _loop_time() >= give_up_at:
+                # Budget already spent (e.g. a zero budget): no point
+                # sleeping before a next attempt that will not run.
+                break
             await _sleep(time_to_wait)
             time_to_wait = min(time_to_wait * RETRY_BACKOFF_GROWTH,
                                _retry_max_delay())
