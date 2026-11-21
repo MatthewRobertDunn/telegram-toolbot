@@ -7,7 +7,8 @@ from chat_update_context import AgentContext
 from sandbox import manager
 from tool_registry import BOTH, agent_tool
 
-from .common import _ensure_read, _mark_read, _resolve_path, _run_helper
+from .common import (_ensure_read, _mark_read, _resolve_path, _run_helper,
+                     MAX_ERROR_CHARS)
 
 
 @agent_tool(
@@ -123,7 +124,7 @@ async def write(ctx: AgentContext, filePath: str, content: str) -> str:
     if result["timeout"]:
         return "Error: write timed out."
     if result["returncode"] != 0:
-        return f"Error: {result['stderr'].strip()[:500]}"
+        return f"Error: {result['stderr'].strip()[:MAX_ERROR_CHARS]}"
     _mark_read(ctx, path)
     return "Wrote file successfully."
 
@@ -224,7 +225,7 @@ async def patch(ctx: AgentContext, patchText: str) -> str:
     if result["timeout"]:
         return "Error: patch timed out."
     if result["returncode"] != 0:
-        return f"Error: {result['stderr'].strip()[:1000]}"
+        return f"Error: {result['stderr'].strip()[:MAX_ERROR_CHARS]}"
     summary = result["stdout"].strip()
     for line in summary.splitlines():
         if line.startswith(("A ", "M ")):

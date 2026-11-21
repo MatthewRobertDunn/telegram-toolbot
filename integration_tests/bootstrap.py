@@ -1,60 +1,58 @@
-"""One-time test bootstrap: path setup, env loading, logging, DB reset.
+"""Shared setup for integration tests.
 
-Import this first in every test file that relies on src modules:
-    import bootstrap  # noqa: F401
+Importing this module establishes the isolated test environment (same
+harness as the unit tier, see ``tests/_bootstrap.py``). Import does
+have one filesystem effect: it creates the isolated per-run temporary
+database (and its schema). What it never touches is the repo's real
+``store.db`` — the old import-time delete/recreate of
+``integration_tests/test_store.db`` is gone, and a guard forbids
+opening any real database.
+
+* ``integration_tests/.env`` is loaded first, before the shared harness
+  imports any application module: ``config.py`` snapshots the
+  environment once at import time, so keys that only exist in that file
+  (image-generation API keys, for example) must already be in
+  ``os.environ`` by then.
+* ``STORE_DB_PATH`` points at a fresh per-run temporary database
+  outside the checkout, so integration tests never touch the repo's
+  ``store.db``. One directory per process, so parallel runs cannot
+  collide. The harness sets it unconditionally, so a ``STORE_DB_PATH``
+  in ``integration_tests/.env`` cannot redirect the suite either.
+* A guard forbids opening the repo's real databases.
+
+Test modules import this module for its helpers only::
+
+    import bootstrap  # noqa: F401  (env + guard)
+    ...
+    uid = bootstrap.next_uid()
+    @bootstrap.requires_docker
+    class TestSandbox(...):
 """
-import asyncio
 import functools
-import logging
 import os
 import subprocess
 import sys
 import unittest
 
-_HERE = os.path.dirname(__file__)
-
-# ------------------------------------------------------------------ paths
-_SRC = os.path.join(_HERE, '..', 'src')
-for _p in (_SRC, _HERE):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
 
 # ------------------------------------------------------------------ .env
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: E402
+
 load_dotenv(os.path.join(_HERE, '.env'))
 
-# ------------------------------------------------------------------ logging
-logging.disable(logging.CRITICAL)
+# ------------------------------------------------------------------ harness
+# Imported after the .env load above and before any src module is
+# imported: config.py reads the environment (including STORE_DB_PATH)
+# when it is first imported, and the harness pulls in the store modules
+# that import config.
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
-# ------------------------------------------------------------------ database
-from memory_store import create_memory_store
-from settings_store import create_settings_store
+from tests import _bootstrap  # noqa: E402
 
-_db_reset_done = False
-
-
-def _reset_test_db():
-    global _db_reset_done
-    if _db_reset_done:
-        return
-    _db_reset_done = True
-
-    db_path = os.environ.get("STORE_DB_PATH", "store.db")
-    try:
-        os.remove(db_path)
-    except FileNotFoundError:
-        pass
-
-    async def _create():
-        async with create_memory_store() as memory:
-            await memory.create_schema()
-        async with create_settings_store() as settings_store:
-            await settings_store.create_schema()
-
-    asyncio.run(_create())
-
-
-_reset_test_db()
+_bootstrap.setup()
 
 # ------------------------------------------------------------------ uid
 _next_uid = 3000
@@ -104,3 +102,23 @@ def requires_sandbox_image(test_cls):
             f"sandbox image {config.SANDBOX_IMAGE} not built locally")(
             test_cls))
 
+
+def nvidia_key_available() -> bool:
+    """True when an image-generation API key is configured.
+
+    Mirrors src/config.py: NVIDIA_API_KEY, falling back to OPENAI_API_KEY.
+    By the time this runs, bootstrap has already loaded
+    integration_tests/.env into the process environment (load_dotenv above
+    precedes every config import), so a key added there is picked up
+    with no further edits.
+    """
+    return bool(os.environ.get("NVIDIA_API_KEY")
+                or os.environ.get("OPENAI_API_KEY"))
+
+
+def requires_nvidia_key(test_cls):
+    """Class decorator: skip tests that call the NVIDIA image endpoint
+    when no API key is configured."""
+    return unittest.skipUnless(
+        nvidia_key_available(),
+        "NVIDIA_API_KEY (or OPENAI_API_KEY) not configured")(test_cls)

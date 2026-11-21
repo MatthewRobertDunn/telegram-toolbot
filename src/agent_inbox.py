@@ -1,9 +1,22 @@
 """Per-thread agent inbox state: a leaf module with no project imports.
 
-The main assistant owns one ``asyncio.Queue`` inbox plus a small set of
-coordination flags on ``ctx.thread_data``. Both ``handlers.generation_queue``
-(the main loop owner) and ``tools.subagent`` (background producers) share
-this state, so it lives here instead of in either of them.
+The main assistant owns one ``asyncio.Queue`` inbox plus the conversation
+epoch on ``ctx.thread_data``. Both ``handlers.generation_queue`` (the
+worker that drains the parent loop) and ``tools.subagent`` (background
+producers) share this state, so it lives here instead of in either of
+them.
+
+Wakeup protocol (always-enqueue): every notification puts its mail on the
+inbox and schedules a wakeup job no matter what the parent is doing.
+There is deliberately no "parent loop is active" flag to consult or
+release - the flag used to leak True on any wakeup path that exited
+early, silently silencing every later notification until a human typed.
+Redundant wakeups are acceptable instead: N notifications may queue N
+jobs, the first drains the whole inbox and the rest find it empty and
+no-op (no send, no persistence). Losing mail now requires dropping a
+wakeup job *and* never draining the inbox again; a /stop that drops
+queued items can always be followed by the next user turn, which drains
+whatever is still queued.
 
 Cross-agent traffic is strongly typed: every inbox carries
 ``SubagentMessage`` (never raw strings) via ``SubagentInbox``, whose
@@ -14,6 +27,7 @@ instead of being threaded through as pre-rendered strings.
 
 import asyncio
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -23,10 +37,31 @@ if TYPE_CHECKING:
 #: subagent's inbox, parent notes back into its own).
 PARENT_ID = "parent"
 
+
+class SubagentStatus(StrEnum):
+    """The one status vocabulary for subagent records and inbox mail.
+
+    Both ``SubagentRecord.status`` and ``SubagentMessage.state`` use it,
+    so a record can be funneled into a receipt without a state rename
+    (``"done"`` and ``"finished"`` used to disagree, and ``"done"`` was
+    not terminal). Being a ``StrEnum`` the members format and compare as
+    their lowercase values, so stored text and model-facing rendering
+    stay unchanged.
+    """
+
+    RUNNING = "running"
+    FINISHED = "finished"
+    FAILED = "failed"
+    STOPPED = "stopped"
+    # Parent-originated steering mail: not a subagent state at all.
+    STEER = "steer"
+
+
 #: Inbox states after which the sender will send no more mail. Receipts
 #: name these in the summary; anything else (interim progress) gets no
 #: suffix — the sender is still alive.
-TERMINAL_STATES = frozenset({"finished", "failed", "stopped"})
+TERMINAL_STATES = frozenset({SubagentStatus.FINISHED, SubagentStatus.FAILED,
+                             SubagentStatus.STOPPED})
 
 
 @dataclass
@@ -34,14 +69,14 @@ class SubagentMessage:
     """One structured inbox delivery.
 
     id: sender — subagent id, or "parent" for parent-originated mail.
-    state: running (still alive) | finished | failed |
+    state: a SubagentStatus - running (still alive) | finished | failed |
         stopped | steer.
     description: subagent description ("" when unknown/inapplicable).
     result: report body, error detail, progress text, or steer text.
     """
 
     id: str
-    state: str
+    state: SubagentStatus
     description: str = ""
     result: str = ""
 
@@ -89,15 +124,6 @@ def clear_main_inbox(ctx: "ChatUpdateContext") -> None:
     ctx.thread_data.main_inbox = None
 
 
-def main_loop_active(ctx: "ChatUpdateContext") -> bool:
-    """Whether a main-loop drainer exists that will pick up inbox mail."""
-    return ctx.thread_data.main_loop_active
-
-
-def set_main_loop_active(ctx: "ChatUpdateContext", active: bool) -> None:
-    ctx.thread_data.main_loop_active = active
-
-
 def conversation_epoch(ctx: "ChatUpdateContext") -> int:
     return ctx.thread_data.conversation_epoch
 
@@ -105,14 +131,3 @@ def conversation_epoch(ctx: "ChatUpdateContext") -> int:
 def bump_conversation_epoch(ctx: "ChatUpdateContext") -> int:
     ctx.thread_data.conversation_epoch += 1
     return ctx.thread_data.conversation_epoch
-
-
-def take_wakeup_task(ctx: "ChatUpdateContext") -> asyncio.Task | None:
-    task = ctx.thread_data.wakeup_task
-    ctx.thread_data.wakeup_task = None
-    return task
-
-
-def set_wakeup_task(ctx: "ChatUpdateContext",
-                    task: asyncio.Task | None) -> None:
-    ctx.thread_data.wakeup_task = task

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import sqlite3
 import sys
@@ -14,12 +15,21 @@ import settings_store
 from settings_store import (CONVERSATION_KEY, load_conversation,
                             save_conversation)
 from settings_store import SettingsStore
-from conversation import Conversation
+from conversation import Conversation, MAX_IMAGES
 from mock_context import mock_ctx
 
 
 def _temp_store(path):
     return SettingsStore(path)
+
+
+def _image_parts(messages):
+    """Every inline image part in the message list, oldest first."""
+    return [part
+            for message in messages
+            if isinstance(message.get('content'), list)
+            for part in message['content']
+            if isinstance(part, dict) and part.get('type') == 'image_url']
 
 
 class ConversationPersistenceTest(unittest.IsolatedAsyncioTestCase):
@@ -80,7 +90,7 @@ class ConversationPersistenceTest(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch.object(gq, 'save_conversation',
                                wraps=save_conversation) as spy:
-            await gq.submit_task(ctx, job())
+            await gq.submit_task(ctx, job)
             spy.assert_awaited_once()
             args, _ = spy.call_args
             self.assertEqual(args[0], 5)
@@ -148,6 +158,70 @@ class ConversationPersistenceTest(unittest.IsolatedAsyncioTestCase):
         assert row is not None
         self.assertEqual(row[0], 2)
         self.assertIsNotNone(row[1])
+
+    async def test_save_prunes_old_inline_images(self):
+        # Built from raw messages: add_image would itself prune to the
+        # cap, and the point here is an over-cap history reaching save.
+        raw = []
+        for i in range(MAX_IMAGES + 2):
+            raw.append({
+                'role': 'user',
+                'content': [
+                    {'type': 'text', 'text': f'img {i}'},
+                    {'type': 'image_url',
+                     'image_url': {'url': f'data:image/png;base64,{i}'}}]})
+        conversation = Conversation(raw)
+        self.assertEqual(len(_image_parts(conversation.messages)),
+                         MAX_IMAGES + 2)
+
+        await save_conversation(5, None, conversation)
+
+        # The save never touches the live conversation.
+        self.assertEqual(len(_image_parts(conversation.messages)),
+                         MAX_IMAGES + 2)
+
+        loaded = await load_conversation(5, None)
+        assert loaded is not None
+        parts = _image_parts(loaded.messages)
+        # Only the newest images survive the round trip; the row is
+        # rewritten whole on every queued turn, so the payload stays
+        # bounded.
+        self.assertEqual(len(parts), MAX_IMAGES)
+        newest = _image_parts(conversation.messages)[-1]
+        self.assertEqual(parts[-1], newest)
+        self.assertIn('[image omitted]', json.dumps(loaded.messages))
+
+    async def test_load_prunes_unbounded_stored_images(self):
+        # A stored blob carrying more images than the cap (written by an
+        # older version, say) must not resurrect them on load.
+        messages = []
+        for i in range(MAX_IMAGES + 4):
+            messages.append({'role': 'user', 'content': [
+                {'type': 'text', 'text': f'msg {i}'},
+                {'type': 'image_url',
+                 'image_url': {'url': f'data:image/png;base64,{i}'}}]})
+        store = _temp_store(self.path)
+        try:
+            await store.set(5, CONVERSATION_KEY,
+                            json.dumps({'id': 'abc', 'messages': messages}),
+                            None)
+        finally:
+            await store.close()
+
+        loaded = await load_conversation(5, None)
+        assert loaded is not None
+        self.assertEqual(loaded.id, 'abc')
+        self.assertEqual(len(loaded.messages), MAX_IMAGES + 4)
+        self.assertEqual(len(_image_parts(loaded.messages)), MAX_IMAGES)
+        self.assertIn('[image omitted]', json.dumps(loaded.messages))
+        # Message dict shapes are otherwise intact.
+        self.assertEqual(loaded.messages[-1]['role'], 'user')
+        self.assertEqual(loaded.messages[-1]['content'][0],
+                         {'type': 'text', 'text': f'msg {MAX_IMAGES + 3}'})
+        self.assertEqual(loaded.messages[0]['content'][0],
+                         {'type': 'text', 'text': 'msg 0'})
+        self.assertEqual(loaded.messages[0]['content'][1],
+                         {'type': 'text', 'text': '[image omitted]'})
 
 
 if __name__ == '__main__':

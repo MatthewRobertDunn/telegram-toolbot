@@ -16,19 +16,24 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sandbox_image'
 
 import toolbot_edit
 import toolbot_glob
+import toolbot_grep
+import toolbot_protocol
 import toolbot_read
 from handlers import run_llm as run_llm_mod
 from handlers import upload_handler
 from conversation import Conversation
 from mock_context import mock_ctx
 from tools.sandbox import common, files, media, search, shell
-from sandbox import SandboxManager, _unique_name
+from tools import python_runner
+from sandbox import SandboxManager
 from tool_result import ImageAttachment, ToolCallResult
 import upload_cache
 
 
 
-_SANDBOX_MODULES = (common, shell, files, search, media)
+# Modules holding a `manager` reference to patch; search.py goes through
+# common._run_helper, so it has none.
+_SANDBOX_MODULES = (common, shell, files, media, python_runner)
 
 
 @contextlib.contextmanager
@@ -106,23 +111,36 @@ class CannedDocker:
         return 0, '', ''
 
 
-def _run_main(argv: list[str], fn) -> dict:
-    """Run a helper's main() with the given argv, capture its JSON stdout."""
+def _run_main(argv: list[str], fn) -> tuple[dict, int]:
+    """Run a helper's main() with the given argv.
+
+    Returns (protocol payload from stdout, process exit code): helpers
+    exit 0 only on success (toolbot_protocol.py).
+    """
     original = sys.argv
     sys.argv = ['helper'] + argv
     captured = io.StringIO()
+    code = 0
     try:
         with contextlib.redirect_stdout(captured):
-            fn()
+            code = fn() or 0
     finally:
         sys.argv = original
-    return json.loads(captured.getvalue())
+    return json.loads(captured.getvalue()), code
 
 
 class TestEditHelper(unittest.TestCase):
 
     def _replace(self, content, old, new, replace_all=False):
         return toolbot_edit.replace(content, old, new, replace_all)
+
+    def _run(self, payload_text: str) -> tuple[dict, int]:
+        original_stdin = sys.stdin
+        sys.stdin = io.StringIO(payload_text)
+        try:
+            return _run_main([], toolbot_edit.main)
+        finally:
+            sys.stdin = original_stdin
 
     def test_exact_replacement(self):
         self.assertEqual(self._replace('foo\nbar\nbaz\n', 'bar', 'qux'),
@@ -174,20 +192,52 @@ class TestEditHelper(unittest.TestCase):
                 f.write('foo\nbar\n')
             payload = {'path': path, 'old_string': 'bar', 'new_string': 'qux',
                        'replace_all': False}
-            original_stdin = sys.stdin
-            sys.stdin = io.StringIO(json.dumps(payload))
-            try:
-                result = _run_main([], toolbot_edit.main)
-            finally:
-                sys.stdin = original_stdin
+            result, code = self._run(json.dumps(payload))
+            self.assertEqual(code, 0)
             self.assertTrue(result['ok'])
+            self.assertEqual(result['v'], toolbot_protocol.PROTOCOL_VERSION)
             with open(path) as f:
                 self.assertEqual(f.read(), 'foo\nqux\n')
+
+    def test_payload_rejects_unknown_fields(self):
+        result, code = self._run(json.dumps(
+            {'path': 'f.txt', 'old_string': 'a', 'new_string': 'b',
+             'extra': 1}))
+        self.assertEqual(code, 1)
+        self.assertFalse(result['ok'])
+        self.assertIn('unexpected payload field', result['error'])
+
+    def test_payload_rejects_missing_or_wrong_typed_fields(self):
+        cases = [
+            {'old_string': 'a', 'new_string': 'b'},          # missing path
+            {'path': 3, 'old_string': 'a', 'new_string': 'b'},  # wrong type
+            {'path': 'f.txt', 'new_string': 'b'},            # missing old
+            {'path': 'f.txt', 'old_string': 'a', 'new_string': 'b',
+             'replace_all': 'yes'},                          # wrong flag type
+        ]
+        for payload in cases:
+            with self.subTest(payload=payload):
+                result, code = self._run(json.dumps(payload))
+                self.assertEqual(code, 1)
+                self.assertFalse(result['ok'])
+                self.assertIn('payload', result['error'])
+
+    def test_payload_rejects_non_json(self):
+        result, code = self._run('not json at all')
+        self.assertEqual(code, 1)
+        self.assertFalse(result['ok'])
+        self.assertIn('not valid JSON', result['error'])
+
+    def test_payload_rejects_non_object(self):
+        result, code = self._run('[1, 2]')
+        self.assertEqual(code, 1)
+        self.assertFalse(result['ok'])
+        self.assertIn('JSON object', result['error'])
 
 
 class TestReadHelper(unittest.TestCase):
 
-    def _read(self, *args) -> dict:
+    def _read(self, *args) -> tuple[dict, int]:
         return _run_main(list(args), toolbot_read.main)
 
     def test_line_numbers(self):
@@ -195,7 +245,8 @@ class TestReadHelper(unittest.TestCase):
             path = os.path.join(tmp, 'f.txt')
             with open(path, 'w') as f:
                 f.write('a\nb\nc\n')
-            result = self._read('--path', path)
+            result, code = self._read('--path', path)
+            self.assertEqual(code, 0)
             self.assertTrue(result['ok'])
             data = result['data']
             self.assertEqual(data['type'], 'file')
@@ -211,7 +262,9 @@ class TestReadHelper(unittest.TestCase):
             path = os.path.join(tmp, 'f.txt')
             with open(path, 'w') as f:
                 f.writelines(f'{i}\n' for i in range(1, 11))
-            result = self._read('--path', path, '--offset', '5', '--limit', '3')
+            result, code = self._read('--path', path, '--offset', '5',
+                                      '--limit', '3')
+            self.assertEqual(code, 0)
             data = result['data']
             self.assertEqual([line['n'] for line in data['lines']], [5, 6, 7])
             self.assertTrue(data['more'])
@@ -221,7 +274,8 @@ class TestReadHelper(unittest.TestCase):
             path = os.path.join(tmp, 'f.txt')
             with open(path, 'w') as f:
                 f.write('a\n')
-            result = self._read('--path', path, '--offset', '10')
+            result, code = self._read('--path', path, '--offset', '10')
+            self.assertEqual(code, 1)
             self.assertFalse(result['ok'])
             self.assertIn('out of range', result['error'])
 
@@ -230,7 +284,7 @@ class TestReadHelper(unittest.TestCase):
             path = os.path.join(tmp, 'f.txt')
             with open(path, 'w') as f:
                 f.write('x' * 3000 + '\n')
-            result = self._read('--path', path)
+            result, _ = self._read('--path', path)
             text = result['data']['lines'][0]['text']
             self.assertEqual(
                 len(text), 2000 + len(toolbot_read.MAX_LINE_SUFFIX))
@@ -241,7 +295,8 @@ class TestReadHelper(unittest.TestCase):
             os.makedirs(os.path.join(tmp, 'sub'))
             with open(os.path.join(tmp, 'file.txt'), 'w') as f:
                 f.write('x')
-            result = self._read('--path', tmp)
+            result, code = self._read('--path', tmp)
+            self.assertEqual(code, 0)
             data = result['data']
             self.assertEqual(data['type'], 'directory')
             self.assertEqual(data['entries'], ['file.txt', 'sub/'])
@@ -253,7 +308,8 @@ class TestReadHelper(unittest.TestCase):
             path = os.path.join(tmp, 'f.zip')
             with open(path, 'wb') as f:
                 f.write(b'PK\x03\x04' + b'\x00' * 100)
-            result = self._read('--path', path)
+            result, code = self._read('--path', path)
+            self.assertEqual(code, 1)
             self.assertFalse(result['ok'])
             self.assertIn('binary', result['error'])
 
@@ -261,14 +317,16 @@ class TestReadHelper(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, 'app.py'), 'w') as f:
                 f.write('x')
-            result = self._read('--path', os.path.join(tmp, 'app'))
+            result, code = self._read('--path', os.path.join(tmp, 'app'))
+            self.assertEqual(code, 1)
             self.assertFalse(result['ok'])
             self.assertIn('Did you mean', result['error'])
             self.assertIn('app.py', result['error'])
 
         # With no candidates at all there is no suggestion section.
         with tempfile.TemporaryDirectory() as tmp:
-            result = self._read('--path', os.path.join(tmp, 'missing.txt'))
+            result, code = self._read('--path', os.path.join(tmp, 'missing.txt'))
+            self.assertEqual(code, 1)
             self.assertFalse(result['ok'])
             self.assertIn('File not found', result['error'])
 
@@ -313,24 +371,113 @@ class TestGlobHelper(unittest.TestCase):
             file_path = os.path.join(tmp, 'f.txt')
             with open(file_path, 'w') as f:
                 f.write('x')
-            result = _run_main(
+            result, code = _run_main(
                 ['--pattern', '*', '--path', file_path], toolbot_glob.main)
+            self.assertEqual(code, 1)
+            self.assertFalse(result['ok'])
+            self.assertIn('directory', result['error'])
+
+
+class TestGrepHelper(unittest.TestCase):
+    """Mirrors TestGlobHelper: search() runs against a stubbed rg seam."""
+
+    def setUp(self):
+        self._original_rg = toolbot_grep._start_rg
+
+    def tearDown(self):
+        toolbot_grep._start_rg = self._original_rg
+
+    @staticmethod
+    def _fake_rg(events: list, returncode: int = 0):
+        class _Proc:
+            stdout = iter([event + '\n' for event in events])
+
+            def __init__(self):
+                self.killed = False
+                self.returncode = None
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self):
+                self.returncode = returncode
+                return returncode
+
+        return _Proc()
+
+    @staticmethod
+    def _match_event(path: str, line: int, text: str) -> str:
+        return json.dumps({'type': 'match', 'data': {
+            'path': {'text': path}, 'line_number': line,
+            'lines': {'text': text}}})
+
+    def test_matches_are_parsed_and_made_absolute(self):
+        events = [
+            json.dumps({'type': 'begin', 'data': {'path': {'text': 'a.py'}}}),
+            self._match_event('a.py', 3, 'needle here\n'),
+            self._match_event('a.py', 7, 'another needle\n'),
+            json.dumps({'type': 'end', 'data': {}}),
+        ]
+        toolbot_grep._start_rg = (lambda path, pattern, include:
+                                  self._fake_rg(events))
+        result = toolbot_grep.search('/workspace', 'needle', None)
+        self.assertEqual(result['matches'], [
+            {'path': os.path.abspath('a.py'), 'line': 3,
+             'text': 'needle here'},
+            {'path': os.path.abspath('a.py'), 'line': 7,
+             'text': 'another needle'},
+        ])
+        self.assertEqual(result['totalMatches'], 2)
+        self.assertFalse(result['truncated'])
+
+    def test_non_json_lines_tolerated(self):
+        toolbot_grep._start_rg = (lambda path, pattern, include:
+                                  self._fake_rg(['partial-truncated-garbage',
+                                                 self._match_event('a', 1, 'x\n')]))
+        result = toolbot_grep.search('.', 'x', None)
+        self.assertEqual(len(result['matches']), 1)
+
+    def test_truncation_cap_and_early_stop(self):
+        events = [self._match_event('a.py', i, 'hit\n')
+                  for i in range(toolbot_grep.LIMIT + 10)]
+        proc = self._fake_rg(events)
+        toolbot_grep._start_rg = (lambda path, pattern, include: proc)
+        result = toolbot_grep.search('.', 'hit', None)
+        self.assertEqual(len(result['matches']), toolbot_grep.LIMIT)
+        self.assertEqual(result['totalMatches'], toolbot_grep.LIMIT + 1)
+        self.assertTrue(result['truncated'])
+        self.assertTrue(proc.killed)
+
+    def test_long_lines_capped(self):
+        toolbot_grep._start_rg = (lambda path, pattern, include:
+                                  self._fake_rg(
+                                      [self._match_event('a.py', 1,
+                                                         'x' * 3000 + '\n')]))
+        result = toolbot_grep.search('.', 'x', None)
+        self.assertEqual(
+            len(result['matches'][0]['text']),
+            toolbot_grep.MAX_LINE_CHARS + len('... (line truncated)'))
+
+    def test_rg_failure_after_clean_read(self):
+        toolbot_grep._start_rg = (lambda path, pattern, include:
+                                  self._fake_rg([], returncode=2))
+        with self.assertRaises(RuntimeError, msg='ripgrep failed'):
+            toolbot_grep.search('.', 'x', None)
+
+    def test_path_must_be_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            file_path = os.path.join(tmp, 'f.txt')
+            with open(file_path, 'w') as f:
+                f.write('x')
+            result, code = _run_main(
+                ['--pattern', 'x', '--path', file_path],
+                toolbot_grep.main)
+            self.assertEqual(code, 1)
             self.assertFalse(result['ok'])
             self.assertIn('directory', result['error'])
 
 
 class TestUploadNaming(unittest.TestCase):
-
-    def test_suffixing(self):
-        self.assertEqual(_unique_name("f.txt", set()), "f.txt")
-        self.assertEqual(_unique_name("f.txt", {"f.txt"}), "f-1.txt")
-        self.assertEqual(
-            _unique_name("f.txt", {"f.txt", "f-1.txt", "f-2.txt"}),
-            "f-3.txt")
-        self.assertEqual(
-            _unique_name("photo.jpg", {"photo.jpg"}), "photo-1.jpg")
-        self.assertEqual(
-            _unique_name("README", {"README"}), "README-1")
 
     def test_fallback_name_from_kind_and_path(self):
         class Document:
@@ -372,13 +519,14 @@ class TestUploadCache(unittest.TestCase):
             maxsize=8, ttl=ttl, timer=lambda: now[0])
         return now
 
-    def test_matches_by_user_and_filename(self):
+    def test_matches_by_user_and_path(self):
         self._swap_cache(60)
         upload_cache.record_upload(1, '/workspace/uploads/pic.png')
         self.assertTrue(
             upload_cache.was_recently_uploaded(1, '/workspace/uploads/pic.png'))
-        # Matching is on the filename alone, so relative paths hit too.
-        self.assertTrue(upload_cache.was_recently_uploaded(1, 'uploads/pic.png'))
+        # Matching is on the full path, so a same-named file elsewhere
+        # does not collide with it.
+        self.assertFalse(upload_cache.was_recently_uploaded(1, 'uploads/pic.png'))
         self.assertFalse(
             upload_cache.was_recently_uploaded(2, '/workspace/uploads/pic.png'))
         self.assertFalse(
@@ -402,25 +550,92 @@ class TestSandboxToolHelpers(unittest.TestCase):
         self.assertEqual(common._resolve_path('src/../app.py'),
                          '/workspace/app.py')
 
-    def test_parse_rg_json(self):
-        events = '\n'.join([
-            json.dumps({'type': 'begin', 'data': {'path': {'text': 'a.py'}}}),
-            json.dumps({'type': 'match', 'data': {
-                'path': {'text': 'a.py'}, 'line_number': 3,
-                'lines': {'text': 'needle here\n'}}}),
-            json.dumps({'type': 'match', 'data': {
-                'path': {'text': 'a.py'}, 'line_number': 7,
-                'lines': {'text': 'another needle\n'}}}),
-            json.dumps({'type': 'end', 'data': {}}),
-            'partial-truncated-garbage',
-        ])
-        matches = search._parse_rg_json(events)
-        self.assertEqual(matches, [
-            {'path': 'a.py', 'line': 3, 'text': 'needle here'},
-            {'path': 'a.py', 'line': 7, 'text': 'another needle'},
-        ])
-        # Non-JSON lines from a truncated pipe are tolerated.
-        self.assertEqual(search._parse_rg_json('not json\n'), [])
+
+class TestHelperRunner(unittest.IsolatedAsyncioTestCase):
+    """_run_helper validates the toolbot protocol on every response."""
+
+    def _manager(self, rc: int, stdout: str, stderr: str = ''):
+        return SandboxManager(docker=CannedDocker([('helper.py', rc, stdout,
+                                                    stderr)]))
+
+    async def _run(self, manager) -> dict:
+        with _patched_manager(manager):
+            return await common._run_helper(1, 'helper.py', ['--flag'])
+
+    async def test_valid_success_response(self):
+        payload = json.dumps({'v': 1, 'ok': True, 'data': {'x': 1}})
+        result = await self._run(self._manager(0, payload + '\n'))
+        self.assertEqual(result, {'v': 1, 'ok': True, 'data': {'x': 1}})
+
+    async def test_valid_failure_response(self):
+        payload = json.dumps({'v': 1, 'ok': False, 'error': 'boom'})
+        result = await self._run(self._manager(1, payload + '\n'))
+        self.assertEqual(result, {'ok': False, 'error': 'boom'})
+
+    async def test_nonzero_exit_reports_stderr(self):
+        result = await self._run(self._manager(2, '', 'traceback text'))
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['error'], 'traceback text')
+
+    async def test_nonzero_exit_without_stderr(self):
+        result = await self._run(self._manager(2, '', '  \n'))
+        self.assertFalse(result['ok'])
+        self.assertIn('exited with code 2', result['error'])
+
+    async def test_success_payload_on_nonzero_exit_reports_the_run(self):
+        # A "success" payload arriving with a failed exit is untrustworthy:
+        # the run's exit status is what gets reported, not the payload.
+        payload = json.dumps({'v': 1, 'ok': True, 'data': {'x': 1}})
+        result = await self._run(self._manager(3, payload, 'died badly'))
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['error'], 'died badly')
+
+        result = await self._run(self._manager(3, payload))
+        self.assertEqual(result['error'], 'helper.py exited with code 3.')
+
+    async def test_missing_version_read_as_v1(self):
+        # Helpers from before the version field existed (any currently
+        # deployed image) answer without "v": accepted, so a code-only
+        # deploy keeps working against an older image.
+        payload = json.dumps({'ok': True, 'data': {'x': 1}})
+        result = await self._run(self._manager(0, payload + '\n'))
+        self.assertEqual(result, {'ok': True, 'data': {'x': 1}})
+
+        payload = json.dumps({'ok': False, 'error': 'old helper failure'})
+        result = await self._run(self._manager(1, payload + '\n'))
+        self.assertEqual(result, {'ok': False, 'error': 'old helper failure'})
+
+    async def test_versions_up_to_max_accepted(self):
+        for version in (1, 2):
+            payload = json.dumps(
+                {'v': version, 'ok': True, 'data': {'x': version}})
+            result = await self._run(self._manager(0, payload))
+            self.assertEqual(result['data'], {'x': version})
+
+    async def test_future_protocol_version_rejected(self):
+        payload = json.dumps({'v': common.MAX_HELPER_PROTOCOL_VERSION + 1,
+                              'ok': True, 'data': {}})
+        result = await self._run(self._manager(0, payload))
+        self.assertFalse(result['ok'])
+        self.assertIn('newer than this bot understands', result['error'])
+
+    async def test_missing_ok_flag(self):
+        payload = json.dumps({'v': 1, 'data': {}})
+        result = await self._run(self._manager(0, payload))
+        self.assertFalse(result['ok'])
+        self.assertIn("'ok' flag", result['error'])
+
+    async def test_success_without_data(self):
+        payload = json.dumps({'v': 1, 'ok': True})
+        result = await self._run(self._manager(0, payload))
+        self.assertFalse(result['ok'])
+        self.assertIn("missing 'data'", result['error'])
+
+    async def test_failure_without_error_message(self):
+        payload = json.dumps({'v': 1, 'ok': False})
+        result = await self._run(self._manager(1, payload))
+        self.assertFalse(result['ok'])
+        self.assertIn('without an error message', result['error'])
 
 
 class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
@@ -435,6 +650,22 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
             result = await shell.bash(ctx, 'echo hello')
         self.assertIn('Return code: 0', result)
         self.assertIn('stdout:\nhello', result)
+
+    async def test_python_runner_shares_bash_formatting(self):
+        # Both command tools render through the one formatter, so the model
+        # sees the same shape from either.
+        manager = self._canned([('python3 -', 0, '4\n', '')])
+        with _patched_manager(manager):
+            ctx = mock_ctx()
+            result = await python_runner.run_python_code(ctx, 'print(2+2)')
+        self.assertEqual(result, 'Return code: 0\nstdout:\n4\n')
+
+        manager = self._canned([('python3 -', 1, '',
+                                 'SyntaxError: bad code')])
+        with _patched_manager(manager):
+            ctx = mock_ctx()
+            result = await python_runner.run_python_code(ctx, 'def def def')
+        self.assertEqual(result, 'Return code: 1\nstderr:\nSyntaxError: bad code')
 
     async def test_write_creates_and_marks_read(self):
         manager = self._canned([('test -e', 1, '', ''), ('mkdir', 0, '', '')])
@@ -460,7 +691,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
 
     async def test_edit_runs_helper(self):
         helper_result = json.dumps(
-            {'ok': True, 'data': {'output': 'Edit applied successfully.'}})
+            {'v': 1, 'ok': True, 'data': {'output': 'Edit applied successfully.'}})
         manager = self._canned([('toolbot_edit.py', 0, helper_result, '')])
         with _patched_manager(manager):
             ctx = mock_ctx()
@@ -477,7 +708,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn('identical', result)
 
     async def test_read_formats_lines(self):
-        helper_result = json.dumps({'ok': True, 'data': {
+        helper_result = json.dumps({'v': 1, 'ok': True, 'data': {
             'type': 'file', 'path': '/workspace/f.txt',
             'lines': [{'n': 1, 'text': 'alpha'}, {'n': 2, 'text': 'beta'}],
             'lineStart': 1, 'lineEnd': 2, 'totalLines': 2,
@@ -493,7 +724,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
 
     async def test_read_error(self):
         helper_result = json.dumps(
-            {'ok': False, 'error': 'File not found: /workspace/x'})
+            {'v': 1, 'ok': False, 'error': 'File not found: /workspace/x'})
         manager = self._canned([('toolbot_read.py', 0, helper_result, '')])
         with _patched_manager(manager):
             ctx = mock_ctx()
@@ -501,7 +732,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn('File not found', result)
 
     async def test_read_directory(self):
-        helper_result = json.dumps({'ok': True, 'data': {
+        helper_result = json.dumps({'v': 1, 'ok': True, 'data': {
             'type': 'directory', 'path': '/workspace',
             'entries': ['src/', 'app.py'], 'offset': 1,
             'totalEntries': 2, 'truncated': False}})
@@ -514,16 +745,14 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('/workspace',
                          ctx.user_data.sandbox_read_files)
 
-    async def test_grep_formats_matches(self):
-        events = '\n'.join([
-            json.dumps({'type': 'match', 'data': {
-                'path': {'text': 'src/a.py'}, 'line_number': 4,
-                'lines': {'text': 'find_me()\n'}}}),
-            json.dumps({'type': 'match', 'data': {
-                'path': {'text': 'src/b.py'}, 'line_number': 9,
-                'lines': {'text': 'find_me()\n'}}}),
-        ])
-        manager = self._canned([('rg', 0, events, '')])
+    async def test_grep_delegates_to_the_helper(self):
+        helper_result = json.dumps({'v': 1, 'ok': True, 'data': {
+            'matches': [
+                {'path': '/workspace/src/a.py', 'line': 4, 'text': 'find_me()'},
+                {'path': '/workspace/src/b.py', 'line': 9, 'text': 'find_me()'},
+            ],
+            'totalMatches': 2, 'truncated': False}})
+        manager = self._canned([('toolbot_grep.py', 0, helper_result, '')])
         with _patched_manager(manager):
             ctx = mock_ctx()
             result = await search.grep(ctx, 'find_me')
@@ -531,28 +760,46 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn('/workspace/src/a.py:', result)
         self.assertIn('  Line 4: find_me()', result)
         self.assertIn('  Line 9: find_me()', result)
+        # The pattern rides in as helper arguments; rg runs inside the image.
+        self.assertIn('--pattern', manager._docker.calls[-1][-1])
 
         # An empty result set is a distinct contract the model re-queries on.
-        manager = self._canned([('rg', 0, '', '')])
+        helper_result = json.dumps(
+            {'v': 1, 'ok': True, 'data': {'matches': [], 'totalMatches': 0,
+                                          'truncated': False}})
+        manager = self._canned([('toolbot_grep.py', 0, helper_result, '')])
         with _patched_manager(manager):
             ctx = mock_ctx()
             result = await search.grep(ctx, 'nothing')
         self.assertEqual(result, 'No files found')
 
-    async def test_grep_reports_rg_error(self):
-        manager = self._canned([('rg', 0, '', 'regex parse error')])
+    async def test_grep_reports_helper_error(self):
+        helper_result = json.dumps(
+            {'v': 1, 'ok': False, 'error': 'regex parse error'})
+        manager = self._canned([('toolbot_grep.py', 0, helper_result, '')])
         with _patched_manager(manager):
             ctx = mock_ctx()
             result = await search.grep(ctx, '[')
         self.assertIn('regex parse error', result)
 
+    async def test_grep_reports_helper_crash(self):
+        # A helper that dies without speaking the protocol degrades to an
+        # error; its traceback never reaches the model.
+        manager = self._canned([('toolbot_grep.py', 2, '',
+                                 'Traceback (most recent call last): ...')])
+        with _patched_manager(manager):
+            ctx = mock_ctx()
+            result = await search.grep(ctx, 'x')
+        self.assertIn('Traceback', result)
+        self.assertIn('Error:', result)
+
     async def test_grep_truncates(self):
-        events = '\n'.join(
-            json.dumps({'type': 'match', 'data': {
-                'path': {'text': 'a.py'}, 'line_number': i,
-                'lines': {'text': 'hit\n'}}})
-            for i in range(search.MAX_GREP_MATCHES + 10))
-        manager = self._canned([('rg', 0, events, '')])
+        helper_result = json.dumps({'v': 1, 'ok': True, 'data': {
+            'matches': [
+                {'path': '/workspace/a.py', 'line': i, 'text': 'hit'}
+                for i in range(100)],
+            'totalMatches': 110, 'truncated': True}})
+        manager = self._canned([('toolbot_grep.py', 0, helper_result, '')])
         with _patched_manager(manager):
             ctx = mock_ctx()
             result = await search.grep(ctx, 'hit')
@@ -560,7 +807,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Results truncated', result)
 
     async def test_glob_formats_files(self):
-        helper_result = json.dumps({'ok': True, 'data': {
+        helper_result = json.dumps({'v': 1, 'ok': True, 'data': {
             'files': ['/workspace/a.py', '/workspace/b.py'],
             'truncated': False}})
         manager = self._canned([('toolbot_glob.py', 0, helper_result, '')])
@@ -572,7 +819,7 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
 
         # An empty listing is a distinct result string.
         helper_result = json.dumps(
-            {'ok': True, 'data': {'files': [], 'truncated': False}})
+            {'v': 1, 'ok': True, 'data': {'files': [], 'truncated': False}})
         manager = self._canned([('toolbot_glob.py', 0, helper_result, '')])
         with _patched_manager(manager):
             ctx = mock_ctx()
@@ -733,7 +980,7 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
     async def test_recent_upload_is_not_resent_to_the_chat(self):
         # An image the user just uploaded is already visible in the chat
         # window; read_image attaches it for the model without re-sending
-        # it. Another user's upload of the same name is not spared.
+        # it. Another user's upload of the same file is not spared.
         result, bot = await self._read_image(
             path='uploads/pic.png', uploaded_by=1)
         assert isinstance(result, ToolCallResult)
@@ -743,8 +990,9 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
         self.assertIn('recently uploaded', result.text)
         self.assertIn('attached to this result', result.text)
 
-        # Another user's upload of the same name is not spared.
-        upload_cache._recent_uploads.pop((1, 'pic.png'), None)
+        # Another user's upload of the same file is not spared.
+        upload_cache._recent_uploads.pop(
+            (1, '/workspace/uploads/pic.png'), None)
         result, bot = await self._read_image(
             path='uploads/pic.png', uploaded_by=2)
         assert isinstance(result, ToolCallResult)

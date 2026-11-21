@@ -85,8 +85,6 @@ class TestSubagentContextIsolation(unittest.TestCase):
     def test_parent_coordination_state_is_unreachable(self):
         child = _child(_parent())
         self.assertIsNone(child.thread_data.main_inbox)
-        self.assertIsNone(child.thread_data.wakeup_task)
-        self.assertFalse(child.thread_data.main_loop_active)
         self.assertEqual(child.thread_data.conversation_epoch, 0)
         self.assertIsNone(child.thread_data.generation_queue)
         self.assertIsNone(child.thread_data.generation_task)

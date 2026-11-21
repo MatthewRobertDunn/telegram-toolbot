@@ -1,13 +1,15 @@
 """Read tool backend for the toolbot sandbox.
 
 Reads a file (with line numbers, offset/limit, truncation caps, binary
-detection) or lists a directory. Prints a JSON result to stdout:
-{"ok": true, "data": {...}} or {"ok": false, "error": "..."}.
+detection) or lists a directory. Prints the shared helper protocol
+(see toolbot_protocol.py).
 """
 import argparse
 import json
 import os
 import sys
+
+from toolbot_protocol import emit
 
 DEFAULT_READ_LIMIT = 2000
 MAX_LINE_LENGTH = 2000
@@ -130,7 +132,7 @@ def similar_files(path: str) -> list[str]:
     return matches[:3]
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--path", required=True)
     parser.add_argument("--offset", type=int, default=0)
@@ -154,9 +156,9 @@ def main() -> None:
             if is_binary_file(path):
                 raise ValueError(f"Cannot read binary file: {path}")
             data = read_file_lines(path, offset, limit)
-        print(json.dumps({"ok": True, "data": data}))
+        return emit(True, data)
     except Exception as e:
-        print(json.dumps({"ok": False, "error": str(e)}))
+        return emit(False, error=str(e))
 
 
 if __name__ == "__main__":

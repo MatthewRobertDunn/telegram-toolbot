@@ -166,4 +166,13 @@ src/files/allowed_ids
 src/store.db
 store.db
 test_store.db
+# SQLite sidecars a live dev DB leaves behind; never commit them either.
+store.db-journal
+store.db-wal
+store.db-shm
+test_store.db-journal
+test_store.db-wal
+test_store.db-shm
+# Local system-prompt override: chatbot.py reads ./system_prompt (resolved
+# relative to src/) and falls back to the built-in prompt when absent.
 /src/system_prompt

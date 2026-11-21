@@ -24,6 +24,10 @@ Two levels of access live here:
     Stored in PTB's ``context.user_data`` dict keyed by
     ``message_thread_id`` (``None`` for unthreaded chats), so each thread
     gets its own isolated state while sharing the user's ``UserData``.
+    One deliberate exception to that isolation: an unthreaded chat's
+    ``settings`` aliases the user's template object (see
+    ``ThreadData.settings_is_template``), so a change made without a
+    thread also updates the template every new thread clones.
 
 Subagents are given an ``AgentContext`` built by
 ``ChatUpdateContext.new_subagent_context``; see that method for the state
@@ -55,20 +59,26 @@ class ThreadData:
     Everything here belongs to one chat/thread, not to the user: the
     conversation, its own settings copy (cloned from the user's template
     on first touch), the serialized generation machinery (queue, worker
-    and tracked task), the subagent inbox plus its wakeup bookkeeping,
-    the epoch guarding against stale wakeups, and the subagent records
-    that report back to this thread.
+    and tracked task), the subagent inbox, the epoch guarding against
+    stale wakeups, and the subagent records that report back to this
+    thread.
     """
 
     conversation: Conversation | None = None
     settings: "UserSettings | None" = None
+    # Names the settings aliasing: True when ``settings`` is not the
+    # thread's own object but the user's template shared in place - the
+    # unthreaded/'all' category, where a write through the thread must
+    # also be a write to the template (``middleware.init_conversation``
+    # sets it; the AgentContext.settings setter keeps it true after a
+    # command replaces the object). Threaded chats own a deep copy instead
+    # and always run with False, so their changes stay local.
+    settings_is_template: bool = False
     generation_task: asyncio.Task | None = None
     generation_worker: asyncio.Task | None = None
     generation_queue: asyncio.Queue | None = None
     main_inbox: "SubagentInbox | None" = None
-    main_loop_active: bool = False
     conversation_epoch: int = 0
-    wakeup_task: asyncio.Task | None = None
     subagents: dict[str, "SubagentRecord"] = field(default_factory=dict)
 
 
@@ -137,6 +147,13 @@ class AgentContext:
     @settings.setter
     def settings(self, value: "UserSettings") -> None:
         self.thread_data.settings = value
+        # The aliasing flag is a fact about object identity, so it is
+        # maintained here rather than only at init: a command that swaps
+        # the object in (e.g. /settings_reset) changes whether the thread
+        # shares the template, even mid-command (the unthreaded branch of
+        # the settings decorator then re-shares the new object).
+        self.thread_data.settings_is_template = (
+            value is not None and value is self.user_data.settings)
 
 
 class ChatUpdateContext(AgentContext):
@@ -241,8 +258,8 @@ class ChatUpdateContext(AgentContext):
         it gets its own ``UserData`` (empty: subagents need no template)
         plus its own ``ThreadData`` holding the subagent's conversation
         and a deepcopy of the parent's effective settings. The
-        parent thread's coordination state - inbox, wakeup flags,
-        conversation epoch, generation queue, subagents - and its sandbox
+        parent thread's coordination state - inbox, conversation epoch,
+        generation queue, subagents - and its sandbox
         read marks are not reachable from here (fresh empty set), which is
         what makes an accidental mutation impossible rather than merely
         discouraged.
@@ -261,17 +278,61 @@ class ChatUpdateContext(AgentContext):
         )
 
 
+def _ensure_user_data(user_data_dict: dict) -> tuple[UserData, dict]:
+    """Fetch (or lazily create) this user's state inside PTB's per-user
+    dict: the ``UserData`` itself plus the thread-keyed map of
+    ``ThreadData``. PTB hands us a plain dict, so missing entries are
+    normal on a user's first update.
+    """
+    user_data = user_data_dict.get(_USER_DATA_KEY)
+    if not isinstance(user_data, UserData):
+        user_data = UserData()
+        user_data_dict[_USER_DATA_KEY] = user_data
+    threads = user_data_dict.get(_THREADS_KEY)
+    if not isinstance(threads, dict):
+        threads = {}
+        user_data_dict[_THREADS_KEY] = threads
+    return user_data, threads
+
+
+def _thread_data_for(threads: dict, thread_id: int | None) -> ThreadData:
+    """Fetch (or lazily create) the state of one chat/thread. Unthreaded
+    chats have no thread id, so they share the None thread."""
+    thread_data = threads.get(thread_id)
+    if not isinstance(thread_data, ThreadData):
+        thread_data = ThreadData()
+        threads[thread_id] = thread_data
+    return thread_data
+
+
 def _parse_command_text(text: str) -> str:
+    """Everything after the command token (the arguments), stripped.
+
+    Private because it has exactly one consumer: the per-update parse in
+    ``create_chat_update_context`` below.
+    """
     _, _, args = text.partition(' ')
     return args.strip()
 
 
 def _parse_command_name(text: str) -> str:
+    """The bare, lowercased command name of a message text ('' when it is
+    not one).
+
+    Lowercased because that is how PTB dispatches: registered names are
+    lowercased and the incoming token is matched lowercased, so ``/MODEL``
+    runs the ``model`` handler and would otherwise miss the table. The
+    ``@mention`` is stripped too: ``/start@MyBot arg`` yields ``start`` -
+    the mention addresses the bot, not the command, so carrying it would
+    render usage lines like ``/start@MyBot <text>``.
+
+    Private because it has exactly one consumer: the per-update parse in
+    ``create_chat_update_context`` below.
+    """
     if not text.startswith("/"):
         return ""
-
-    command = text[1:].split(maxsplit=1)[0]
-    return command
+    token = text[1:].split(maxsplit=1)[0]
+    return token.partition('@')[0].lower()
 
 
 def create_chat_update_context(
@@ -286,21 +347,10 @@ def create_chat_update_context(
     assert message is not None
     user_data_dict = context.user_data
     assert user_data_dict is not None
-    user_data = user_data_dict.get(_USER_DATA_KEY)
-    if not isinstance(user_data, UserData):
-        user_data = UserData()
-        user_data_dict[_USER_DATA_KEY] = user_data
-    threads = user_data_dict.get(_THREADS_KEY)
-    if not isinstance(threads, dict):
-        threads = {}
-        user_data_dict[_THREADS_KEY] = threads
-    # Unthreaded chats have no thread id, so they share the None thread.
+    user_data, threads = _ensure_user_data(user_data_dict)
     effective = update.effective_message
     thread_id = getattr(effective, 'message_thread_id', None)
-    thread_data = threads.get(thread_id)
-    if not isinstance(thread_data, ThreadData):
-        thread_data = ThreadData()
-        threads[thread_id] = thread_data
+    thread_data = _thread_data_for(threads, thread_id)
     text = message.text or message.caption or ''
     return ChatUpdateContext(
         update=update,

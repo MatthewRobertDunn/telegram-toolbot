@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from conversation import Conversation
 from handlers import subagent_handlers as handlers_mod
 from mock_context import mock_ctx
-from tools.subagent import SubagentRecord
+from tools.subagent import SubagentRecord, SubagentStatus
 
 
 def _ctx():
@@ -36,7 +36,8 @@ class TestSubagentListCommand(unittest.IsolatedAsyncioTestCase):
         ctx.thread_data.subagents = {
             'abc123': SubagentRecord(
                 id='abc123', description='Research task',
-                conversation=Conversation(), status='running', parent=ctx),
+                conversation=Conversation(),
+                status=SubagentStatus.RUNNING, parent=ctx),
         }
         send = await self._run(ctx)
         send.assert_awaited_once()
