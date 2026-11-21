@@ -7,9 +7,10 @@ and exits 0 only on success.
     {"v": 1, "ok": false, "error": "..."}  exit 1
 
 The version lets the bot-side runner (tools/sandbox/common.py) reject a
-response it does not understand — from a helper older or newer than the
-bot — with a clear error instead of misparsing whatever shape the other
-side happened to produce.
+response newer than it understands with a clear error instead of
+misparsing it. Helpers from before the version field existed answer
+without one; the runner treats those as version 1, so a code-only deploy
+keeps working against an older image.
 """
 
 import json

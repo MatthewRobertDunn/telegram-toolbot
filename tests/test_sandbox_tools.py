@@ -581,21 +581,42 @@ class TestHelperRunner(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result['ok'])
         self.assertIn('exited with code 2', result['error'])
 
-    async def test_unreadable_response(self):
-        result = await self._run(self._manager(0, 'not json'))
+    async def test_success_payload_on_nonzero_exit_reports_the_run(self):
+        # A "success" payload arriving with a failed exit is untrustworthy:
+        # the run's exit status is what gets reported, not the payload.
+        payload = json.dumps({'v': 1, 'ok': True, 'data': {'x': 1}})
+        result = await self._run(self._manager(3, payload, 'died badly'))
         self.assertFalse(result['ok'])
-        self.assertIn('unreadable response', result['error'])
+        self.assertEqual(result['error'], 'died badly')
 
-    async def test_non_object_response(self):
-        result = await self._run(self._manager(0, json.dumps([1, 2])))
-        self.assertFalse(result['ok'])
-        self.assertIn('not an object', result['error'])
+        result = await self._run(self._manager(3, payload))
+        self.assertEqual(result['error'], 'helper.py exited with code 3.')
 
-    async def test_wrong_protocol_version(self):
-        payload = json.dumps({'v': 2, 'ok': True, 'data': {}})
+    async def test_missing_version_read_as_v1(self):
+        # Helpers from before the version field existed (any currently
+        # deployed image) answer without "v": accepted, so a code-only
+        # deploy keeps working against an older image.
+        payload = json.dumps({'ok': True, 'data': {'x': 1}})
+        result = await self._run(self._manager(0, payload + '\n'))
+        self.assertEqual(result, {'ok': True, 'data': {'x': 1}})
+
+        payload = json.dumps({'ok': False, 'error': 'old helper failure'})
+        result = await self._run(self._manager(1, payload + '\n'))
+        self.assertEqual(result, {'ok': False, 'error': 'old helper failure'})
+
+    async def test_versions_up_to_max_accepted(self):
+        for version in (1, 2):
+            payload = json.dumps(
+                {'v': version, 'ok': True, 'data': {'x': version}})
+            result = await self._run(self._manager(0, payload))
+            self.assertEqual(result['data'], {'x': version})
+
+    async def test_future_protocol_version_rejected(self):
+        payload = json.dumps({'v': common.MAX_HELPER_PROTOCOL_VERSION + 1,
+                              'ok': True, 'data': {}})
         result = await self._run(self._manager(0, payload))
         self.assertFalse(result['ok'])
-        self.assertIn('protocol version', result['error'])
+        self.assertIn('newer than this bot understands', result['error'])
 
     async def test_missing_ok_flag(self):
         payload = json.dumps({'v': 1, 'data': {}})

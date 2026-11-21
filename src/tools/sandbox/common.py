@@ -14,9 +14,15 @@ HELPER_DIR = "/opt/toolbot"
 BASH_OUTPUT_LIMIT = 6000
 MAX_ERROR_CHARS = 500
 
-# Must match the helpers' PROTOCOL_VERSION (sandbox_image/helpers/
-# toolbot_protocol.py). A mismatch means the image is older than the bot.
+# The helper protocol version the current helpers emit
+# (toolbot_protocol.py's PROTOCOL_VERSION), and the newest version this
+# code can parse. A missing version field is read as version 1 (helpers
+# from before the protocol existed), and versions up to
+# MAX_HELPER_PROTOCOL_VERSION are accepted - both keep a code-only
+# `pake publish` working against an older sandbox image. Only a helper
+# newer than this code is rejected, with a clear message.
 HELPER_PROTOCOL_VERSION = 1
+MAX_HELPER_PROTOCOL_VERSION = 2
 
 
 def _resolve_path(path: str) -> str:
@@ -73,8 +79,9 @@ async def _run_helper(user_id: int, helper: str, args: list[str],
 
     Helpers speak the toolbot protocol (toolbot_protocol.py): one JSON
     line {"v": 1, "ok": ...}. A helper that crashes, times out, or speaks
-    an unknown protocol degrades to {"ok": False, "error": ...} instead
-    of raising or leaking its raw internals to the model.
+    a protocol newer than this code understands degrades to
+    {"ok": False, "error": ...} instead of raising or leaking its raw
+    internals to the model.
     """
     command = f"python3 {HELPER_DIR}/{helper}"
     if args:
@@ -95,27 +102,39 @@ async def _run_helper(user_id: int, helper: str, args: list[str],
     if response is not None and not isinstance(response, dict):
         return {"ok": False, "error": f"{helper} response is not an object."}
     if isinstance(response, dict):
-        version = response.get("v")
-        if version != HELPER_PROTOCOL_VERSION:
+        # A missing version field means a helper from before the protocol
+        # existed: treat it as version 1, so a code-only deploy keeps
+        # working against an older sandbox image.
+        version = response.get("v", 1)
+        if (not isinstance(version, int) or isinstance(version, bool)
+                or version < 1):
             return {"ok": False,
-                    "error": (f"{helper} spoke protocol version "
-                              f"{version!r}, expected "
-                              f"{HELPER_PROTOCOL_VERSION}.")}
+                    "error": (f"{helper} spoke unparseable protocol "
+                              f"version {version!r}.")}
+        if version > MAX_HELPER_PROTOCOL_VERSION:
+            return {"ok": False,
+                    "error": (f"{helper} speaks protocol v{version}, newer "
+                              f"than this bot understands "
+                              f"(v{MAX_HELPER_PROTOCOL_VERSION}); the "
+                              f"sandbox image needs updating.")}
         ok = response.get("ok")
-        if ok is True and result["returncode"] == 0:
-            if "data" not in response:
-                return {"ok": False,
-                        "error": f"{helper} response is missing 'data'."}
-            return response
-        if ok is False:
+        if ok is True:
+            if result["returncode"] == 0:
+                if "data" not in response:
+                    return {"ok": False,
+                            "error": f"{helper} response is missing 'data'."}
+                return response
+            # A "success" payload on a failed run is untrustworthy; report
+            # the run itself below.
+        elif ok is False:
             error = response.get("error")
             if isinstance(error, str) and error:
                 return {"ok": False, "error": error[:MAX_ERROR_CHARS]}
             return {"ok": False,
                     "error": f"{helper} failed without an error message."}
-        if ok is not False:
-            return {"ok": False, "error": f"{helper} response has no 'ok' flag."}
-        # else: ok=True on a failed run is untrustworthy; report the run.
+        else:
+            return {"ok": False,
+                    "error": f"{helper} response has no 'ok' flag."}
     if result["returncode"] != 0:
         detail = result["stderr"].strip()[:MAX_ERROR_CHARS]
         return {"ok": False,

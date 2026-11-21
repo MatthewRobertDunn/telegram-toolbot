@@ -6,7 +6,7 @@ import re
 import shlex
 import time
 import weakref
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
 from typing import Any, NamedTuple, Protocol
 
@@ -23,11 +23,18 @@ UPLOADS_DIR = "/workspace/uploads"
 # command had produced.
 _EXEC_GRACE_SECONDS = 30.0
 
-# GNU timeout's exit status for a command it killed at the deadline, and
-# 128+SIGKILL (137) for a command that ignored SIGTERM and needed the
-# -k escalation; the wrapped command exits with one of the two.
+# GNU timeout's exit status for a command it killed at the deadline; the
+# wrapped command exits with it too.
 _TIMEOUT_EXIT_CODE = 124
+
+# 128+SIGKILL: how a command that ignored the deadline's SIGTERM dies when
+# timeout's -k escalation fires (observed on the image's coreutils), and
+# also what an in-container SIGKILL death looks like - e.g. the OOM killer
+# under the memory limit. The two are told apart by elapsed time in
+# _exec_locked: only a 137 arriving after the deadline plus the kill grace
+# can be our escalation; an earlier one is an ordinary command failure.
 _KILL_EXIT_CODE = 137
+_KILL_GRACE_SECONDS = 5.0  # matches the -k 5 in _deadline_command
 
 # Longest a single upload write may run. Uploads are bounded by Telegram's
 # bot download limit, so this only catches a wedged container.
@@ -52,15 +59,16 @@ def _deadline_command(command: str, timeout: float) -> str:
     """Wrap a command so the sandbox enforces the deadline itself.
 
     Container-side ``timeout`` stops the command at the deadline: SIGTERM
-    to the command's process group, escalating to SIGKILL after a short
-    grace, so partial output survives and nothing keeps running past the
-    deadline (docker's --init reaps the remains). The client-side wait_for
-    is only a backstop for a hung docker CLI; it is granted
-    _EXEC_GRACE_SECONDS beyond the deadline. A command timeout(1) killed
-    exits with _TIMEOUT_EXIT_CODE, which timeout reports as its own exit
-    status (KILL escalation keeps that status; -s KILL would report 137).
+    to the command's process group, escalating to SIGKILL after
+    _KILL_GRACE_SECONDS, so partial output survives and nothing keeps
+    running past the deadline (docker's --init reaps the remains). The
+    client-side wait_for is only a backstop for a hung docker CLI; it is
+    granted _EXEC_GRACE_SECONDS beyond the deadline. A command killed at
+    the deadline exits with _TIMEOUT_EXIT_CODE; a command that ignored
+    SIGTERM dies by the escalation with _KILL_EXIT_CODE (see
+    _exec_locked for how the two SIGKILL meanings are told apart).
     """
-    return f"timeout -k 5 {timeout:g} bash -c {shlex.quote(command)}"
+    return f"timeout -k {_KILL_GRACE_SECONDS:g} {timeout:g} bash -c {shlex.quote(command)}"
 
 
 # Docker timestamp, e.g. 2026-10-14T09:00:00.123456789Z. Docker reports its
@@ -198,8 +206,10 @@ class SandboxManager:
     never-used sandbox expires SANDBOX_IDLE_DESTROY_TIMEOUT after creation.
     """
 
-    def __init__(self, docker=run_docker_command):
+    def __init__(self, docker=run_docker_command,
+                 clock: Callable[[], float] = time.monotonic):
         self._docker = docker
+        self._clock = clock
         self._sandboxes: dict[int, Sandbox] = {}
         self._locks: dict[int, asyncio.Lock] = {}
         # Where each user's read marks live (see watch_read_marks); held
@@ -345,6 +355,7 @@ class SandboxManager:
             args.append("-i")
         args += [sandbox.container_name, "bash", "-c",
                  _deadline_command(command, timeout)]
+        started = self._clock()
         try:
             rc, stdout, stderr = await self._docker(
                 args, timeout=timeout + _EXEC_GRACE_SECONDS,
@@ -363,6 +374,7 @@ class SandboxManager:
                 "returncode": None,
                 "timeout": True,
             }
+        elapsed = self._clock() - started
         if rc != 0 and _container_gone(stderr):
             # The container vanished mid-command (/sandbox_reset or the
             # reaper). The command never ran; say so instead of surfacing
@@ -382,7 +394,14 @@ class SandboxManager:
             "stdout": stdout,
             "stderr": stderr,
             "returncode": rc,
-            "timeout": rc in (_TIMEOUT_EXIT_CODE, _KILL_EXIT_CODE),
+            # 124 is timeout(1)'s own deadline status. A SIGKILL death
+            # (137) counts as a timeout only once it can only be the -k
+            # escalation: the same code within the deadline is an
+            # in-container kill such as the OOM killer, which is an
+            # ordinary command failure, not a deadline hit.
+            "timeout": (rc == _TIMEOUT_EXIT_CODE
+                        or (rc == _KILL_EXIT_CODE
+                            and elapsed >= timeout + _KILL_GRACE_SECONDS)),
         }
 
     async def store_file(self, user_id: int, data: bytes,
@@ -413,17 +432,23 @@ class SandboxManager:
     async def destroy(self, user_id: int) -> bool:
         """Force-remove the user's sandbox, losing all changes.
 
-        The user's read-before-write marks are cleared too: the files they
-        refer to no longer exist. Returns True if a container was removed.
+        The user's read-before-write marks are cleared too - but only when
+        the removal actually succeeded: if `docker rm -f` fails the files
+        still exist and the marks remain valid. Returns True if a container
+        was removed.
         """
         async with self._with_container(user_id):
+            return await self._destroy_locked(user_id)
+
+    async def _destroy_locked(self, user_id: int) -> bool:
+        """destroy()'s body; the caller holds the user's sandbox lock."""
+        self._sandboxes.pop(user_id, None)
+        rc, _, _ = await self._docker(
+            ["rm", "-f", self.container_name_for(user_id)])
+        if rc == 0:
+            logger.info("Destroyed sandbox for user %d", user_id)
             self._clear_read_marks(user_id)
-            self._sandboxes.pop(user_id, None)
-            rc, _, _ = await self._docker(
-                ["rm", "-f", self.container_name_for(user_id)])
-            if rc == 0:
-                logger.info("Destroyed sandbox for user %d", user_id)
-            return rc == 0
+        return rc == 0
 
     async def _stop_sandbox(self, user_id: int, sandbox: Sandbox) -> bool:
         """Stop a sandbox container, keeping its files for a later restart.
@@ -433,12 +458,16 @@ class SandboxManager:
         on the next pass.
         """
         async with self._with_container(user_id):
-            rc, _, _ = await self._docker(["stop", sandbox.container_name])
-            if rc == 0:
-                sandbox.running = False
-            # A failed stop leaves running True: the container is still
-            # there, so reap_idle() retries on the next pass.
-            return rc == 0
+            return await self._stop_locked(user_id, sandbox)
+
+    async def _stop_locked(self, user_id: int, sandbox: Sandbox) -> bool:
+        """_stop_sandbox()'s body; the caller holds the sandbox lock."""
+        rc, _, _ = await self._docker(["stop", sandbox.container_name])
+        if rc == 0:
+            sandbox.running = False
+        # A failed stop leaves running True: the container is still
+        # there, so reap_idle() retries on the next pass.
+        return rc == 0
 
     async def reap_idle(self) -> tuple[list[int], list[int]]:
         """Stop sandboxes idle past SANDBOX_IDLE_STOP_TIMEOUT and destroy
@@ -448,18 +477,30 @@ class SandboxManager:
         restarted on the next access. A sandbox whose stop fails stays
         tracked and running and is retried on the next pass. Returns
         (stopped, destroyed) user ids.
+
+        The idle check is repeated under the user's lock: exec() holds
+        that lock for up to a command's timeout plus grace, so the reaper
+        can queue behind a long command - and a command that finished
+        while it waited has refreshed last_activity. Acting on the
+        pre-lock timestamp would stop or destroy a sandbox that was just
+        used.
         """
         now = time.time()
         stopped: list[int] = []
         destroyed: list[int] = []
         for user_id, sandbox in list(self._sandboxes.items()):
-            idle = now - sandbox.last_activity
-            if idle >= config.SANDBOX_IDLE_DESTROY_TIMEOUT:
-                if await self.destroy(user_id):
-                    destroyed.append(user_id)
-            elif idle >= config.SANDBOX_IDLE_STOP_TIMEOUT and sandbox.running:
-                if await self._stop_sandbox(user_id, sandbox):
-                    stopped.append(user_id)
+            # Cheap pre-filter; the real decision happens under the lock.
+            if now - sandbox.last_activity < config.SANDBOX_IDLE_STOP_TIMEOUT:
+                continue
+            async with self._with_container(user_id):
+                idle = time.time() - sandbox.last_activity
+                if idle >= config.SANDBOX_IDLE_DESTROY_TIMEOUT:
+                    if await self._destroy_locked(user_id):
+                        destroyed.append(user_id)
+                elif (idle >= config.SANDBOX_IDLE_STOP_TIMEOUT
+                        and sandbox.running):
+                    if await self._stop_locked(user_id, sandbox):
+                        stopped.append(user_id)
         return stopped, destroyed
 
     _INSPECT_STATE = (

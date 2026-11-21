@@ -24,6 +24,16 @@ def docker_time(epoch: float) -> str:
     return time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(epoch)) + '.000000000Z'
 
 
+class FakeClock:
+    """Controllable monotonic clock for elapsed-time behaviour."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
 class FakeDocker:
     """In-memory stand-in for the docker CLI.
 
@@ -38,10 +48,16 @@ class FakeDocker:
       for a docker CLI that hung past deadline plus grace.
     - 'SLOW_MARKER' returns exit code 124 with partial output: the
       container-side timeout(1) firing at the deadline.
+    - 'KILL_MARKER' returns exit code 137: a SIGKILL death - either the
+      -k escalation or an in-container kill such as OOM; pass a
+      FakeClock via `clock` and set `exec_elapsed` to place it in time.
     - exec_responses, when set, supply the first (substring, rc, stdout,
       stderr) tuple whose substring matches the command.
     - exec_delay sleeps before answering, so lock behaviour can be
       observed; exec_stderr, when set, is returned as a failure instead.
+
+    When `clock` is set, each docker call advances it by `exec_elapsed`
+    seconds, simulating how long the call took.
     """
 
     def __init__(self):
@@ -54,14 +70,19 @@ class FakeDocker:
         self.fail_run = False
         self.fail_start = False
         self.fail_stop = False
+        self.fail_rm = False
         self.exec_delay = 0.0
         self.exec_stderr: str | None = None
         self.exec_responses: list[tuple[str, int, str, str]] = []
+        self.exec_elapsed = 0.0
+        self.clock: FakeClock | None = None
 
     async def __call__(self, args: list[str], timeout=None, input=None):
         self.calls.append(list(args))
         self.timeouts.append(timeout)
         self.inputs.append(input)
+        if self.clock is not None:
+            self.clock.now += self.exec_elapsed
         verb = args[0]
         if verb == 'inspect':
             name = args[3]
@@ -94,6 +115,8 @@ class FakeDocker:
             return 0, name + '\n', ''
         if verb == 'rm':
             name = args[2]
+            if self.fail_rm:
+                return 1, '', 'simulated docker rm failure'
             if name in self.containers:
                 del self.containers[name]
                 return 0, name, ''
@@ -244,11 +267,31 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['stderr'], 'partial-err\n')
 
     async def test_exec_kill_escalation_counts_as_timeout(self):
-        # A command that ignores SIGTERM dies by the -k escalation; that
-        # is still a deadline hit as far as the caller is concerned.
-        result = await self.manager.exec(1, 'sleep KILL_MARKER', timeout=10)
+        # A command that ignores the deadline's SIGTERM dies by the -k
+        # escalation with 128+SIGKILL (137, observed on the image's
+        # coreutils) after deadline + kill grace; that is still a deadline
+        # hit as far as the caller is concerned.
+        clock = FakeClock()
+        self.fake.clock = clock
+        self.fake.exec_elapsed = 10 + sandbox._KILL_GRACE_SECONDS + 0.5
+        manager = SandboxManager(docker=self.fake, clock=clock)
+        result = await manager.exec(1, 'sleep KILL_MARKER', timeout=10)
         self.assertTrue(result['timeout'])
         self.assertEqual(result['returncode'], sandbox._KILL_EXIT_CODE)
+
+    async def test_exec_oom_kill_is_not_a_timeout(self):
+        # The same 137 within the deadline is an in-container kill (the
+        # OOM killer under the memory limit): an ordinary command failure,
+        # not a deadline hit - the model must not "fix" it by retrying
+        # with a longer timeout.
+        clock = FakeClock()
+        self.fake.clock = clock
+        self.fake.exec_elapsed = 2.0
+        manager = SandboxManager(docker=self.fake, clock=clock)
+        result = await manager.exec(1, 'die KILL_MARKER', timeout=300)
+        self.assertFalse(result['timeout'])
+        self.assertEqual(result['returncode'], sandbox._KILL_EXIT_CODE)
+        self.assertFalse(result['stderr'])
 
     async def test_exec_backstop_reports_lost_output(self):
         # If the docker CLI itself hangs past deadline plus grace, the
@@ -462,6 +505,51 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(holder.sandbox_read_files, set())
         self.assertEqual(other.sandbox_read_files, {'/workspace/a.txt'})
         self.assertNotIn(1, self.manager._read_marks)
+
+    async def test_failed_destroy_keeps_read_marks(self):
+        # If `docker rm -f` fails, the container and its files still
+        # exist, so wiping the read marks would invite writes to live
+        # files without a prior read.
+        class Holder:
+            def __init__(self):
+                self.sandbox_read_files = {'/workspace/a.txt'}
+
+        holder = Holder()
+        self.manager.watch_read_marks(1, holder)
+        await self._ensure(1)
+        self.fake.fail_rm = True
+
+        self.assertFalse(await self.manager.destroy(1))
+        self.assertEqual(holder.sandbox_read_files, {'/workspace/a.txt'})
+
+        # A later successful removal clears them.
+        self.fake.fail_rm = False
+        self.assertTrue(await self.manager.destroy(1))
+        self.assertEqual(holder.sandbox_read_files, set())
+
+    async def test_reaper_rechecks_activity_after_waiting_for_the_lock(self):
+        # exec() holds the per-user lock for up to timeout + grace, so the
+        # reaper can queue behind a long command. A command that finished
+        # while it waited refreshed last_activity; acting on the stale
+        # pre-lock timestamp would stop a sandbox that was just used.
+        await self._ensure(1)
+        sandbox = self.manager._sandboxes[1]
+        sandbox.last_activity = (
+            time.time() - config.SANDBOX_IDLE_STOP_TIMEOUT - 1)
+
+        async def hold_and_use():
+            async with self.manager._with_container(1):
+                await asyncio.sleep(0.05)  # reap_idle blocks on the lock
+                sandbox.last_activity = time.time()  # a command ran
+
+        use_task = asyncio.create_task(hold_and_use())
+        await asyncio.sleep(0.01)  # let hold_and_use take the lock first
+        try:
+            self.assertEqual(await self.manager.reap_idle(), ([], []))
+        finally:
+            await use_task
+        self.assertEqual(self.fake.containers['toolbot-sandbox-1'], 'true')
+        self.assertTrue(sandbox.running)
 
     async def test_read_marks_holder_is_not_kept_alive(self):
         class Holder:
