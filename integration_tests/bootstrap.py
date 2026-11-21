@@ -104,3 +104,24 @@ def requires_sandbox_image(test_cls):
             f"sandbox image {config.SANDBOX_IMAGE} not built locally")(
             test_cls))
 
+
+def nvidia_key_available() -> bool:
+    """True when an image-generation API key is configured.
+
+    Mirrors src/config.py: NVIDIA_API_KEY, falling back to OPENAI_API_KEY.
+    By the time this runs, bootstrap has already loaded
+    integration_tests/.env into the process environment (load_dotenv above
+    precedes every config import), so a key added there is picked up
+    with no further edits.
+    """
+    return bool(os.environ.get("NVIDIA_API_KEY")
+                or os.environ.get("OPENAI_API_KEY"))
+
+
+def requires_nvidia_key(test_cls):
+    """Class decorator: skip tests that call the NVIDIA image endpoint
+    when no API key is configured."""
+    return unittest.skipUnless(
+        nvidia_key_available(),
+        "NVIDIA_API_KEY (or OPENAI_API_KEY) not configured")(test_cls)
+
