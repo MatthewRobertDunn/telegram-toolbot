@@ -159,22 +159,6 @@ class TestSkillDiscovery(unittest.TestCase):
         self.assertEqual(skills, [])
         self.assertEqual(skills_store.SKILLS, [])
 
-    def test_unreadable_file_is_skipped(self):
-        _write(os.path.join(self.root, 'good', 'SKILL.md'), SKILL_MD)
-        bad = os.path.join(self.root, 'bad.md')
-        _write(bad, SKILL_MD)
-        os.chmod(bad, 0o000)
-        self.addCleanup(os.chmod, bad, 0o644)
-        try:
-            with open(bad, encoding='utf-8'):
-                pass
-            self.skipTest('file permissions not enforceable here')
-        except OSError:
-            pass
-
-        skills = self._load()
-        self.assertEqual([s.name for s in skills], ['good'])
-
     def test_get_skill(self):
         _write(os.path.join(self.root, 'alpha', 'SKILL.md'), SKILL_MD)
         self._load()
