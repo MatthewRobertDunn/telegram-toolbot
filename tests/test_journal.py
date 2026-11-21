@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import journal_store
-from journal_store import ReplaceOutcome
+import sqlite_store
+from journal_store import ReplaceOutcome, StoreValidationError
 from tools import journal_tool
 from mock_context import mock_ctx
 from user_settings import UserSettings
@@ -31,6 +32,60 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.store.close()
         self._tmp.cleanup()
+
+    async def test_schema_created_once_per_store(self):
+        created = "2026-11-14T16:34:00+00:00"
+        epoch = _ms(created)
+        fresh = journal_store.create_journal_store(self.db)
+        try:
+            with mock.patch.object(fresh, "create_schema",
+                                   wraps=fresh.create_schema) as spy:
+                await fresh.add_entry(user_id=1, topic="A", entry="one",
+                                      created=created,
+                                      created_epoch_ms=epoch)
+                await fresh.get_entry(user_id=1, entry_id=1)
+                await fresh.search_entries(user_id=1)
+                await fresh.list_topics(user_id=1)
+                # The first operation applies the schema; every later
+                # operation on the same store reuses the ready
+                # connection instead of re-running the DDL script.
+                self.assertEqual(spy.await_count, 1)
+        finally:
+            await fresh.close()
+
+    async def test_db_path_resolved_at_call_time(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        with mock.patch.object(sqlite_store.config, "sql_db_path", path):
+            # No explicit path: the store must pick up the patched
+            # config when it connects, not when it was imported.
+            store = journal_store.create_journal_store()
+            try:
+                await store.add_entry(
+                    user_id=1, topic="A", entry="x",
+                    created="2026-11-14T16:34:00+00:00",
+                    created_epoch_ms=_ms("2026-11-14T16:34:00+00:00"))
+            finally:
+                await store.close()
+        self.assertGreater(os.path.getsize(path), 0)
+
+    async def test_validation_raises_typed_error(self):
+        created = "2026-11-14T16:34:00+00:00"
+        epoch = _ms(created)
+        with self.assertRaises(StoreValidationError) as caught:
+            await self.store.add_entry(
+                user_id=1, topic="   ", entry="x",
+                created=created, created_epoch_ms=epoch)
+        # The message is the user-facing text, and the error is still a
+        # ValueError so generic handling keeps working.
+        self.assertEqual(str(caught.exception), "Topic cannot be empty")
+        self.assertIsInstance(caught.exception, ValueError)
+        with self.assertRaises(StoreValidationError):
+            await self.store.replace_in_entry(
+                user_id=1, entry_id=1, old_string="", new_string="x")
+        with self.assertRaises(StoreValidationError):
+            await self.store.search_entries(user_id=1, limit=0)
 
     async def test_add_and_get_round_trip(self):
         created = "2026-11-14T16:34:00+10:30"
@@ -374,34 +429,44 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             user_id=1, cursor_ms=_ms("2026-11-14T09:00:00+00:00"), limit=1)
         self.assertEqual([r.entry for r in page.entries], ["entry 1"])
         self.assertTrue(page.has_more)
+        # The cursor is the page edge's created timestamp, computed once
+        # by the store for the tool to interpolate.
+        self.assertEqual(page.next_cursor, "2026-11-12T09:00:00+00:00")
         # First page truncated by limit: more exist.
         first = await self.store.search_page(user_id=1, limit=1)
         self.assertEqual([r.entry for r in first.entries], ["entry 2"])
         self.assertTrue(first.has_more)
+        self.assertEqual(first.next_cursor, "2026-11-14T09:00:00+00:00")
         # Last page: nothing more in this direction.
         last = await self.store.search_page(
             user_id=1, cursor_ms=_ms("2026-11-12T09:00:00+00:00"))
         self.assertEqual([r.entry for r in last.entries], ["entry 0"])
         self.assertFalse(last.has_more)
+        self.assertIsNone(last.next_cursor)
         # Oldest-first: more newer entries exist.
         asc_first = await self.store.search_page(
             user_id=1, limit=1, sort_descending=False)
         self.assertEqual([r.entry for r in asc_first.entries], ["entry 0"])
         self.assertTrue(asc_first.has_more)
+        self.assertEqual(asc_first.next_cursor,
+                         "2026-11-10T09:00:00+00:00")
         asc_last = await self.store.search_page(
             user_id=1, cursor_ms=_ms("2026-11-12T09:00:00+00:00"),
             sort_descending=False)
         self.assertEqual([r.entry for r in asc_last.entries], ["entry 2"])
         self.assertFalse(asc_last.has_more)
+        self.assertIsNone(asc_last.next_cursor)
         # Full result: no hints.
         full = await self.store.search_page(user_id=1)
         self.assertEqual(len(full.entries), 3)
         self.assertFalse(full.has_more)
+        self.assertIsNone(full.next_cursor)
         # Empty page: no hints.
         empty = await self.store.search_page(
             user_id=1, cursor_ms=_ms("2026-11-10T09:00:00+00:00"))
         self.assertEqual(empty.entries, [])
         self.assertFalse(empty.has_more)
+        self.assertIsNone(empty.next_cursor)
         # Hints respect topic filters.
         await self.store.add_entry(
             user_id=1, topic="Mood", entry="mood entry",
@@ -411,10 +476,13 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             user_id=1, topic="Log", limit=1)
         self.assertEqual([r.entry for r in topic_page.entries], ["entry 2"])
         self.assertTrue(topic_page.has_more)
+        self.assertEqual(topic_page.next_cursor,
+                         "2026-11-14T09:00:00+00:00")
         topic_full = await self.store.search_page(
             user_id=1, topic="Mood")
         self.assertEqual(len(topic_full.entries), 1)
         self.assertFalse(topic_full.has_more)
+        self.assertIsNone(topic_full.next_cursor)
 
     async def test_search_sorts_by_epoch_not_text(self):
         # Lexically the +11:00 stamp sorts after the Z stamp, but its
@@ -480,7 +548,7 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self._tmp.name, "journal.db")
         patcher = mock.patch.object(
-            journal_store.config, "sql_db_path", self.db)
+            sqlite_store.config, "sql_db_path", self.db)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(self._tmp.cleanup)
@@ -533,6 +601,11 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await journal_tool.journal_add(ctx, topic="t" * 129, entry="x"),
             "Error: Topic must be at most 128 characters")
+        # Non-string input is validated by the store too; the tool
+        # translates the typed error verbatim.
+        self.assertEqual(
+            await journal_tool.journal_add(ctx, topic=123, entry="x"),  # type: ignore[arg-type]
+            "Error: Topic cannot be empty")
 
     async def test_get_and_delete(self):
         ctx = self._ctx()
@@ -579,7 +652,7 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await journal_tool.journal_edit(
                 ctx, id=1, oldString="", newString="x"),
-            "Error: oldString cannot be empty.")
+            "Error: Existing text cannot be empty")
         self.assertEqual(
             await journal_tool.journal_edit(
                 ctx, id=1, oldString="bad", newString="bad"),
@@ -649,11 +722,11 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await journal_tool.journal_topic_edit(
                 ctx, id=1, oldTopic="", newTopic="Sleep"),
-            "Error: oldTopic cannot be empty.")
+            "Error: Existing topic cannot be empty")
         self.assertEqual(
             await journal_tool.journal_topic_edit(
                 ctx, id=1, oldTopic="Mood", newTopic="  "),
-            "Error: newTopic cannot be empty.")
+            "Error: New topic cannot be empty")
         self.assertEqual(
             await journal_tool.journal_topic_edit(
                 ctx, id=1, oldTopic="Mood", newTopic="Mood"),

@@ -4,10 +4,13 @@ Strongly typed persistence layer: methods take and return dataclasses and
 plain values, never pre-formatted strings. LLM-facing formatting lives in
 tools/journal_tool.py.
 
-Usage mirrors sqlite_store.AsyncSQLiteStore: the schema is created once at
-startup (chatbot.post_init) via ``async with create_journal_store() as
-store: await store.create_schema()``. Operations additionally ensure the
-schema themselves, so ad-hoc and test use works without a startup step.
+Extends sqlite_store.AsyncSQLiteStore (connection, PRAGMA and schema
+lifecycle): the schema is created once at startup (chatbot.post_init) via
+``async with create_journal_store() as store: await store.create_schema()``,
+and operations ensure it themselves, so ad-hoc and test use works without
+a startup step. Validation failures raise ``StoreValidationError``, a
+ValueError subclass whose message is the user/model-facing text the tool
+layer surfaces verbatim.
 
 Every operation is scoped to a single ``user_id`` supplied by the caller (the
 authenticated application context). There is no way to operate on another
@@ -22,7 +25,7 @@ from enum import Enum
 
 import aiosqlite
 
-import config
+from sqlite_store import AsyncSQLiteStore
 
 
 @dataclass(frozen=True)
@@ -45,12 +48,25 @@ class ReplaceOutcome(Enum):
     MULTIPLE_MATCHES = "multiple_matches"
 
 
+class StoreValidationError(ValueError):
+    """A caller-supplied value failed store validation.
+
+    Subclasses ValueError so ``except ValueError`` handling keeps
+    working; the message is the user/model-facing text the tool layer
+    surfaces verbatim, so validation exists in exactly one place.
+    """
+
+
 @dataclass(frozen=True)
 class SearchPage:
     entries: list[JournalEntry]
     # Whether more matching entries exist beyond the returned page
     # in the requested sort direction.
     has_more: bool
+    # Resume point for the next page when has_more is true (None
+    # otherwise): the edge entry's ``created`` timestamp, ready to pass
+    # back as the caller's ``cursor``.
+    next_cursor: str | None = None
 
 
 MAX_TOPIC_LENGTH = 128
@@ -92,50 +108,36 @@ CREATE TRIGGER IF NOT EXISTS journal_entries_au
 """
 
 
-class JournalStore:
+def _validate_topic(topic: object, empty_message: str) -> str:
+    """Stripped, lowercased topic, checked for emptiness and length.
+
+    Raises StoreValidationError (not ValueError directly) so the tool
+    layer can surface the message verbatim.
+    """
+    clean = topic.strip().lower() if isinstance(topic, str) else ""
+    if not clean:
+        raise StoreValidationError(empty_message)
+    if len(clean) > MAX_TOPIC_LENGTH:
+        raise StoreValidationError(
+            f"Topic must be at most {MAX_TOPIC_LENGTH} characters")
+    return clean
+
+
+class JournalStore(AsyncSQLiteStore):
+    # Typed rows for the dataclass mapping below.
+    row_factory = aiosqlite.Row
+
     def __init__(self, db_path: str | None = None) -> None:
-        self._explicit_path = db_path
-        self._conn: aiosqlite.Connection | None = None
-
-    @property
-    def db_path(self) -> str:
-        # Resolved at call time so tests can point at a scratch database by
-        # patching config.sql_db_path.
-        return self._explicit_path or config.sql_db_path
-
-    async def _get_conn(self) -> aiosqlite.Connection:
-        if self._conn is None:
-            db = await aiosqlite.connect(self.db_path)
-            db.row_factory = aiosqlite.Row
-            self._conn = db
-        return self._conn
-
-    async def __aenter__(self) -> JournalStore:
-        return self
-
-    async def __aexit__(self, *args: object) -> None:
-        await self.close()
-
-    async def close(self) -> None:
-        if self._conn is not None:
-            await self._conn.close()
-            self._conn = None
+        super().__init__(db_path, "journal_entries", _SCHEMA_SQL)
 
     async def create_schema(self) -> None:
         """Create tables, indexes, FTS5 index and triggers (idempotent)."""
         db = await self._get_conn()
-        await db.executescript(_SCHEMA_SQL)
-        await db.commit()
         cursor = await db.execute("PRAGMA compile_options")
         options = {row[0] for row in await cursor.fetchall()}
         if "ENABLE_FTS5" not in options:
             raise RuntimeError("SQLite build does not support FTS5")
-
-    async def _ready(self) -> aiosqlite.Connection:
-        db = await self._get_conn()
-        await db.executescript(_SCHEMA_SQL)
-        await db.commit()
-        return db
+        await super().create_schema()
 
     @staticmethod
     def _row_to_entry(row: aiosqlite.Row) -> JournalEntry:
@@ -150,14 +152,9 @@ class JournalStore:
 
     async def add_entry(self, *, user_id: int, topic: str, entry: str,
                         created: str, created_epoch_ms: int) -> JournalEntry:
-        clean_topic = topic.strip().lower()
-        if not clean_topic:
-            raise ValueError("Topic cannot be empty")
-        if len(clean_topic) > MAX_TOPIC_LENGTH:
-            raise ValueError(
-                f"Topic must be at most {MAX_TOPIC_LENGTH} characters")
-        if not entry.strip():
-            raise ValueError("Entry cannot be empty")
+        clean_topic = _validate_topic(topic, "Topic cannot be empty")
+        if not isinstance(entry, str) or not entry.strip():
+            raise StoreValidationError("Entry cannot be empty")
         db = await self._ready()
         cursor = await db.execute(
             "INSERT INTO journal_entries "
@@ -210,70 +207,82 @@ class JournalStore:
                                old_string: str,
                                new_string: str,
                                replace_all: bool = False) -> ReplaceOutcome:
-        if not old_string:
-            raise ValueError("Existing text cannot be empty")
+        if not isinstance(old_string, str) or not old_string:
+            raise StoreValidationError("Existing text cannot be empty")
+        if not isinstance(new_string, str):
+            raise StoreValidationError("Invalid replacement text")
         if old_string == new_string:
-            raise ValueError(
+            raise StoreValidationError(
                 "No changes to apply: oldString and newString are identical.")
         db = await self._ready()
-        cursor = await db.execute(
-            "SELECT entry FROM journal_entries "
-            "WHERE id = ? AND user_id = ?",
-            (entry_id, user_id))
-        row = await cursor.fetchone()
-        if row is None:
-            return ReplaceOutcome.NOT_FOUND
-        current: str = row["entry"]
-        occurrences = current.count(old_string)
-        if occurrences == 0:
-            return ReplaceOutcome.TEXT_NOT_FOUND
-        if occurrences > 1 and not replace_all:
-            return ReplaceOutcome.MULTIPLE_MATCHES
-        if replace_all:
-            updated = current.replace(old_string, new_string)
-        else:
-            index = current.find(old_string)
-            updated = (current[:index] + new_string
-                       + current[index + len(old_string):])
-        await db.execute(
-            "UPDATE journal_entries SET entry = ? "
-            "WHERE id = ? AND user_id = ?",
-            (updated, entry_id, user_id))
-        await db.commit()
-        return ReplaceOutcome.UPDATED
+        # An explicit write transaction makes the read-modify-write
+        # atomic: the row is locked from the read that counts occurrences
+        # through the write that applies the replacement, so a competing
+        # writer can neither slip a change in between nor be clobbered by
+        # a stale rewrite.
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(
+                "SELECT entry FROM journal_entries "
+                "WHERE id = ? AND user_id = ?",
+                (entry_id, user_id))
+            row = await cursor.fetchone()
+            if row is None:
+                await db.commit()
+                return ReplaceOutcome.NOT_FOUND
+            current: str = row["entry"]
+            occurrences = current.count(old_string)
+            if occurrences == 0:
+                await db.commit()
+                return ReplaceOutcome.TEXT_NOT_FOUND
+            if occurrences > 1 and not replace_all:
+                await db.commit()
+                return ReplaceOutcome.MULTIPLE_MATCHES
+            if replace_all:
+                updated = current.replace(old_string, new_string)
+            else:
+                index = current.find(old_string)
+                updated = (current[:index] + new_string
+                           + current[index + len(old_string):])
+            await db.execute(
+                "UPDATE journal_entries SET entry = ? "
+                "WHERE id = ? AND user_id = ?",
+                (updated, entry_id, user_id))
+            await db.commit()
+            return ReplaceOutcome.UPDATED
+        except BaseException:
+            await db.rollback()
+            raise
 
     async def update_entry_topic(self, *, user_id: int, entry_id: int,
                                  old_topic: str,
                                  new_topic: str) -> ReplaceOutcome:
-        clean_old = old_topic.strip().lower()
-        clean_new = new_topic.strip().lower()
-        if not clean_old:
-            raise ValueError("Existing topic cannot be empty")
-        if not clean_new:
-            raise ValueError("New topic cannot be empty")
-        if len(clean_new) > MAX_TOPIC_LENGTH:
-            raise ValueError(
-                f"Topic must be at most {MAX_TOPIC_LENGTH} characters")
+        clean_old = _validate_topic(old_topic,
+                                    "Existing topic cannot be empty")
+        clean_new = _validate_topic(new_topic, "New topic cannot be empty")
         if clean_old == clean_new:
-            raise ValueError(
+            raise StoreValidationError(
                 "No changes to apply: oldTopic and newTopic are identical.")
         db = await self._ready()
+        # One guarded UPDATE: the topic match rides in the WHERE clause,
+        # so check-and-set is a single atomic statement instead of a
+        # read-modify-write. Topics are stored lowercased and matched
+        # case-insensitively, as before.
         cursor = await db.execute(
-            "SELECT topic FROM journal_entries "
-            "WHERE id = ? AND user_id = ?",
-            (entry_id, user_id))
-        row = await cursor.fetchone()
-        if row is None:
-            return ReplaceOutcome.NOT_FOUND
-        current: str = row["topic"]
-        if current.lower() != clean_old:
-            return ReplaceOutcome.TEXT_NOT_FOUND
-        await db.execute(
             "UPDATE journal_entries SET topic = ? "
-            "WHERE id = ? AND user_id = ?",
-            (clean_new, entry_id, user_id))
+            "WHERE id = ? AND user_id = ? AND topic = ? COLLATE NOCASE",
+            (clean_new, entry_id, user_id, clean_old))
         await db.commit()
-        return ReplaceOutcome.UPDATED
+        if cursor.rowcount:
+            return ReplaceOutcome.UPDATED
+        # The guarded update did not fire: one read tells a missing
+        # entry apart from a non-matching topic.
+        cursor = await db.execute(
+            "SELECT 1 FROM journal_entries WHERE id = ? AND user_id = ?",
+            (entry_id, user_id))
+        if await cursor.fetchone() is None:
+            return ReplaceOutcome.NOT_FOUND
+        return ReplaceOutcome.TEXT_NOT_FOUND
 
     @staticmethod
     def _search_filter_clauses(*, user_id: int,
@@ -299,22 +308,24 @@ class JournalStore:
             params.append(fts)
         return conditions, params
 
-    async def search_entries(self, *, user_id: int,
-                             cursor_ms: int | None = None,
-                             query: str | None = None,
-                             topic: str | None = None,
-                             limit: int = SEARCH_LIMIT,
-                             sort_descending: bool = True,
-                             ) -> list[JournalEntry]:
-        """Return matching entries, newest-first by default.
+    @staticmethod
+    def _validate_limit(limit: int) -> None:
+        if limit < 1 or limit > SEARCH_LIMIT:
+            raise StoreValidationError(
+                f"Limit must be between 1 and {SEARCH_LIMIT}")
+
+    def _search_query(self, *, user_id: int, cursor_ms: int | None,
+                      query: str | None, topic: str | None,
+                      sort_descending: bool,
+                      limit: int) -> tuple[str, tuple[object, ...]]:
+        """The shared search SELECT with its bound parameters.
 
         The cursor is exclusive and direction-aware: with newest-first
         ordering only entries created before ``cursor_ms`` match, with
-        oldest-first ordering only entries created after it. At most
-        ``limit`` entries are returned.
+        oldest-first ordering only entries created after it. Ordering is
+        by (created_epoch_ms, id) so entries sharing a millisecond keep
+        a stable order.
         """
-        if limit < 1 or limit > SEARCH_LIMIT:
-            raise ValueError(f"Limit must be between 1 and {SEARCH_LIMIT}")
         conditions, params = self._search_filter_clauses(
             user_id=user_id, query=query, topic=topic)
         if cursor_ms is not None:
@@ -329,8 +340,28 @@ class JournalStore:
                + f" ORDER BY created_epoch_ms {direction}, id {direction}"
                + " LIMIT ?")
         params.append(limit)
+        return sql, tuple(params)
+
+    async def search_entries(self, *, user_id: int,
+                             cursor_ms: int | None = None,
+                             query: str | None = None,
+                             topic: str | None = None,
+                             limit: int = SEARCH_LIMIT,
+                             sort_descending: bool = True,
+                             ) -> list[JournalEntry]:
+        """Return matching entries, newest-first by default.
+
+        The cursor is exclusive and direction-aware: with newest-first
+        ordering only entries created before ``cursor_ms`` match, with
+        oldest-first ordering only entries created after it. At most
+        ``limit`` entries are returned.
+        """
+        self._validate_limit(limit)
+        sql, params = self._search_query(
+            user_id=user_id, cursor_ms=cursor_ms, query=query,
+            topic=topic, sort_descending=sort_descending, limit=limit)
         db = await self._ready()
-        cursor = await db.execute(sql, tuple(params))
+        cursor = await db.execute(sql, params)
         return [self._row_to_entry(row) for row in await cursor.fetchall()]
 
     async def search_page(self, *, user_id: int,
@@ -340,41 +371,35 @@ class JournalStore:
                           limit: int = SEARCH_LIMIT,
                           sort_descending: bool = True,
                           ) -> SearchPage:
-        """Return one page of matches plus a has_more flag.
+        """Return one page of matches plus paging hints.
 
         has_more is true when further matching entries exist beyond the
-        returned page in the requested sort direction. Position
-        comparisons use (created_epoch_ms, id) so entries sharing a
-        millisecond are still detected.
+        returned page in the requested sort direction, detected by
+        fetching one row beyond ``limit`` rather than re-running the
+        filtered query. ``next_cursor`` is the resume point for that
+        next page - the edge entry's ``created`` timestamp under the
+        same (created_epoch_ms, id) ordering the query used, so entries
+        sharing a millisecond still page correctly - and None when
+        there is nothing to resume.
         """
-        entries = await self.search_entries(
-            user_id=user_id, cursor_ms=cursor_ms,
-            query=query, topic=topic, limit=limit,
-            sort_descending=sort_descending)
-        if not entries:
-            return SearchPage(entries=[], has_more=False)
-        conditions, params = self._search_filter_clauses(
-            user_id=user_id, query=query, topic=topic)
-        where = " AND ".join(conditions)
+        self._validate_limit(limit)
+        # One extra row answers "is there another page?" cheaply.
+        sql, params = self._search_query(
+            user_id=user_id, cursor_ms=cursor_ms, query=query,
+            topic=topic, sort_descending=sort_descending, limit=limit + 1)
         db = await self._ready()
+        cursor = await db.execute(sql, params)
+        rows = list(await cursor.fetchall())
+        entries = [self._row_to_entry(row) for row in rows[:limit]]
+        if len(rows) <= limit or not entries:
+            return SearchPage(entries=entries, has_more=False,
+                              next_cursor=None)
         if sort_descending:
             edge = min(entries, key=lambda r: (r.created_epoch_ms, r.id))
-            cursor = await db.execute(
-                "SELECT 1 FROM journal_entries WHERE " + where
-                + " AND (created_epoch_ms < ? OR "
-                "(created_epoch_ms = ? AND id < ?)) LIMIT 1",
-                (*params, edge.created_epoch_ms,
-                 edge.created_epoch_ms, edge.id))
         else:
             edge = max(entries, key=lambda r: (r.created_epoch_ms, r.id))
-            cursor = await db.execute(
-                "SELECT 1 FROM journal_entries WHERE " + where
-                + " AND (created_epoch_ms > ? OR "
-                "(created_epoch_ms = ? AND id > ?)) LIMIT 1",
-                (*params, edge.created_epoch_ms,
-                 edge.created_epoch_ms, edge.id))
-        has_more = await cursor.fetchone() is not None
-        return SearchPage(entries=entries, has_more=has_more)
+        return SearchPage(entries=entries, has_more=True,
+                          next_cursor=edge.created)
 
     async def list_topics(self, *, user_id: int) -> list[str]:
         db = await self._ready()

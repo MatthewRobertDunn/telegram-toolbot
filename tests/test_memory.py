@@ -1,10 +1,14 @@
-import sys
 import os
+import sys
+import tempfile
 import unittest
+from unittest import mock
 
+sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from memory_store import MemoryStore
+import sqlite_store
+from memory_store import MemoryStore, create_memory_store
 
 
 class TestMemory(unittest.IsolatedAsyncioTestCase):
@@ -58,6 +62,33 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {})
 
         await self.store.delete_values(1, [])
+
+    async def test_schema_ensured_without_startup_call(self):
+        # A store used ad hoc, without an explicit create_schema call,
+        # applies the schema on its first operation and works from
+        # there - the same contract as the journal store.
+        store = MemoryStore(':memory:')
+        try:
+            await store.set(1, 'key', 'value')
+            self.assertEqual(await store.get(1, 'key'), 'value')
+            self.assertEqual(await store.get_all_keys(1), ['key'])
+        finally:
+            await store.close()
+
+    async def test_db_path_resolved_at_call_time(self):
+        fd, path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        with mock.patch.object(sqlite_store.config, 'sql_db_path', path):
+            # No explicit path: the factory must pick up the patched
+            # config when the store connects, not at import time.
+            store = create_memory_store()
+            try:
+                await store.set(1, 'key', 'value')
+                self.assertEqual(await store.get(1, 'key'), 'value')
+            finally:
+                await store.close()
+        self.assertGreater(os.path.getsize(path), 0)
 
 
 if __name__ == '__main__':

@@ -1,9 +1,9 @@
+import copy
 import json
 import logging
 
-from config import sql_db_path
 from sqlite_store import AsyncSQLiteStore
-from conversation import Conversation
+from conversation import IMAGE_PLACEHOLDER, MAX_IMAGES, Conversation
 from user_settings import UserSettings
 
 logger = logging.getLogger(__name__)
@@ -34,14 +34,14 @@ class SettingsStore(AsyncSQLiteStore):
     NULL thread ids too.
     """
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str | None = None):
         super().__init__(db_path, "settings", SETTINGS_SCHEMA)
 
     async def get(self, user_id: int, key: str,
                   thread_id: int | None) -> str | None:
-        db = await self._get_conn()
+        db = await self._ready()
         cursor = await db.execute(
-            f'SELECT value FROM {self.table_name} WHERE user_id = ? '
+            'SELECT value FROM settings WHERE user_id = ? '
             'AND key = ? AND thread_id IS ?',
             (user_id, key, thread_id))
         row = await cursor.fetchone()
@@ -54,29 +54,53 @@ class SettingsStore(AsyncSQLiteStore):
         thread ids as conflicting, so REPLACE would duplicate the
         unthreaded/template row instead of replacing it.
         """
-        db = await self._get_conn()
+        db = await self._ready()
         cursor = await db.execute(
-            f'UPDATE {self.table_name} SET value = ?, thread_id = ?, '
+            'UPDATE settings SET value = ?, thread_id = ?, '
             'last_updated = CURRENT_TIMESTAMP '
             'WHERE user_id = ? AND key = ? AND thread_id IS ?',
             (value, thread_id, user_id, key, thread_id))
         if cursor.rowcount == 0:
             await db.execute(
-                f'INSERT INTO {self.table_name} '
+                'INSERT INTO settings '
                 '(user_id, key, value, thread_id) VALUES (?, ?, ?, ?)',
                 (user_id, key, value, thread_id))
         await db.commit()
 
-    async def get_all_keys(self, user_id: int) -> list[str]:
-        db = await self._get_conn()
-        cursor = await db.execute(
-            f'SELECT key FROM {self.table_name} WHERE user_id = ?', (user_id,))
-        rows = await cursor.fetchall()
-        return [r[0] for r in rows]
+    # get_all_keys is inherited from AsyncSQLiteStore.
+
+
+def _prune_inline_images(messages: list) -> list:
+    """Messages with all but the newest ``MAX_IMAGES`` inline image
+    parts replaced by placeholder text.
+
+    Applied before a conversation is stored and again on load: the row
+    is rewritten whole on every queued turn, so inline images would
+    otherwise be re-serialized forever, and a payload written with more
+    images than the cap (an older version, or an oversized stored blob)
+    must not resurrect them. Returns a deep copy; the caller's
+    conversation is untouched.
+    """
+    pruned = copy.deepcopy(list(messages))
+    image_parts = [
+        part
+        for message in pruned
+        if isinstance(message, dict)
+        and isinstance(message.get('content'), list)
+        for part in message['content']
+        if isinstance(part, dict) and part.get('type') == 'image_url'
+    ]
+    for part in image_parts[:-MAX_IMAGES]:
+        part.clear()
+        part['type'] = 'text'
+        part['text'] = IMAGE_PLACEHOLDER
+    return pruned
 
 
 def create_settings_store() -> SettingsStore:
-    return SettingsStore(sql_db_path)
+    # The db path is resolved when the store connects (config.sql_db_path),
+    # so patching the config redirects stores created here.
+    return SettingsStore()
 
 
 async def load_settings(user_id: int,
@@ -111,9 +135,12 @@ async def save_conversation(user_id: int, thread_id: int | None,
 
     The single save point is the generation worker (which covers every
     queued unit of work); the few direct mutations (/start reset, ambient
-    group chatter) save explicitly at their call site."""
+    group chatter) save explicitly at their call site. Inline images
+    beyond the newest ``MAX_IMAGES`` are pruned to placeholders: the row
+    is rewritten whole each time, and the payloads are the bulk of it."""
     payload = json.dumps({'id': conversation.id,
-                          'messages': list(conversation.messages)})
+                          'messages': _prune_inline_images(
+                              list(conversation.messages))})
     async with create_settings_store() as store:
         await store.set(user_id, CONVERSATION_KEY,
                         payload, thread_id)
@@ -122,7 +149,8 @@ async def save_conversation(user_id: int, thread_id: int | None,
 async def load_conversation(user_id: int,
                             thread_id: int | None) -> Conversation | None:
     """Load the persisted conversation for the thread, or None when
-    absent/corrupt."""
+    absent/corrupt. Stored payloads are pruned on the way out too, so a
+    blob carrying more images than the cap cannot resurrect them."""
     async with create_settings_store() as store:
         raw = await store.get(user_id, CONVERSATION_KEY,
                               thread_id)
@@ -130,8 +158,9 @@ async def load_conversation(user_id: int,
         return None
     try:
         data = json.loads(raw)
-        return Conversation(messages=data.get('messages') or [],
-                            id=data.get('id'))
+        return Conversation(
+            messages=_prune_inline_images(data.get('messages') or []),
+            id=data.get('id'))
     except (ValueError, AttributeError, TypeError) as e:
         logger.warning('Could not load conversation for user %d: %s',
                        user_id, e)

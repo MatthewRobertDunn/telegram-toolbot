@@ -14,7 +14,7 @@ from tool_registry import BOTH, agent_tool
 from journal_store import (
     JournalEntry,
     ReplaceOutcome,
-    MAX_TOPIC_LENGTH,
+    StoreValidationError,
     SEARCH_LIMIT,
     create_journal_store,
 )
@@ -57,40 +57,32 @@ def _parse_iso_timestamp(value: str, name: str) -> datetime:
     return parsed
 
 
-def _coerce_id(value: object) -> int:
+def _coerce_int(value: object, error: str) -> int:
+    """Accept ints (bool excluded), integral floats and integer strings;
+    raise ValueError(error) for anything else. One coercer shared by the
+    id and limit parameters."""
     if isinstance(value, bool):
-        raise ValueError("Error: Invalid journal entry id.")
+        raise ValueError(error)
     if isinstance(value, int):
         return value
     if isinstance(value, float):
         if value.is_integer():
             return int(value)
-        raise ValueError("Error: Invalid journal entry id.")
+        raise ValueError(error)
     if isinstance(value, str) and value.strip().lstrip("-").isdigit():
         return int(value.strip())
-    raise ValueError("Error: Invalid journal entry id.")
+    raise ValueError(error)
+
+
+def _coerce_id(value: object) -> int:
+    return _coerce_int(value, "Error: Invalid journal entry id.")
 
 
 def _coerce_limit(value: object) -> int:
-    if isinstance(value, bool):
-        raise ValueError(
-            f"Error: limit must be an integer between 1 and {SEARCH_LIMIT}.")
-    if isinstance(value, int):
-        coerced = value
-    elif isinstance(value, float):
-        if value.is_integer():
-            coerced = int(value)
-        else:
-            raise ValueError(
-                f"Error: limit must be an integer between 1 and {SEARCH_LIMIT}.")
-    elif isinstance(value, str) and value.strip().lstrip("-").isdigit():
-        coerced = int(value.strip())
-    else:
-        raise ValueError(
-            f"Error: limit must be an integer between 1 and {SEARCH_LIMIT}.")
+    error = f"Error: limit must be an integer between 1 and {SEARCH_LIMIT}."
+    coerced = _coerce_int(value, error)
     if coerced < 1 or coerced > SEARCH_LIMIT:
-        raise ValueError(
-            f"Error: limit must be an integer between 1 and {SEARCH_LIMIT}.")
+        raise ValueError(error)
     return coerced
 
 
@@ -119,20 +111,15 @@ def _format_entry(record: JournalEntry) -> str:
         },
     })
 async def journal_add(ctx: AgentContext, topic: str, entry: str) -> str:
-    if not isinstance(topic, str) or not topic.strip():
-        return "Error: Topic cannot be empty"
-    if not isinstance(entry, str) or not entry.strip():
-        return "Error: Entry cannot be empty"
-    if len(topic.strip()) > MAX_TOPIC_LENGTH:
-        return (f"Error: Topic must be at most "
-                f"{MAX_TOPIC_LENGTH} characters")
     created, created_epoch_ms = _now_in_user_timezone(ctx)
     try:
         async with create_journal_store() as store:
             record = await store.add_entry(
                 user_id=ctx.user_id, topic=topic, entry=entry,
                 created=created, created_epoch_ms=created_epoch_ms)
-    except ValueError as e:
+    except StoreValidationError as e:
+        # The store validated the entry; its message is the user-facing
+        # text by contract.
         return f"Error: {e}"
     except Exception as e:
         logger.warning("journal_add failed: %s", e)
@@ -250,20 +237,15 @@ async def journal_edit(ctx: AgentContext, id: int | float | str,
         entry_id = _coerce_id(id)
     except ValueError as e:
         return str(e)
-    if not isinstance(oldString, str) or not oldString:
-        return "Error: oldString cannot be empty."
-    if not isinstance(newString, str):
-        return "Error: Invalid replacement text"
-    if oldString == newString:
-        return ("Error: No changes to apply: "
-                "oldString and newString are identical.")
     try:
         async with create_journal_store() as store:
             outcome = await store.replace_in_entry(
                 user_id=ctx.user_id, entry_id=entry_id,
                 old_string=oldString, new_string=newString,
                 replace_all=bool(replaceAll))
-    except ValueError as e:
+    except StoreValidationError as e:
+        # The store validated the edit; its message is the user-facing
+        # text by contract.
         return f"Error: {e}"
     except Exception as e:
         logger.warning("journal_edit failed: %s", e)
@@ -307,22 +289,14 @@ async def journal_topic_edit(ctx: AgentContext, id: int | float | str,
         entry_id = _coerce_id(id)
     except ValueError as e:
         return str(e)
-    if not isinstance(oldTopic, str) or not oldTopic.strip():
-        return "Error: oldTopic cannot be empty."
-    if not isinstance(newTopic, str) or not newTopic.strip():
-        return "Error: newTopic cannot be empty."
-    if len(newTopic.strip()) > MAX_TOPIC_LENGTH:
-        return (f"Error: Topic must be at most "
-                f"{MAX_TOPIC_LENGTH} characters")
-    if oldTopic.strip().lower() == newTopic.strip().lower():
-        return ("Error: No changes to apply: "
-                "oldTopic and newTopic are identical.")
     try:
         async with create_journal_store() as store:
             outcome = await store.update_entry_topic(
                 user_id=ctx.user_id, entry_id=entry_id,
                 old_topic=oldTopic, new_topic=newTopic)
-    except ValueError as e:
+    except StoreValidationError as e:
+        # The store validated the edit; its message is the user-facing
+        # text by contract.
         return f"Error: {e}"
     except Exception as e:
         logger.warning("journal_topic_edit failed: %s", e)
@@ -415,13 +389,11 @@ async def journal_query(ctx: AgentContext,
     noun = "entry" if len(records) == 1 else "entries"
     out = (f"Found {len(records)} journal {noun}:\n\n"
            + "\n\n".join(_format_entry(r) for r in records))
-    if page.has_more:
-        if sort_descending:
-            edge = min(records, key=lambda r: (r.created_epoch_ms, r.id))
-        else:
-            edge = max(records, key=lambda r: (r.created_epoch_ms, r.id))
+    # next_cursor is the page edge the store already computed; no
+    # recomputation here.
+    if page.has_more and page.next_cursor is not None:
         out += (f"\n\nMore journal entries exist. To see more, call "
-                f"journal_query with cursor=\"{edge.created}\" "
+                f"journal_query with cursor=\"{page.next_cursor}\" "
                 f"(keep the same sortDescending, query, topic and limit).")
     return out
 
