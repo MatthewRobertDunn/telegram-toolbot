@@ -242,8 +242,7 @@ class _Capabilities:
     think_chat: ChatUpdateContext | None
 
 
-def _capabilities(ctx: AgentContext, cfg: RunConfig,
-                  conversation: Conversation) -> _Capabilities:
+def _capabilities(ctx: AgentContext, cfg: RunConfig) -> _Capabilities:
     """The one computed view of this run's chat-facing capabilities."""
     # Only an interactive context can stream drafts or announce tool calls.
     chat = ctx if isinstance(ctx, ChatUpdateContext) else None
@@ -251,8 +250,13 @@ def _capabilities(ctx: AgentContext, cfg: RunConfig,
                            if chat is not None and cfg.stream_drafts
                            else NullDraftSink())
     announce_chat = chat if cfg.announce_tools else None
+    # Thinking is chat-facing only for the main loop: a caller that
+    # supplied its own history (compaction's scratch conversation, the
+    # impersonation clone) reuses the interactive ctx, and its thinking
+    # must not be posted to the chat or recorded on a history that is
+    # about to be discarded.
     think_chat = (chat if chat is not None
-                  and conversation is ctx.conversation
+                  and cfg.conversation is None
                   and ctx.settings.thinking_keep else None)
     return _Capabilities(streamer=streamer, announce_chat=announce_chat,
                          think_chat=think_chat)
@@ -463,7 +467,7 @@ async def run_llm(ctx: AgentContext,
 
     offer_tools = cfg.tools is not None and len(cfg.tools) > 0
     tool_map = _tool_map_for(cfg.tools, role_for(ctx)) if cfg.tools else {}
-    caps = _capabilities(ctx, cfg, conversation)
+    caps = _capabilities(ctx, cfg)
     await caps.streamer.start()
 
     while True:
