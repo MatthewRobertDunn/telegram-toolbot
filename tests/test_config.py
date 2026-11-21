@@ -51,6 +51,13 @@ class ConfigEnvTest(unittest.TestCase):
         self.assertIn('API_RETRY_TIME', message)
         self.assertIn('forever', message)
 
+    def test_bad_retry_max_delay_names_the_variable_and_value(self):
+        with self.assertRaises(ValueError) as caught:
+            load_with_env(API_RETRY_MAX_DELAY='a while')
+        message = str(caught.exception)
+        self.assertIn('API_RETRY_MAX_DELAY', message)
+        self.assertIn('a while', message)
+
     def test_bad_allowlist_names_the_variable_and_value(self):
         with self.assertRaises(ValueError) as caught:
             load_with_env(ALLOWED_IDS='1, two, three')
@@ -60,21 +67,25 @@ class ConfigEnvTest(unittest.TestCase):
 
     def test_numeric_settings_are_env_tunable(self):
         load_with_env(TEMPERATURE='0.5', TOP_P='0.4', API_RETRY_TIME='42',
-                      SANDBOX_PIDS_LIMIT='64')
+                      API_RETRY_MAX_DELAY='30', SANDBOX_PIDS_LIMIT='64')
         self.assertEqual(config.TEMPERATURE, 0.5)
         self.assertEqual(config.TOP_P, 0.4)
         self.assertEqual(config.API_RETRY_TIME, 42)
+        self.assertEqual(config.API_RETRY_MAX_DELAY, 30)
         self.assertEqual(config.SANDBOX_PIDS_LIMIT, 64)
         # The legacy lowercase names stay in step.
         self.assertEqual(config.temperature, 0.5)
         self.assertEqual(config.top_p, 0.4)
         self.assertEqual(config.api_retry_time, 42)
+        self.assertEqual(config.api_retry_max_delay, 30)
 
     def test_defaults_are_unchanged(self):
         load_with_env()
         self.assertEqual(config.temperature, 1.0)
         self.assertEqual(config.top_p, 0.95)
         self.assertEqual(config.api_retry_time, 36000)
+        self.assertEqual(config.API_RETRY_MAX_DELAY, 300)
+        self.assertEqual(config.api_retry_max_delay, 300)
         self.assertEqual(config.SANDBOX_IDLE_STOP_TIMEOUT, 3600)
         self.assertEqual(config.SANDBOX_IDLE_DESTROY_TIMEOUT, 86400)
         self.assertEqual(config.SANDBOX_EXEC_TIMEOUT, 300)

@@ -105,11 +105,15 @@ NVIDIA_FLUX2_GEN_URL = os.environ.get(
 TEMPERATURE = _float_env("TEMPERATURE", "1.0")
 TOP_P = _float_env("TOP_P", "0.95")
 API_RETRY_TIME = _int_env("API_RETRY_TIME", "36000")
+# The longest single backoff sleep; the 1.2x growth is clamped to this so
+# one sleep cannot swallow hours of the retry budget.
+API_RETRY_MAX_DELAY = _float_env("API_RETRY_MAX_DELAY", "300")
 # Legacy lowercase names, still imported elsewhere (user_settings,
 # handlers.run_llm); they are the same values, just spelled the old way.
 temperature = TEMPERATURE
 top_p = TOP_P
 api_retry_time = API_RETRY_TIME
+api_retry_max_delay = API_RETRY_MAX_DELAY
 
 STREAM_DRAFTS = os.environ.get("STREAM_DRAFTS", "1").strip().lower() not in ("0", "false", "off")
 
