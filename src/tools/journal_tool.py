@@ -57,49 +57,6 @@ def _parse_iso_timestamp(value: str, name: str) -> datetime:
     return parsed
 
 
-def _coerce_int(value: object, error: str) -> int:
-    """Accept ints (bool excluded), integral floats and integer strings;
-    raise ValueError(error) for anything else. One coercer shared by the
-    id and limit parameters."""
-    if isinstance(value, bool):
-        raise ValueError(error)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        if value.is_integer():
-            return int(value)
-        raise ValueError(error)
-    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
-        return int(value.strip())
-    raise ValueError(error)
-
-
-def _coerce_id(value: object) -> int:
-    return _coerce_int(value, "Error: Invalid journal entry id.")
-
-
-def _coerce_cursor(value: object) -> int:
-    """The entry id a paging cursor names - an exact resume point from
-    the previous page's next_cursor.
-
-    The declared type is an integer; a numeric string is still accepted
-    defensively, since a model may quote the number. Anything else (a
-    bool, a fractional float, arbitrary text) is a cursor the caller
-    could not have got from a previous page."""
-    return _coerce_int(
-        value,
-        "Error: Invalid cursor: expected the entry id from the previous "
-        "page's next_cursor, e.g. 42.")
-
-
-def _coerce_limit(value: object) -> int:
-    error = f"Error: limit must be an integer between 1 and {SEARCH_LIMIT}."
-    coerced = _coerce_int(value, error)
-    if coerced < 1 or coerced > SEARCH_LIMIT:
-        raise ValueError(error)
-    return coerced
-
-
 def _format_entry(record: JournalEntry) -> str:
     return (f"ID: {record.id}\n"
             f"Created: {record.created}\n"
@@ -152,20 +109,15 @@ async def journal_add(ctx: AgentContext, topic: str, entry: str) -> str:
             "description": "Entry IDs to retrieve (max 50).",
         },
     })
-async def journal_get(ctx: AgentContext,
-                      ids: list[int | float | str]) -> str:
+async def journal_get(ctx: AgentContext, ids: list[int]) -> str:
     if not isinstance(ids, (list, tuple)):
         return "Error: ids must be an array of entry IDs."
     if len(ids) == 0:
         return "Error: ids cannot be empty."
     if len(ids) > 50:
         return "Error: Too many ids (maximum 50)."
-    try:
-        entry_ids = [_coerce_id(value) for value in ids]
-    except ValueError as e:
-        return str(e)
     # Deduplicate while preserving request order.
-    entry_ids = list(dict.fromkeys(entry_ids))
+    entry_ids = list(dict.fromkeys(ids))
     try:
         async with create_journal_store() as store:
             records = await store.get_entries(
@@ -201,21 +153,17 @@ async def journal_get(ctx: AgentContext,
             "description": "ID of entry to delete.",
         },
     })
-async def journal_delete(ctx: AgentContext, id: int | float | str) -> str:
-    try:
-        entry_id = _coerce_id(id)
-    except ValueError as e:
-        return str(e)
+async def journal_delete(ctx: AgentContext, id: int) -> str:
     try:
         async with create_journal_store() as store:
             deleted = await store.delete_entry(
-                user_id=ctx.user_id, entry_id=entry_id)
+                user_id=ctx.user_id, entry_id=id)
     except Exception as e:
         logger.warning("journal_delete failed: %s", e)
         return f"Error: Could not delete journal entry: {e}"
     if not deleted:
-        return f"Journal entry {entry_id} not found"
-    return f"Journal entry {entry_id} deleted"
+        return f"Journal entry {id} not found"
+    return f"Journal entry {id} deleted"
 
 
 @agent_tool(
@@ -244,17 +192,13 @@ async def journal_delete(ctx: AgentContext, id: int | float | str) -> str:
             "description": ("Replace all matches (default false)"),
         },
     })
-async def journal_edit(ctx: AgentContext, id: int | float | str,
+async def journal_edit(ctx: AgentContext, id: int,
                        oldString: str, newString: str,
                        replaceAll: bool | None = None) -> str:
     try:
-        entry_id = _coerce_id(id)
-    except ValueError as e:
-        return str(e)
-    try:
         async with create_journal_store() as store:
             outcome = await store.replace_in_entry(
-                user_id=ctx.user_id, entry_id=entry_id,
+                user_id=ctx.user_id, entry_id=id,
                 old_string=oldString, new_string=newString,
                 replace_all=bool(replaceAll))
     except StoreValidationError as e:
@@ -265,15 +209,15 @@ async def journal_edit(ctx: AgentContext, id: int | float | str,
         logger.warning("journal_edit failed: %s", e)
         return f"Error: Could not update journal entry: {e}"
     if outcome is ReplaceOutcome.NOT_FOUND:
-        return f"Journal entry {entry_id} not found"
+        return f"Journal entry {id} not found"
     if outcome is ReplaceOutcome.TEXT_NOT_FOUND:
-        return f"Text not found in journal entry {entry_id}"
+        return f"Text not found in journal entry {id}"
     if outcome is ReplaceOutcome.MULTIPLE_MATCHES:
         return (f"Error: Found multiple matches for oldString in journal "
-                f"entry {entry_id}. Provide more surrounding context to "
+                f"entry {id}. Provide more surrounding context to "
                 f"make the match unique, or use replaceAll to replace all "
                 f"occurrences.")
-    return f"Journal entry {entry_id} updated"
+    return f"Journal entry {id} updated"
 
 
 @agent_tool(
@@ -297,16 +241,12 @@ async def journal_edit(ctx: AgentContext, id: int | float | str,
                             "max 128 characters)"),
         },
     })
-async def journal_topic_edit(ctx: AgentContext, id: int | float | str,
+async def journal_topic_edit(ctx: AgentContext, id: int,
                              oldTopic: str, newTopic: str) -> str:
-    try:
-        entry_id = _coerce_id(id)
-    except ValueError as e:
-        return str(e)
     try:
         async with create_journal_store() as store:
             outcome = await store.update_entry_topic(
-                user_id=ctx.user_id, entry_id=entry_id,
+                user_id=ctx.user_id, entry_id=id,
                 old_topic=oldTopic, new_topic=newTopic)
     except StoreValidationError as e:
         # The store validated the edit; its message is the user-facing
@@ -316,48 +256,35 @@ async def journal_topic_edit(ctx: AgentContext, id: int | float | str,
         logger.warning("journal_topic_edit failed: %s", e)
         return f"Error: Could not update journal entry topic: {e}"
     if outcome is ReplaceOutcome.NOT_FOUND:
-        return f"Journal entry {entry_id} not found"
+        return f"Journal entry {id} not found"
     if outcome is ReplaceOutcome.TEXT_NOT_FOUND:
-        return f"Topic does not match journal entry {entry_id}"
-    return f"Journal entry {entry_id} topic updated"
+        return f"Topic does not match journal entry {id}"
+    return f"Journal entry {id} topic updated"
 
 
 @agent_tool(
     scope=BOTH,
     description=(
-        "Search journal by text and topic; primary tool for recalling past "
-        "experiences, mood, symptoms, sleep/wellbeing. All parameters "
-        "optional; empty call returns recent entries. Newest-first by "
-        "default (sortDescending=false for oldest-first). start is an ISO "
-        "8601 timestamp with timezone that positions the FIRST page by "
-        "time, inclusive: newest-first returns entries created at or "
-        "before it, oldest-first at or after it. cursor is the entry id "
-        "returned as next_cursor by the previous page - an exact resume "
-        "point, even for entries sharing a timestamp - and is what every "
-        "later page uses instead of start; supplying both is an error. "
-        "Returns up to limit (default/max 50); if more exist, response "
-        "ends with the next cursor (keep other params). Full-text matches "
-        "words, not meanings: use concise terms or quoted phrases. "
-        "Timestamps need explicit timezone/UTC."),
+        "Search journal entries by text and topic; the way to recall past "
+        "notes. Newest first by default. Page with cursor (the "
+        "next_cursor id from the previous page); on the first page use "
+        "start (ISO 8601) to begin at a date. Returns up to limit "
+        "entries, plus next_cursor when more exist."),
     parameters={
         "cursor": {
             "type": "integer",
             "description": ("Entry id from the previous page's "
-                            "next_cursor. Exact resume point, even for "
-                            "entries sharing a timestamp. Do not combine "
-                            "with start."),
+                            "next_cursor. Cannot be combined with start."),
         },
         "start": {
             "type": "string",
-            "description": ("ISO 8601 datetime with timezone positioning "
-                            "the first page by time, inclusive: entries "
-                            "at or before it when newest-first, at or "
-                            "after it when oldest-first. First page only; "
-                            "later pages use cursor."),
+            "description": ("ISO 8601 datetime with timezone; first page "
+                            "only. Inclusive."),
         },
         "query": {
             "type": "string",
-            "description": "Full-text search query.",
+            "description": ("Full-text query (matches words, not "
+                            "meanings; quote phrases)."),
         },
         "topic": {
             "type": "string",
@@ -365,12 +292,11 @@ async def journal_topic_edit(ctx: AgentContext, id: int | float | str,
         },
         "sortDescending": {
             "type": "boolean",
-            "description": ("Newest-first when true (default), oldest-first "
-                            "when false."),
+            "description": "Newest first (default) or oldest first.",
         },
         "limit": {
             "type": "integer",
-            "description": "Max entries to return, 1 to 50 (default 50).",
+            "description": "Max entries, 1-50 (default 50).",
         },
     })
 async def journal_query(ctx: AgentContext,
@@ -379,51 +305,35 @@ async def journal_query(ctx: AgentContext,
                         query: str | None = None,
                         topic: str | None = None,
                         sortDescending: bool | None = None,
-                        limit: int | float | str | None = None) -> str:
+                        limit: int | None = None) -> str:
     # cursor is the previous page's next_cursor - an entry id, resolved
     # inside the store to its (created_epoch_ms, id) position - while
     # start is a datetime positioning the first page inclusively. One
     # meaning each: a page resuming from a cursor needs no timestamp,
     # and a page positioned by start has no cursor yet.
-    start_text = start.strip() if isinstance(start, str) else ""
-    if cursor is not None and start_text:
+    if cursor is not None and start:
         return ("Error: Provide either cursor or start, not both: cursor "
                 "resumes paging from an entry id, start positions the "
                 "first page by timestamp.")
-    cursor_id: int | None = None
-    if cursor is not None:
-        try:
-            cursor_id = _coerce_cursor(cursor)
-        except ValueError as e:
-            return str(e)
     start_ms: int | None = None
-    if start_text:
+    if start:
         try:
             start_ms = int(
-                _parse_iso_timestamp(start_text, "start").timestamp() * 1000)
+                _parse_iso_timestamp(start, "start").timestamp() * 1000)
         except ValueError as e:
             return str(e)
-    if sortDescending is None:
-        sort_descending = True
-    elif isinstance(sortDescending, bool):
-        sort_descending = sortDescending
-    else:
-        return "Error: sortDescending must be a boolean."
-    if limit is None:
-        max_entries = SEARCH_LIMIT
-    else:
-        try:
-            max_entries = _coerce_limit(limit)
-        except ValueError as e:
-            return str(e)
+    sort_descending = True if sortDescending is None else sortDescending
+    max_entries = SEARCH_LIMIT if limit is None else limit
+    if not 1 <= max_entries <= SEARCH_LIMIT:
+        return f"Error: limit must be an integer between 1 and {SEARCH_LIMIT}."
     try:
         async with create_journal_store() as store:
             page = await store.search_page(
                 user_id=ctx.user_id,
-                cursor_id=cursor_id,
+                cursor_id=cursor,
                 start_ms=start_ms,
-                query=query if isinstance(query, str) and query.strip() else None,
-                topic=topic if isinstance(topic, str) and topic.strip() else None,
+                query=query,
+                topic=topic,
                 limit=max_entries,
                 sort_descending=sort_descending)
     except ValueError as e:
@@ -441,9 +351,7 @@ async def journal_query(ctx: AgentContext,
     # recomputation here.
     if page.has_more and page.next_cursor is not None:
         out += (f"\n\nMore journal entries exist. To see more, call "
-                f"journal_query with cursor={page.next_cursor} "
-                f"(keep the same sortDescending, query and limit; do not "
-                f"send start again - it positions the first page only).")
+                f"journal_query with cursor={page.next_cursor}.")
     return out
 
 

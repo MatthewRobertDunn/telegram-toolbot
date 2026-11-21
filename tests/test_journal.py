@@ -836,8 +836,6 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await journal_tool.journal_get(ctx, ids=[999]),
             "Journal entry 999 not found")
-        self.assertEqual(await journal_tool.journal_get(ctx, ids=["nope"]),
-                         "Error: Invalid journal entry id.")
         self.assertEqual(await journal_tool.journal_get(ctx, ids=[]),
                          "Error: ids cannot be empty.")
         self.assertEqual(await journal_tool.journal_get(ctx, ids="nope"),  # type: ignore[arg-type]
@@ -964,10 +962,6 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
             "Topic does not match journal entry 1")
         self.assertEqual(
             await journal_tool.journal_topic_edit(
-                ctx, id="nope", oldTopic="Mood", newTopic="Sleep"),
-            "Error: Invalid journal entry id.")
-        self.assertEqual(
-            await journal_tool.journal_topic_edit(
                 ctx, id=1, oldTopic="Mood", newTopic="Sleep"),
             "Journal entry 1 topic updated")
         out = await journal_tool.journal_get(ctx, ids=[1])
@@ -992,19 +986,6 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
             await journal_tool.journal_query(ctx, start="not a date"),
             "Error: Invalid start timestamp 'not a date'. "
             "Use ISO 8601, e.g. '2026-11-01T00:00:00+10:30'.")
-        # cursor is an entry id, so a datetime is not one.
-        self.assertEqual(
-            await journal_tool.journal_query(
-                ctx, cursor="2026-11-01T00:00:00+10:30"),  # type: ignore[arg-type]
-            "Error: Invalid cursor: expected the entry id from the previous "
-            "page's next_cursor, e.g. 42.")
-        for bad_cursor in ("three", 1.5, True, [2]):
-            with self.subTest(cursor=bad_cursor):
-                self.assertEqual(
-                    await journal_tool.journal_query(
-                        ctx, cursor=bad_cursor),  # type: ignore[arg-type]
-                    "Error: Invalid cursor: expected the entry id from the "
-                    "previous page's next_cursor, e.g. 42.")
         # cursor and start both position the same scan: the caller must
         # pick one.
         self.assertEqual(
@@ -1013,6 +994,14 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
             "Error: Provide either cursor or start, not both: cursor "
             "resumes paging from an entry id, start positions the "
             "first page by timestamp.")
+        # limit stays a plain int with its range check; anything else is
+        # a boundary type error, not a coerced value.
+        self.assertEqual(
+            await journal_tool.journal_query(ctx, limit=0),
+            "Error: limit must be an integer between 1 and 50.")
+        self.assertEqual(
+            await journal_tool.journal_query(ctx, limit=51),
+            "Error: limit must be an integer between 1 and 50.")
         self.assertEqual(
             await journal_tool.journal_query(ctx, query="nothing matching"),
             "No journal entries found.")
@@ -1105,19 +1094,13 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
             ctx, cursor=1, sortDescending=False, limit=1)
         self.assertIn("entry 1", oldest_next)
         self.assertIn("cursor=2", oldest_next)
-        # Validation.
+        # limit stays a plain int with its range check.
         self.assertEqual(
             await journal_tool.journal_query(ctx, limit=0),
             "Error: limit must be an integer between 1 and 50.")
         self.assertEqual(
             await journal_tool.journal_query(ctx, limit=51),
             "Error: limit must be an integer between 1 and 50.")
-        self.assertEqual(
-            await journal_tool.journal_query(ctx, limit="many"),
-            "Error: limit must be an integer between 1 and 50.")
-        self.assertEqual(
-            await journal_tool.journal_query(ctx, sortDescending="yes"),  # type: ignore[arg-type]
-            "Error: sortDescending must be a boolean.")
 
     async def test_query_tool_cursor_resumes_inside_tied_milliseconds(self):
         ctx = self._ctx()
@@ -1138,12 +1121,6 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ID: 1", second)
         self.assertNotIn("ID: 3", second)
         self.assertNotIn("More journal entries exist", second)
-        # A number sent as text is still an id: the tool coerces instead
-        # of rejecting a quoting mistake.
-        self.assertEqual(
-            await journal_tool.journal_query(
-                ctx, cursor="2", limit=2),  # type: ignore[arg-type]
-            second)
         # Oldest-first pages the same tie the other way.
         asc = await journal_tool.journal_query(
             ctx, limit=2, sortDescending=False)
