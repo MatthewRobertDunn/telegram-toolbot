@@ -318,7 +318,7 @@ class TestProviderDispatch(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data, image)
         self.assertEqual(post.call_args.args[0],
                          image_gen.config.IMAGE_GEN_URL)
-        self.assertEqual(post.call_args.kwargs['json'],
+        self.assertEqual(post.call_args.kwargs['json_body'],
                          {'prompt': 'a cat', 'width': 1024, 'height': 1024,
                           'steps': 50})
 
@@ -331,7 +331,7 @@ class TestProviderDispatch(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data, image)
         self.assertEqual(post.call_args.args[0],
                          image_gen.config.NVIDIA_FLUX2_GEN_URL)
-        self.assertEqual(post.call_args.kwargs['json'],
+        self.assertEqual(post.call_args.kwargs['json_body'],
                          {'prompt': 'a cat', 'width': 1024, 'height': 1024,
                           'steps': 4})
 
@@ -339,7 +339,7 @@ class TestProviderDispatch(unittest.IsolatedAsyncioTestCase):
         _, post = await self._post(
             _response(self._nvidia_body(b'\x89PNG\r\n\x1a\nx')),
             'nvidia-flux3', steps=10)
-        self.assertEqual(post.call_args.kwargs['json']['steps'], 10)
+        self.assertEqual(post.call_args.kwargs['json_body']['steps'], 10)
 
     async def test_content_filter_is_rejected(self):
         with self.assertRaises(RuntimeError) as ctx:
@@ -355,7 +355,7 @@ class TestProviderDispatch(unittest.IsolatedAsyncioTestCase):
         data, post = await self._post(
             _response(image, 'image/jpeg'), 'cloudflare')
         self.assertEqual(data, image)
-        self.assertEqual(post.call_args.kwargs['json'],
+        self.assertEqual(post.call_args.kwargs['json_body'],
                          {'prompt': 'a cat', 'width': 1024, 'height': 1024,
                           'num_steps': 25})
 
@@ -433,7 +433,7 @@ class TestHordeProvider(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data, self.IMAGE)
         self.assertEqual(post.call_args.args[0],
                          _CREDENTIALS['AI_HORDE_API_URL'] + '/generate/async')
-        payload = post.call_args.kwargs['json']
+        payload = post.call_args.kwargs['json_body']
         self.assertEqual(payload['params']['steps'], 25)
         self.assertEqual(payload['params']['n'], 1)
         self.assertEqual(payload['nsfw'], False)
@@ -456,6 +456,12 @@ class TestHordeProvider(unittest.IsolatedAsyncioTestCase):
     async def test_no_generations_raises(self):
         with self.assertRaises(RuntimeError):
             await self._render(generations=[])
+
+    async def test_malformed_data_uri_is_reported(self):
+        # 'data:' without a comma would previously raise a bare IndexError.
+        with self.assertRaises(RuntimeError) as ctx:
+            await self._render(generations=[{'img': 'data:image/webp'}])
+        self.assertIn('malformed', str(ctx.exception))
 
     async def test_http_error_from_the_endpoint_carries_the_body(self):
         post = unittest.mock.AsyncMock(

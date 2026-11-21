@@ -26,6 +26,30 @@ _session: aiohttp.ClientSession | None = None
 _session_loop: asyncio.AbstractEventLoop | None = None
 
 
+def _discard(old: aiohttp.ClientSession | None,
+             old_loop: asyncio.AbstractEventLoop | None) -> None:
+    """Best-effort cleanup of a session whose loop is not the running one.
+
+    ``ClientSession.close()`` is a coroutine that must run on the loop that
+    owns the session's transports: while that loop is still alive, the
+    close is scheduled on it (from a foreign loop the transports must not
+    be touched). Once the old loop has stopped, nothing can execute the
+    coroutine any more, so the session is merely dropped for the GC to
+    collect — the shape of every per-test loop in the test suite.
+    """
+    if old is None or old.closed:
+        return
+    if old_loop is not None and old_loop.is_running():
+
+        def _close() -> None:
+            asyncio.ensure_future(old.close())
+
+        try:
+            old_loop.call_soon_threadsafe(_close)
+        except RuntimeError:
+            pass  # the loop stopped between the check and the scheduling
+
+
 class HttpStatusError(Exception):
     """A remote endpoint answered with a non-2xx status.
 
@@ -78,17 +102,16 @@ def _timeout(total: float) -> aiohttp.ClientTimeout:
 def session() -> aiohttp.ClientSession:
     """The shared ``ClientSession``, created on first use and reused.
 
-    The session is bound to the event loop that created it; if that loop is
-    gone (each test case runs on a fresh loop), the stale session is
-    dropped and a new one is opened for the running loop.
+    The session is bound to the event loop that created it; when that loop
+    is no longer the running one (each test case runs on a fresh loop), the
+    stale session is cleaned up (:func:`_discard`) and a new one is opened
+    for the running loop.
     """
     global _session, _session_loop
     loop = asyncio.get_running_loop()
     if _session is not None and not _session.closed and _session_loop is loop:
         return _session
-    # The previous loop is finished, so its session can no longer be
-    # awaited closed; dropping the reference lets the GC collect it instead
-    # of every call failing with 'Event loop is closed'.
+    _discard(_session, _session_loop)
     _session = aiohttp.ClientSession(timeout=_timeout(REQUEST_TIMEOUT))
     _session_loop = loop
     return _session
@@ -105,18 +128,20 @@ async def aclose() -> None:
 
 async def request(method: str, url: str, *,
                   headers: Mapping[str, str] | None = None,
-                  json: Any = None,
+                  json_body: Any = None,
                   timeout: float | None = None) -> Response:
     """Send one request on the shared session and buffer the response.
 
-    ``timeout`` is the total budget in seconds, defaulting to
-    REQUEST_TIMEOUT. A request-level timeout surfaces as ``RuntimeError``
-    with a readable message; a deadline held by the caller arrives as
-    ``CancelledError`` and is not converted.
+    ``json_body`` is sent as a JSON request body when not None. ``timeout``
+    is the total budget in seconds, defaulting to REQUEST_TIMEOUT. A
+    request-level timeout surfaces as ``RuntimeError`` with a readable
+    message; a deadline held by the caller arrives as ``CancelledError``
+    and is not converted.
     """
     total = REQUEST_TIMEOUT if timeout is None else timeout
     try:
-        async with session().request(method, url, headers=headers, json=json,
+        async with session().request(method, url, headers=headers,
+                                     json=json_body,
                                      timeout=_timeout(total)) as resp:
             return Response(status=resp.status,
                             headers=dict(resp.headers),

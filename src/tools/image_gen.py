@@ -125,7 +125,7 @@ async def _render_nvidia(url: str, prompt: str, width: int, height: int,
         "height": height,
         "steps": steps,
     }
-    response = await http_client.post(url, headers=headers, json=payload,
+    response = await http_client.post(url, headers=headers, json_body=payload,
                                       timeout=NVIDIA_REQUEST_TIMEOUT)
     response.raise_for_status()
     artifact = response.json()["artifacts"][0]
@@ -184,7 +184,7 @@ async def _render_horde(prompt: str, width: int, height: int,
         "r2": False,
     }
     response = await http_client.post(f"{base_url}/generate/async",
-                                      headers=headers, json=payload,
+                                      headers=headers, json_body=payload,
                                       timeout=HORDE_REQUEST_TIMEOUT)
     response.raise_for_status()
     request_id = response.json()["id"]
@@ -215,7 +215,13 @@ async def _render_horde(prompt: str, width: int, height: int,
         image_resp.raise_for_status()
         return image_resp.content
     if image.startswith("data:"):
-        image = image.split(",", 1)[1]
+        # A data URI without a comma separator is malformed; report that
+        # instead of raising a bare IndexError.
+        _, sep, encoded = image.partition(",")
+        if not sep:
+            raise RuntimeError(
+                "AI Horde returned a malformed image data URI.")
+        image = encoded
     # Decoding here both strips the base64 wrapper and proves the payload
     # really is image data before it reaches the shared store path.
     return base64.b64decode(image)
@@ -242,7 +248,7 @@ async def _render_cloudflare(prompt: str, width: int, height: int,
         "height": height,
         "num_steps": steps,
     }
-    response = await http_client.post(url, headers=headers, json=payload,
+    response = await http_client.post(url, headers=headers, json_body=payload,
                                       timeout=CLOUDFLARE_REQUEST_TIMEOUT)
     response.raise_for_status()
     if "application/json" in response.header("Content-Type"):
