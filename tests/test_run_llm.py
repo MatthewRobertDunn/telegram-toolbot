@@ -427,10 +427,10 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result)
         self.assertEqual(sleeps, [])
 
-    async def test_construction_error_fails_immediately(self):
-        # Fail-fast is scoped to request construction: a bad kwarg or
-        # malformed tool schema reproduces identically forever, so
-        # waiting is pointless.
+    async def test_request_construction_errors_propagate(self):
+        # _request_kwargs is pure assembly, so an exception there is a
+        # bug: it must not be swallowed into the retry loop or turned
+        # into a "no response" result.
         clock = _FakeClock()
         sleeps: list = []
         client, calls = _failing_client([_FakeStatusError(502)])
@@ -440,12 +440,12 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
                     run_llm_mod, '_request_kwargs',
                     unittest.mock.Mock(
                         side_effect=TypeError('unexpected kwarg'))):
-            result = await run_llm_mod._one_completion(
-                _completion_cfg(),
-                SETTINGS,  # type: ignore[arg-type]
-                streamer=run_llm_mod.NullDraftSink(),
-                strip_thinking=False, budget=1000)
-        self.assertIsNone(result)
+            with self.assertRaises(TypeError):
+                await run_llm_mod._one_completion(
+                    _completion_cfg(),
+                    SETTINGS,  # type: ignore[arg-type]
+                    streamer=run_llm_mod.NullDraftSink(),
+                    strip_thinking=False, budget=1000)
         self.assertEqual(sleeps, [])
         # The client was never reached: construction failed first.
         self.assertEqual(calls, [])

@@ -77,9 +77,7 @@ def _non_retryable(error: Exception) -> bool:
     responses the router may route to another model, and even TypeError/
     ValueError arriving from the SDK or the stream handling (a mid-stream
     parsing hiccup is transient; failing it with zero retries would turn
-    a router blip into a dropped reply). Request-construction TypeError/
-    ValueError are checked separately in _one_completion, where they are
-    known to be deterministic.
+    a router blip into a dropped reply).
     """
     status = getattr(error, 'status_code', None)
     return isinstance(status, int) and status in (401, 403)
@@ -273,9 +271,9 @@ def _capabilities(ctx: AgentContext, cfg: RunConfig) -> _Capabilities:
 
 
 def _request_kwargs(cfg: RunConfig, settings: UserSettings) -> dict:
-    """The chat.completions.create kwargs for one round. Built per
-    attempt inside the guarded call: a construction TypeError/ValueError
-    is a fail-fast retry outcome, not a crash of the queued job."""
+    """The chat.completions.create kwargs for one round. Pure assembly
+    from cfg and the history: an exception here is a bug, not a retry
+    condition, so the retry loop does not catch it."""
     create_kwargs: dict = dict(
         model=cfg.model if cfg.model is not None else settings.model,
         messages=cfg.conversation.to_openai(),
@@ -314,10 +312,9 @@ async def _one_completion(cfg: RunConfig,
     Cancellation propagates immediately, so /stop and subagent_stop
     interrupt the retry sleep.
 
-    Fail-fast is scoped to deterministic errors only: 401/403 from the
-    server, and TypeError/ValueError raised while building the request.
-    The same exception types arriving later - from the transport, stream
-    parsing, or the draft sink - are presumed transient and retried.
+    Fail-fast is 401/403 only. Exceptions from building the request are
+    not caught: _request_kwargs is pure assembly, so an exception there
+    is a bug (or broken history) and propagates to the caller.
     """
     # A non-positive budget means "no retries", never "unbounded": the
     # first attempt always runs, and the first failure gives up.
@@ -331,16 +328,10 @@ async def _one_completion(cfg: RunConfig,
         if attempt and _loop_time() >= give_up_at:
             break
         attempt += 1
-        try:
-            create_kwargs = _request_kwargs(cfg, settings)
-        except (TypeError, ValueError) as e:
-            # Deterministic: rebuilding the same request fails the same
-            # way forever, so waiting is pointless. The same exception
-            # types from the SDK or stream handling below are retried -
-            # those are not deterministic.
-            logger.warning('request construction failed (%s: %s); '
-                           'not retrying', type(e).__name__, e)
-            return None
+        # Outside the retry try: request assembly is deterministic, so an
+        # exception here is a bug or broken history, not a transient
+        # condition to wait out.
+        create_kwargs = _request_kwargs(cfg, settings)
         try:
             streamer.new_round()
             response: Any = await client.chat.completions.create(
