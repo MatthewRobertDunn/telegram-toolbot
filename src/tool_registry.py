@@ -28,6 +28,13 @@ The same name may be declared twice, once per audience, when the two agents
 need different behaviour under one name: ``read_image`` posts to the chat for
 the parent and stays silent for a subagent. The model sees one tool; which
 implementation runs depends on who asked.
+
+The declarations live in a :class:`ToolRegistry` rather than module globals:
+a second declaration of the same name for the same audience raises at
+declaration time (so ``importlib.reload`` of a tool module fails loudly
+instead of doubling the surface), and the lazy-load hook only marks the
+registry loaded once importing the tool modules has succeeded. The module
+level functions below delegate to the default ``registry`` instance.
 """
 
 import inspect
@@ -51,6 +58,11 @@ _VISIBLE_TO = {
 }
 
 
+def _audiences(scope: str) -> set[str]:
+    """The roles a scope reaches."""
+    return {role for role in ROLES if scope in _VISIBLE_TO[role]}
+
+
 @dataclass(frozen=True)
 class Tool:
     """One tool implementation, as seen by one audience."""
@@ -61,6 +73,7 @@ class Tool:
     description: str
     properties: dict[str, dict]
     required: tuple[str, ...]
+    needs_ctx: bool = False
 
     def definition(self) -> dict:
         """The JSON schema handed to the model."""
@@ -82,38 +95,152 @@ class Tool:
         }
 
 
-_DECLARED: list[Tool] = []
-# name -> implementation, one entry per audience.
-_BY_ROLE: dict[str, dict[str, Tool]] = {}
-_loaded = False
+def _default_loader() -> None:
+    """Import the tool modules; kept lazy to avoid an import cycle."""
+    from tool_registration import load_tools
+    load_tools()
+
+
+class ToolRegistry:
+    """Owns the declared tools, their audiences, and their resolution.
+
+    A declaration that clashes with an earlier one - the same name visible
+    to the same audience - raises immediately, naming both modules, so a
+    duplicate is never silently served and a reload is never half-applied.
+
+    ``loader`` populates the registry on first use (the real one imports
+    the tool modules). It runs at most once and the registry only counts as
+    loaded after it returns, so a failed import is retried on the next
+    lookup rather than poisoning every later call.
+    """
+
+    def __init__(self, loader: Callable[[], None] | None = None) -> None:
+        self._loader: Callable[[], None] = (
+            loader if loader is not None else _default_loader)
+        self._declared: list[Tool] = []
+        self._by_role: dict[str, dict[str, Tool]] | None = None
+        self._loaded = False
+        self._loading = False
+
+    # -- declaration ----------------------------------------------------
+
+    def agent_tool(self, *, description: str,
+                   parameters: dict[str, dict] | None = None,
+                   name: str | None = None,
+                   scope: str = PARENT,
+                   required: tuple[str, ...] | list[str] | None = None
+                   ) -> Callable[[F], F]:
+        """Declare a tool: its schema, its audience, and how to run it.
+
+        ``parameters`` holds the JSON schema for each argument the model may
+        pass; the object wrapper and ``additionalProperties: false`` are added
+        here. ``required`` defaults to every parameter without a Python default,
+        so a schema and a signature cannot drift apart.
+        """
+        if scope not in (PARENT, BOTH, SUBAGENT):
+            raise ValueError(f"unknown tool scope {scope!r}")
+
+        def decorate(func: F) -> F:
+            tool = _build(func, description, parameters or {}, name, scope,
+                          required)
+            self._reject_clash(tool)
+            self._declared.append(tool)
+            # A tool declared after the first lookup (a test's, or a module
+            # imported late) invalidates the resolved index.
+            self._by_role = None
+            return func
+
+        return decorate
+
+    def _reject_clash(self, tool: Tool) -> None:
+        """Raise if an earlier declaration reaches the same audience."""
+        for other in self._declared:
+            if other.name != tool.name:
+                continue
+            shared = _audiences(tool.scope) & _audiences(other.scope)
+            if not shared:
+                continue
+            raise ValueError(
+                f"tool {tool.name!r} is declared twice for {sorted(shared)}: "
+                f"{other.func.__module__} ({other.scope}) and "
+                f"{tool.func.__module__} ({tool.scope})")
+
+    # -- lookup -----------------------------------------------------------
+
+    def declared(self) -> list[Tool]:
+        """The tools declared so far, without triggering the lazy load."""
+        return list(self._declared)
+
+    def tools_for(self, role: str) -> list[Tool]:
+        """The tools one audience is offered, in declaration order."""
+        if role not in ROLES:
+            raise ValueError(f"unknown tool role {role!r}")
+        self.ensure_loaded()
+        if self._by_role is None:
+            self._by_role = self._resolve()
+        return list(self._by_role[role].values())
+
+    def definitions_for(self, role: str) -> list[dict]:
+        """The JSON tool definitions one audience is offered."""
+        return [tool.definition() for tool in self.tools_for(role)]
+
+    def functions_for(self, role: str) -> dict[str, Callable[..., object]]:
+        """The implementations one audience may execute, by tool name."""
+        return {tool.name: tool.func for tool in self.tools_for(role)}
+
+    def all_tools(self) -> list[Tool]:
+        """Every declared tool implementation, both audiences."""
+        self.ensure_loaded()
+        return list(self._declared)
+
+    # -- loading ----------------------------------------------------------
+
+    def ensure_loaded(self) -> None:
+        """Run the loader once, on the first lookup that needs it.
+
+        ``_loaded`` is set only after the loader succeeds: a failed or
+        partial load leaves it False so the next lookup retries instead of
+        serving whatever the half-finished load managed to declare.
+        """
+        if self._loaded or self._loading:
+            return
+        self._loading = True
+        try:
+            self._loader()
+        finally:
+            self._loading = False
+        self._loaded = True
+
+    def load(self) -> None:
+        """Populate and resolve the registry (idempotent)."""
+        self.ensure_loaded()
+        self._by_role = self._resolve()
+
+    def _resolve(self) -> dict[str, dict[str, Tool]]:
+        """Index the declared tools by audience."""
+        by_role: dict[str, dict[str, Tool]] = {role: {} for role in ROLES}
+        for tool in self._declared:
+            for role in ROLES:
+                if tool.scope not in _VISIBLE_TO[role]:
+                    continue
+                by_role[role][tool.name] = tool
+        return by_role
+
+
+# The registry the module-level functions below operate on. Tests replace
+# this with a fresh ToolRegistry to keep their declarations isolated.
+registry = ToolRegistry()
 
 
 def agent_tool(*, description: str,
                parameters: dict[str, dict] | None = None,
                name: str | None = None,
                scope: str = PARENT,
-               required: tuple[str, ...] | list[str] | None = None):
-    """Declare a tool: its schema, its audience, and how to run it.
-
-    ``parameters`` holds the JSON schema for each argument the model may
-    pass; the object wrapper and ``additionalProperties: false`` are added
-    here. ``required`` defaults to every parameter without a Python default,
-    so a schema and a signature cannot drift apart.
-    """
-    if scope not in (PARENT, BOTH, SUBAGENT):
-        raise ValueError(f"unknown tool scope {scope!r}")
-
-    def decorate(func: F) -> F:
-        tool = _build(func, description, parameters or {}, name, scope,
-                      required)
-        _DECLARED.append(tool)
-        # A tool declared after the first lookup (a test's, or a module
-        # imported late) invalidates the resolved index.
-        global _BY_ROLE
-        _BY_ROLE = {}
-        return func
-
-    return decorate
+               required: tuple[str, ...] | list[str] | None = None
+               ) -> Callable[[F], F]:
+    """Declare a tool in the default registry (see ToolRegistry.agent_tool)."""
+    return registry.agent_tool(description=description, parameters=parameters,
+                               name=name, scope=scope, required=required)
 
 
 def _build(func: Callable, description: str, properties: dict[str, dict],
@@ -130,10 +257,11 @@ def _build(func: Callable, description: str, properties: dict[str, dict],
 
     tool = Tool(name=tool_name, scope=scope, func=func,
                 description=description, properties=properties,
-                required=tuple(required))
+                required=tuple(required), needs_ctx=needs_ctx)
 
     # Consumed by run_llm.execute_tool_call. Kept on the function so the
-    # executor needs nothing but name -> callable.
+    # executor needs nothing but name -> callable; the same fact is on the
+    # Tool itself for everyone else.
     setattr(func, '_needs_ctx', needs_ctx)
 
     _check(tool, args, needs_ctx)
@@ -149,6 +277,14 @@ def _check(tool: Tool, args: list[inspect.Parameter], needs_ctx: bool) -> None:
         raise ValueError(
             f"tool {tool.name!r} declares parameters that are not in its "
             f"signature: {sorted(unknown)}")
+    # The reverse direction: a parameter the model cannot express in the
+    # schema is silently undiscoverable, so reject it too.
+    unexpressible = known - declared
+    if unexpressible:
+        raise ValueError(
+            f"tool {tool.name!r} takes parameters its schema does not "
+            f"declare, so the model cannot pass them: "
+            f"{sorted(unexpressible)}")
     missing = set(tool.required) - declared
     if missing:
         raise ValueError(
@@ -181,58 +317,26 @@ def role_for(ctx: AgentContext) -> str:
     return PARENT if isinstance(ctx, ChatUpdateContext) else SUBAGENT
 
 
-def _ensure_loaded() -> None:
-    global _loaded
-    if _loaded:
-        return
-    _loaded = True
-    from tool_registration import load_tools
-    load_tools()
-
-
-def _resolve() -> dict[str, dict[str, Tool]]:
-    """Index the declared tools by audience, rejecting a name clash."""
-    _ensure_loaded()
-    by_role: dict[str, dict[str, Tool]] = {role: {} for role in ROLES}
-    for tool in _DECLARED:
-        for role in ROLES:
-            if tool.scope not in _VISIBLE_TO[role]:
-                continue
-            existing = by_role[role].get(tool.name)
-            if existing is not None:
-                raise ValueError(
-                    f"tool {tool.name!r} is declared twice for {role} "
-                    f"({existing.scope} and {tool.scope})")
-            by_role[role][tool.name] = tool
-    return by_role
-
-
 def tools_for(role: str) -> list[Tool]:
     """The tools one audience is offered, in declaration order."""
-    global _BY_ROLE
-    if not _BY_ROLE:
-        _BY_ROLE = _resolve()
-    return list(_BY_ROLE[role].values())
+    return registry.tools_for(role)
 
 
 def definitions_for(role: str) -> list[dict]:
     """The JSON tool definitions one audience is offered."""
-    return [tool.definition() for tool in tools_for(role)]
+    return registry.definitions_for(role)
 
 
 def functions_for(role: str) -> dict[str, Callable[..., object]]:
     """The implementations one audience may execute, by tool name."""
-    return {tool.name: tool.func for tool in tools_for(role)}
+    return registry.functions_for(role)
 
 
 def all_tools() -> list[Tool]:
     """Every declared tool implementation, both audiences."""
-    _ensure_loaded()
-    return list(_DECLARED)
+    return registry.all_tools()
 
 
 def load() -> None:
     """Populate and resolve the registry (idempotent)."""
-    global _BY_ROLE
-    _ensure_loaded()
-    _BY_ROLE = _resolve()
+    registry.load()

@@ -29,9 +29,30 @@ TOOL_MODULES = (
 
 
 def load_tools() -> None:
-    """Import every tool module, running their @agent_tool declarations."""
+    """Import every tool module, running their @agent_tool declarations.
+
+    Afterwards every declared tool must have come from a module listed
+    above: a declaration from anywhere else (a parked tool module imported
+    by mistake, or a tool module importing another one) means the surface
+    is not what this file says it is, so fail instead of serving it.
+    """
     for name in TOOL_MODULES:
         importlib.import_module(name)
+    _verify_declared_come_from_listed_modules()
+
+
+def _verify_declared_come_from_listed_modules() -> None:
+    listed = set(TOOL_MODULES)
+    strays = [(tool.name, tool.func.__module__)
+              for tool in tool_registry.registry.declared()
+              if tool.func.__module__ not in listed]
+    if strays:
+        detail = ", ".join(f"{name!r} ({module})"
+                           for name, module in strays)
+        raise RuntimeError(
+            f"tool(s) declared outside TOOL_MODULES: {detail}. Add the "
+            f"module to TOOL_MODULES, or remove its @agent_tool "
+            f"declaration if it is parked.")
 
 
 def register_tools() -> None:
