@@ -24,8 +24,8 @@ class TestOneIsolatedDatabasePerRun(unittest.TestCase):
         # Every store operation opens a fresh aiosqlite connection, so if
         # each connect re-ran the DDL the suite would pay for it on every
         # operation. Force the one-time creation to run again and count
-        # it: the journal DDL (executescript) once, the memory and
-        # settings tables once each.
+        # it. All three tables now share one code path, so the count is
+        # one DDL script each: memory (kv), settings and journal.
         import aiosqlite
 
         import sqlite_store
@@ -43,6 +43,15 @@ class TestOneIsolatedDatabasePerRun(unittest.TestCase):
             table_calls.append(self.table_name)
             return await real_create_schema(self)
 
+        # Schema readiness is shared per (database path, table) across
+        # the whole process (see ``sqlite_store._SCHEMA_READY``), so
+        # whichever tests happened to run first decide which tables a
+        # "re-run" still has to apply. Clear it to make the counts below
+        # mean "once each" rather than "whatever was left over".
+        already_ready = set(sqlite_store._SCHEMA_READY)
+        self.addCleanup(sqlite_store._SCHEMA_READY.update, already_ready)
+        sqlite_store._reset_schema_cache()
+
         self.addCleanup(setattr, bootstrap, '_schema_ready', True)
         bootstrap._schema_ready = False
 
@@ -52,10 +61,11 @@ class TestOneIsolatedDatabasePerRun(unittest.TestCase):
                                   'create_schema', counting_create_schema):
             asyncio.run(bootstrap.ensure_schema_async())
 
-        self.assertEqual(len(script_calls), 1,
-                         'journal DDL ran more than once')
-        self.assertEqual(len(table_calls), 2,
-                         'memory/settings DDL ran more than once')
+        self.assertEqual(sorted(table_calls),
+                         ['journal_entries', 'kv', 'settings'],
+                         'every table in the shared store must be applied')
+        self.assertEqual(len(script_calls), 3,
+                         'a table DDL ran more than once')
 
         # Already created: the rest of the run reuses it instead of
         # re-running the DDL per connect.
@@ -65,9 +75,9 @@ class TestOneIsolatedDatabasePerRun(unittest.TestCase):
                                   'create_schema', counting_create_schema):
             asyncio.run(bootstrap.ensure_schema_async())
 
-        self.assertEqual(len(script_calls), 1,
+        self.assertEqual(len(script_calls), 3,
                          'schema was re-created on a later connect')
-        self.assertEqual(len(table_calls), 2)
+        self.assertEqual(len(table_calls), 3)
 
     def test_bootstrap_db_is_a_single_file_in_its_own_temp_dir(self):
         db = os.path.abspath(config.sql_db_path)

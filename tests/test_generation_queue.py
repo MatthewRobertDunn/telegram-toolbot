@@ -60,8 +60,8 @@ class TestSubmitTask(unittest.TestCase):
         async def job_b():
             order.append('b')
 
-        asyncio.run(gq.submit_task(ctx, job_a()))
-        asyncio.run(gq.submit_task(ctx, job_b()))
+        asyncio.run(gq.submit_task(ctx, job_a))
+        asyncio.run(gq.submit_task(ctx, job_b))
         self.assertEqual(order, ['a', 'b'])
         # The transient worker cleaned up after itself.
         self.assertIsNone(ctx.generation_worker)
@@ -146,29 +146,39 @@ class TestGenerateResponse(unittest.TestCase):
         with self.assertRaises(ValueError):
             asyncio.run(gq.submit_task(ctx, boom))
 
-    def test_legacy_eager_coroutine_jobs_still_work(self):
-        # conversation_handlers builds its coroutines in the call
-        # expression; submit_task wraps them so they still run once and
-        # are closed properly if dropped.
+    def test_a_thunk_is_invoked_once_when_the_worker_dequeues_it(self):
+        # The job is a zero-arg callable: the coroutine it returns exists
+        # only because the worker called it, exactly once.
+        ctx = mock_ctx(user_id=5, bot=_Bot())
+        calls: list = []
+
+        def thunk():
+            calls.append('built')
+
+            async def job():
+                pass
+
+            return job()
+
+        asyncio.run(gq.submit_task(ctx, thunk))
+        self.assertEqual(calls, ['built'])
+
+    def test_abandon_releases_a_dropped_item_without_running_it(self):
         ctx = mock_ctx(user_id=5, bot=_Bot())
         ran: list = []
 
-        async def job():
-            ran.append('x')
+        def thunk():
+            ran.append('ran')
 
-        asyncio.run(gq.submit_task(ctx, job()))
-        self.assertEqual(ran, ['x'])
+            async def job():
+                pass
 
-    def test_abandon_closes_the_eager_coroutine(self):
-        ctx = mock_ctx(user_id=5, bot=_Bot())
-        coro = asyncio.sleep(0)
-        item = gq.WorkItem(ctx=ctx, job=lambda: coro, _pending=coro)
+            return job()
+
+        item = gq.WorkItem(ctx=ctx, job=thunk)
         item.abandon()
         self.assertTrue(item.done.is_set())
-        self.assertIsNone(item._pending)
-        # Closure is observable: a closed coroutine releases its frame,
-        # so the dropped job can never be awaited or warn about it.
-        self.assertIsNone(coro.cr_frame)
+        self.assertEqual(ran, [], 'abandon must not run the job')
 
     def test_stop_deletes_orphan_thinking(self):
         async def main():

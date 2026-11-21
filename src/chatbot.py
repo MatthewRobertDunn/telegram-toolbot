@@ -2,6 +2,7 @@ import logging
 import sys
 
 import config
+import http_client
 from telegram.ext import Application, ApplicationBuilder, MessageHandler, filters
 from chat_update_context import callback_adapter
 from commands import bot_commands, register_commands
@@ -57,6 +58,10 @@ def _validate_config():
 
 async def post_stop(application: Application):
     stop_reaper()
+    # The shared aiohttp session outlives any single request, so it needs
+    # closing here: otherwise shutdown leaves its connector (and the
+    # transport underneath) open for the lifetime of the process.
+    await http_client.aclose()
 
 
 def main():

@@ -56,6 +56,7 @@ from handlers.command_handlers import (
     user_profile_reset_command,
 )
 from handlers.conversation_handlers import (
+    COMPACT_USAGE,
     compact_command,
     impersonate_command,
     regenerate_command,
@@ -88,11 +89,8 @@ COMMANDS: tuple[Command, ...] = (
     Command('undo', 'Undo the last message', undo_command),
     Command('impersonate', 'Impersonate your next message',
             impersonate_command),
-    # /compact's handler lives in conversation_handlers and renders its
-    # own usage line from ctx.command_name; the syntax here mirrors that
-    # message until that module adopts a USAGE constant.
     Command('compact', 'Compact the conversation context', compact_command,
-            usage='[tokens of recent history to keep]'),
+            usage=COMPACT_USAGE),
     Command('window_new', 'Open a new thread in this chat',
             window_new_command),
     Command('systemprompt', 'Set a custom system prompt',

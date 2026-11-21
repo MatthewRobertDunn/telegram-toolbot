@@ -5,6 +5,7 @@ import asyncio
 import logging
 
 from chat_update_context import ChatUpdateContext
+from command_spec import usage_line
 from compaction import DEFAULT_KEEP_TOKENS, CompactionError, compact_context
 from conversation import (ConversationMessageType, RegenerationAction,
                           is_thinking_message)
@@ -28,6 +29,10 @@ logger = logging.getLogger(__name__)
 # Seconds before a command's own message and its status replies are
 # deleted, so the chat is left tidy without leaving debris behind.
 COMMAND_CLEAR_DELAY = 10
+
+# /compact's argument syntax: the handler renders it and the command
+# table row declares the same constant, so the two cannot drift.
+COMPACT_USAGE = "[tokens of recent history to keep]"
 
 # Strong references to the fire-and-forget cleanup tasks: asyncio keeps
 # only weak references to running tasks, so an unreferenced one could be
@@ -143,7 +148,7 @@ async def undo_command(ctx: ChatUpdateContext):
 
     The /undo command message and the status replies it sends are deleted
     a short while later, so the chat is left tidy."""
-    await submit_task(ctx, run_undo(ctx))
+    await submit_task(ctx, lambda: run_undo(ctx))
 
 
 async def run_undo(ctx: ChatUpdateContext) -> None:
@@ -203,7 +208,7 @@ async def regenerate_command(ctx: ChatUpdateContext):
     The /regenerate command message is deleted a short while later, so
     the chat is left tidy: the queued generation replies on its own and
     is not touched."""
-    await submit_task(ctx, run_regeneration(ctx))
+    await submit_task(ctx, lambda: run_regeneration(ctx))
 
 
 async def run_regeneration(ctx: ChatUpdateContext) -> None:
@@ -283,7 +288,7 @@ async def impersonate_command(ctx: ChatUpdateContext):
         _clear_command_later(ctx, message_ids)
         return
 
-    await submit_task(ctx, run_impersonation(ctx))
+    await submit_task(ctx, lambda: run_impersonation(ctx))
     #We don't clear the impersonate command because it helps the user know the text below is the impersonated text and not the original user text
 
 async def run_impersonation(ctx: ChatUpdateContext) -> None:
@@ -331,10 +336,11 @@ async def compact_command(ctx: ChatUpdateContext):
             if keep_tokens < 1:
                 raise ValueError
         except ValueError:
-            await ctx.messaging.send_message(f'Usage: `/{ctx.command_name} [tokens of recent history to keep]`')
+            await ctx.messaging.send_message(
+                usage_line(ctx.command_name, COMPACT_USAGE))
             return
 
-    await submit_task(ctx, run_compaction(ctx, keep_tokens))
+    await submit_task(ctx, lambda: run_compaction(ctx, keep_tokens))
 
 
 async def run_compaction(ctx: ChatUpdateContext, keep_tokens: int) -> None:

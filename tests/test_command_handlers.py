@@ -345,28 +345,34 @@ class StartRestartTest(unittest.IsolatedAsyncioTestCase):
 
 class StopQueuedWorkTest(unittest.IsolatedAsyncioTestCase):
 
-    async def test_drop_closes_unstarted_coroutines(self):
+    async def test_drain_releases_queued_items_so_the_submitter_wakes(self):
         bot = _Bot()
         ctx = mock_ctx(user_id=5, bot=bot)
         from handlers.generation_queue import WorkItem, generation_queue
 
-        started = False
+        ran: list = []
 
-        async def never_runs():
-            nonlocal started
-            started = True
+        def thunk():
+            ran.append('built')
 
-        job = never_runs()
+            async def job():
+                ran.append('ran')
+
+            return job()
+
         queue = generation_queue(ctx)
-        queue.put_nowait(WorkItem(ctx=ctx, job=job))
+        item = WorkItem(ctx=ctx, job=thunk)
+        queue.put_nowait(item)
+        # Stand in for the submitter parked on done: a drain that forgot
+        # to release the item would hang here.
+        submitter = asyncio.ensure_future(item.done.wait())
 
         with _isolated_stores():
             await command_handlers.stop_command(ctx)
         self.assertTrue(queue.empty())
-        # A closed coroutine has no frame left to resume.
-        self.assertIsNone(job.cr_frame)
-        await asyncio.sleep(0)
-        self.assertFalse(started)
+        self.assertEqual(ran, [], 'a dropped item must never run')
+        await asyncio.wait_for(submitter, 5)
+        self.assertTrue(item.done.is_set())
         self.assertIn('Dropped 1 queued request', bot.sent[-1])
 
 

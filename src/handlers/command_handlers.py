@@ -1,5 +1,4 @@
 import asyncio
-import inspect
 import logging
 
 import openai
@@ -61,26 +60,20 @@ async def start_restart_command(ctx: ChatUpdateContext):
 
 
 def _drop_queued(queue: "asyncio.Queue") -> int:
-    """Release every still-queued work item: its submitter resumes, and
-    any not-yet-started coroutine job is closed so it neither runs later
-    nor trips the "coroutine was never awaited" warning.
+    """Release every still-queued work item so its submitter resumes.
 
-    Items the worker already dequeued are deliberately not touched: their
-    coroutine is mid-flight, and stopping that is the generation task
-    cancel's job (``stop_generation``), not the queue's.
+    Nothing is closed: a queued item's job is a thunk, so no coroutine
+    was ever created for an item the worker did not dequeue. Items the
+    worker already dequeued are deliberately not touched: their job is
+    mid-flight, and stopping that is the generation task cancel's job
+    (``stop_generation``), not the queue's.
     """
     dropped = 0
     while not queue.empty():
-        item = queue.get_nowait()
-        if item.done.is_set():
+        queue_item = queue.get_nowait()
+        if queue_item.done.is_set():
             continue
-        job = item.job
-        if inspect.iscoroutine(job):
-            # Queued means never awaited: the worker awaits only items it
-            # dequeued, so this coroutine has not started and close()
-            # ends it cleanly.
-            job.close()
-        item.done.set()
+        queue_item.abandon()
         dropped += 1
     return dropped
 

@@ -59,9 +59,9 @@ class ThreadData:
     Everything here belongs to one chat/thread, not to the user: the
     conversation, its own settings copy (cloned from the user's template
     on first touch), the serialized generation machinery (queue, worker
-    and tracked task), the subagent inbox plus its wakeup bookkeeping,
-    the epoch guarding against stale wakeups, and the subagent records
-    that report back to this thread.
+    and tracked task), the subagent inbox, the epoch guarding against
+    stale wakeups, and the subagent records that report back to this
+    thread.
     """
 
     conversation: Conversation | None = None
@@ -78,9 +78,7 @@ class ThreadData:
     generation_worker: asyncio.Task | None = None
     generation_queue: asyncio.Queue | None = None
     main_inbox: "SubagentInbox | None" = None
-    main_loop_active: bool = False
     conversation_epoch: int = 0
-    wakeup_task: asyncio.Task | None = None
     subagents: dict[str, "SubagentRecord"] = field(default_factory=dict)
 
 

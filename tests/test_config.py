@@ -6,6 +6,7 @@ values into these assertions.
 
 import importlib
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -180,6 +181,42 @@ class FindEnvFileTest(unittest.TestCase):
             os.makedirs(src)
             with self._config_in(src):
                 self.assertIsNone(config._find_env_file())
+
+
+class ConfigReferenceTest(unittest.TestCase):
+    """Every ``config.<name>`` in src/ must exist on the config module.
+
+    Nothing imports config with a type checker in the loop, so a
+    reference to a removed or never-added name only explodes when that
+    line runs - often in a rarely exercised error path. This scan pins
+    the whole surface instead.
+    """
+
+    # Prose like "see config.py" is a file name, not an attribute.
+    FILE_NAME_WORDS = {'py'}
+
+    def test_every_referenced_name_exists(self):
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           '..', 'src')
+        pattern = re.compile(r'\bconfig\.([A-Za-z_][A-Za-z0-9_]*)')
+        missing = []
+        for directory, _, filenames in os.walk(src):
+            for filename in filenames:
+                if not filename.endswith('.py'):
+                    continue
+                path = os.path.join(directory, filename)
+                with open(path, encoding='utf-8') as handle:
+                    for lineno, line in enumerate(handle, 1):
+                        for name in pattern.findall(line):
+                            if name in self.FILE_NAME_WORDS:
+                                continue
+                            if not hasattr(config, name):
+                                missing.append(
+                                    f"{os.path.relpath(path, src)}:"
+                                    f"{lineno}: config.{name}")
+        self.assertEqual(missing, [],
+                         'unknown config attributes referenced:\n  '
+                         + '\n  '.join(missing))
 
 
 if __name__ == '__main__':

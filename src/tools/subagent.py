@@ -433,9 +433,8 @@ async def subagent_send_to_parent(ctx: AgentContext,
     from the running subagent context, never from the caller.
 
     The parent context comes from the record, never from the sender's
-    silent context: that copy owns no inbox, wakeup flag or generation
-    queue, and running the parent loop on it would write to the wrong
-    conversation.
+    silent context: that copy owns no inbox and no generation queue, and
+    running the parent loop on it would write to the wrong conversation.
     """
     record = _current_subagent.get()
     if record is None:

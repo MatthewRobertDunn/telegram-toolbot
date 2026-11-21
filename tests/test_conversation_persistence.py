@@ -90,7 +90,7 @@ class ConversationPersistenceTest(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch.object(gq, 'save_conversation',
                                wraps=save_conversation) as spy:
-            await gq.submit_task(ctx, job())
+            await gq.submit_task(ctx, job)
             spy.assert_awaited_once()
             args, _ = spy.call_args
             self.assertEqual(args[0], 5)

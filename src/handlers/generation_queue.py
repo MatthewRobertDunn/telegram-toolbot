@@ -48,10 +48,7 @@ class WorkItem:
     ``job`` is a zero-arg callable returning the awaitable (a thunk): the
     coroutine comes into existence only when the worker dequeues the item,
     so an item dropped without running (a /stop drain) leaves nothing
-    un-awaited. submit_task also accepts a bare awaitable for legacy call
-    sites that build the coroutine in the call expression; the wrapper it
-    creates reuses the already-created object and records it in
-    ``_pending`` so ``abandon`` can close it.
+    un-awaited.
 
     ``done`` is owned by the queue machinery and set once the item is
     processed or released; ``error`` carries a failed job's exception out
@@ -62,37 +59,15 @@ class WorkItem:
     job: Callable[[], Awaitable[Any]]
     done: asyncio.Event = field(default_factory=asyncio.Event)
     error: BaseException | None = None
-    # The eagerly-created awaitable behind a legacy job (see above); None
-    # for thunk jobs, which never pre-create one.
-    _pending: Awaitable[Any] | None = field(
-        default=None, repr=False, compare=False)
 
     def abandon(self) -> None:
-        """Release this item without running it.
+        """Release this item without running it and wake the submitter.
 
-        Wakes the submitter and closes the legacy eager coroutine the
-        item may still hold, so a dropped item is neither waited on
-        forever nor left to die as a 'coroutine was never awaited'
-        RuntimeWarning.
+        A queued item never built its coroutine (``job`` is a thunk), so
+        there is nothing to close - releasing it is simply waking whoever
+        is waiting on ``done``.
         """
-        pending, self._pending = self._pending, None
-        if pending is not None:
-            close = getattr(pending, 'close', None)
-            if close is not None:
-                try:
-                    close()
-                except Exception:
-                    logger.warning('Could not close a dropped queued job',
-                                   exc_info=True)
         self.done.set()
-
-
-def _as_job(job: Callable[[], Awaitable[Any]] | Awaitable[Any],
-            ) -> tuple[Callable[[], Awaitable[Any]], Awaitable[Any] | None]:
-    """Normalize a job into (thunk, eagerly-created awaitable or None)."""
-    if callable(job):
-        return job, None
-    return lambda: job, job
 
 
 def generation_queue(ctx: ChatUpdateContext) -> asyncio.Queue:
@@ -104,7 +79,7 @@ def generation_queue(ctx: ChatUpdateContext) -> asyncio.Queue:
 
 
 async def submit_task(ctx: ChatUpdateContext,
-                      job: Callable[[], Awaitable[Any]] | Awaitable[Any],
+                      job: Callable[[], Awaitable[Any]],
                       ) -> None:
     """Enqueue a unit of work and wait for it to finish.
 
@@ -112,11 +87,11 @@ async def submit_task(ctx: ChatUpdateContext,
     callers see it instead of the worker swallowing it silently (a
     dropped or cancelled item simply returns).
 
-    Prefer passing a thunk (``submit_task(ctx, job_fn)``); bare awaitables
-    are accepted for call sites that build the coroutine inline.
+    ``job`` must be a zero-arg callable returning the awaitable: a
+    coroutine built eagerly at the call site would exist even for an item
+    that is later dropped without ever running.
     """
-    thunk, pending = _as_job(job)
-    item = WorkItem(ctx=ctx, job=thunk, _pending=pending)
+    item = WorkItem(ctx=ctx, job=job)
     generation_queue(ctx).put_nowait(item)
     if ctx.generation_worker is None:
         # Queue idle: nothing is draining it. Claims run without an await
