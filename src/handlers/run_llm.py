@@ -222,6 +222,13 @@ class RunConfig:
     stream_drafts: bool = True
     announce_tools: bool = True
 
+    @property
+    def offer_tools(self) -> bool:
+        """Whether tools were offered this run: ``tools`` given and
+        non-empty. A property, not a field, so it cannot drift from
+        ``tools``."""
+        return self.tools is not None and len(self.tools) > 0
+
 
 @dataclass(frozen=True)
 class _Capabilities:
@@ -267,8 +274,7 @@ def _capabilities(ctx: AgentContext, cfg: RunConfig) -> _Capabilities:
                          think_chat=think_chat)
 
 
-def _request_kwargs(cfg: RunConfig, settings: UserSettings,
-                    offer_tools: bool) -> dict:
+def _request_kwargs(cfg: RunConfig, settings: UserSettings) -> dict:
     """The chat.completions.create kwargs for one round. Built per
     attempt inside the guarded call: a construction TypeError/ValueError
     is a fail-fast retry outcome, not a crash of the queued job."""
@@ -283,7 +289,7 @@ def _request_kwargs(cfg: RunConfig, settings: UserSettings,
             "x-opencode-session": cfg.conversation.id,
         },
     )
-    if offer_tools:
+    if cfg.offer_tools:
         create_kwargs["tools"] = cfg.tools  # type: ignore
         create_kwargs["tool_choice"] = "auto"
     if cfg.reasoning_effort is not None:
@@ -295,7 +301,7 @@ def _request_kwargs(cfg: RunConfig, settings: UserSettings,
 
 async def _one_completion(cfg: RunConfig,
                           settings: UserSettings,
-                          offer_tools: bool, streamer: DraftSink,
+                          streamer: DraftSink,
                           strip_thinking: bool,
                           budget: float) -> ConsumeStreamResult | None:
     """One completion request under the module retry policy.
@@ -328,7 +334,7 @@ async def _one_completion(cfg: RunConfig,
             break
         attempt += 1
         try:
-            create_kwargs = _request_kwargs(cfg, settings, offer_tools)
+            create_kwargs = _request_kwargs(cfg, settings)
         except (TypeError, ValueError) as e:
             # Deterministic: rebuilding the same request fails the same
             # way forever, so waiting is pointless. The same exception
@@ -344,7 +350,7 @@ async def _one_completion(cfg: RunConfig,
             message = await consume_stream(
                 response, streamer, strip_thinking=strip_thinking)
             if (not message.content and not message.reasoning_content
-                    and (not message.tool_calls or not offer_tools)):
+                    and (not message.tool_calls or not cfg.offer_tools)):
                 raise RuntimeError('empty response from model')
             return message
         except Exception as e:
@@ -466,7 +472,6 @@ async def run_llm(ctx: AgentContext,
     settings = ctx.settings
     effective_model = cfg.model if cfg.model is not None else settings.model
 
-    offer_tools = cfg.tools is not None and len(cfg.tools) > 0
     tool_map = _tool_map_for(cfg.tools, role_for(ctx)) if cfg.tools else {}
     caps = _capabilities(ctx, cfg)
     await caps.streamer.start()
@@ -474,7 +479,7 @@ async def run_llm(ctx: AgentContext,
     while True:
         await _drain_inbox(conversation, cfg.inbox, caps.announce_chat)
         message = await _one_completion(
-            cfg, settings, offer_tools, caps.streamer,
+            cfg, settings, caps.streamer,
             strip_thinking=effective_model in config.THINK_SPLIT_MODELS,
             budget=_retry_budget())
         if message is None:
@@ -487,7 +492,7 @@ async def run_llm(ctx: AgentContext,
         if caps.think_chat is not None:
             await _maybe_post_thinking(conversation, caps.think_chat,
                                        message.reasoning_content)
-        if not message.tool_calls or not offer_tools:
+        if not message.tool_calls or not cfg.offer_tools:
             if message.tool_calls:
                 logger.warning('model returned tool calls while tools are '
                                'disabled; ignoring them')

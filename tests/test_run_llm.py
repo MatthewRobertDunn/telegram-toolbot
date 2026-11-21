@@ -409,7 +409,6 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
             result = await run_llm_mod._one_completion(
                 _completion_cfg(),
                 SETTINGS,  # type: ignore[arg-type]
-                offer_tools=False,
                 streamer=run_llm_mod.NullDraftSink(),
                 strip_thinking=False, budget=budget)
         return result, sleeps, clock
@@ -444,7 +443,6 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
             result = await run_llm_mod._one_completion(
                 _completion_cfg(),
                 SETTINGS,  # type: ignore[arg-type]
-                offer_tools=False,
                 streamer=run_llm_mod.NullDraftSink(),
                 strip_thinking=False, budget=1000)
         self.assertIsNone(result)
@@ -492,7 +490,6 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
             result = await run_llm_mod._one_completion(
                 _completion_cfg(),
                 SETTINGS,  # type: ignore[arg-type]
-                offer_tools=False,
                 streamer=run_llm_mod.NullDraftSink(),
                 strip_thinking=False, budget=100)
         self.assertIsNone(result)
@@ -522,7 +519,6 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
                 await run_llm_mod._one_completion(
                     _completion_cfg(),
                     SETTINGS,  # type: ignore[arg-type]
-                    offer_tools=False,
                     streamer=run_llm_mod.NullDraftSink(),
                     strip_thinking=False, budget=1000)
         # It was mid-retry (at least one sleep) when the stop landed.
