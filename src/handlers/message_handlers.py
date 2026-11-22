@@ -3,7 +3,7 @@ from telegram.constants import ChatType
 from chat_update_context import ChatUpdateContext
 from handlers.middleware import handler
 from handlers.generation_queue import submit_generation
-from settings_store import save_conversation
+from persistence.settings_store import save_conversation
 
 
 def stop_generation(ctx: ChatUpdateContext) -> bool:

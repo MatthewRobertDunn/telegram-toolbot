@@ -34,7 +34,7 @@ What :func:`setup` does, in order:
 
 Why a per-run temporary *file* rather than an in-memory database: the
 stores open a new ``aiosqlite`` connection per operation and
-``sqlite_store.AsyncSQLiteStore`` calls ``aiosqlite.connect(path)``
+``persistence.sqlite_store.AsyncSQLiteStore`` calls ``aiosqlite.connect(path)``
 without ``uri=True``, so a shared-cache memory URI cannot be passed
 through ``config.sql_db_path`` — each connection would get its own
 empty database. A per-run file gives every connection the same content
@@ -192,9 +192,9 @@ async def ensure_schema_async() -> None:
         return
     _creating_schema = True
     try:
-        from memory_store import create_memory_store
-        from settings_store import create_settings_store
-        from journal_store import create_journal_store
+        from persistence.memory_store import create_memory_store
+        from persistence.settings_store import create_settings_store
+        from persistence.journal_store import create_journal_store
 
         # The factories resolve config.sql_db_path, which the env export
         # above has pointed at the isolated database for this process.

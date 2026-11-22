@@ -4,7 +4,7 @@ import functools
 import logging
 
 from chat_update_context import ChatUpdateContext
-from settings_store import load_conversation, load_settings, save_settings
+from persistence.settings_store import load_conversation, load_settings, save_settings
 from conversation import Conversation
 from user_settings import UserSettings
 

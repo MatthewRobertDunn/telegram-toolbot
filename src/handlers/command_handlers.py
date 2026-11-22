@@ -8,7 +8,7 @@ from conversation import Conversation
 from handlers.middleware import handler, settings
 from handlers.generation_queue import generation_queue
 from handlers.message_handlers import stop_generation
-from settings_store import save_conversation
+from persistence.settings_store import save_conversation
 from config import OPENAI_KEY, OPENAI_BASE_URL
 
 logger = logging.getLogger(__name__)

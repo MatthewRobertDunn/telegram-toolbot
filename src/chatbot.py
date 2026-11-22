@@ -6,9 +6,10 @@ import http_client
 from telegram.ext import Application, ApplicationBuilder, MessageHandler, filters
 from chat_update_context import callback_adapter
 from commands import bot_commands, register_commands
-from memory_store import create_memory_store
-from settings_store import create_settings_store
-from journal_store import create_journal_store
+from persistence.memory_store import create_memory_store
+from persistence.settings_store import create_settings_store
+from persistence.journal_store import create_journal_store
+from persistence.cleanup import purge_stale_thread_rows
 from file_ops import read_file
 from handlers.message_handlers import text_message_handler
 from handlers.upload_handler import upload_handler
@@ -39,6 +40,14 @@ async def post_init(application: Application):
         await settings_store.create_schema()
     async with create_journal_store() as journal_store:
         await journal_store.create_schema()
+    # Housekeeping before anything touches the database: a purge racing
+    # a live save would delete rows the save re-creates anyway, so
+    # starting one-off is the safe ordering.
+    try:
+        await purge_stale_thread_rows()
+    except Exception as e:
+        # Stale rows are not worth refusing to start the bot over.
+        logger.warning("Startup cleanup failed: %s", e)
     try:
         await manager.recover_leftover_sandboxes()
     except Exception as e:

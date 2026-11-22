@@ -2,7 +2,7 @@ import copy
 import json
 import logging
 
-from sqlite_store import AsyncSQLiteStore
+from .sqlite_store import AsyncSQLiteStore
 from conversation import IMAGE_PLACEHOLDER, MAX_IMAGES, Conversation
 from user_settings import UserSettings
 
@@ -68,6 +68,34 @@ class SettingsStore(AsyncSQLiteStore):
         await db.commit()
 
     # get_all_keys is inherited from AsyncSQLiteStore.
+
+    async def purge_stale_threads(self, max_age_days: int = 7) -> int:
+        """Delete every threaded group of rows untouched for the cutoff.
+
+        Rows are grouped by (user_id, thread_id) with a non-NULL
+        thread_id; when no row in a group has a ``last_updated`` more
+        recent than ``max_age_days`` ago, the whole group goes -
+        settings and conversation rows together, since they share the
+        key. Unthreaded rows (thread_id NULL: the settings template and
+        the global conversation) are never touched - they are the
+        template every new thread clones, not per-thread state.
+
+        ``last_updated`` is CURRENT_TIMESTAMP (UTC 'YYYY-MM-DD
+        HH:MM:SS'), which sorts correctly as a plain string against
+        ``datetime('now', '-N days')``, also UTC.
+
+        Returns the number of rows deleted (0 when nothing qualifies).
+        """
+        db = await self._ready()
+        cursor = await db.execute(
+            'DELETE FROM settings WHERE (user_id, thread_id) IN ('
+            '  SELECT user_id, thread_id FROM settings'
+            '  WHERE thread_id IS NOT NULL'
+            '  GROUP BY user_id, thread_id'
+            '  HAVING MAX(last_updated) < datetime(?, ?))',
+            ('now', f'-{max_age_days} days'))
+        await db.commit()
+        return cursor.rowcount
 
 
 def _prune_inline_images(messages: list) -> list:

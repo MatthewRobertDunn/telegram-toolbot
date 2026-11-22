@@ -28,7 +28,7 @@ class TestOneIsolatedDatabasePerRun(unittest.TestCase):
         # one DDL script each: memory (kv), settings and journal.
         import aiosqlite
 
-        import sqlite_store
+        import persistence.sqlite_store as sqlite_store
 
         real_executescript = aiosqlite.Connection.executescript
         real_create_schema = sqlite_store.AsyncSQLiteStore.create_schema

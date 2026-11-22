@@ -11,10 +11,10 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-import settings_store
-from settings_store import (CONVERSATION_KEY, load_conversation,
+import persistence.settings_store as settings_store
+from persistence.settings_store import (CONVERSATION_KEY, load_conversation,
                             save_conversation)
-from settings_store import SettingsStore
+from persistence.settings_store import SettingsStore
 from conversation import Conversation, MAX_IMAGES
 from mock_context import mock_ctx
 

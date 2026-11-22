@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from chat_update_context import AgentContext
 from tool_registry import BOTH, agent_tool
 
-from journal_store import (
+from persistence.journal_store import (
     JournalEntry,
     ReplaceOutcome,
     StoreValidationError,

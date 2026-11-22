@@ -10,9 +10,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import aiosqlite
-import journal_store
-import sqlite_store
-from journal_store import ReplaceOutcome, StoreValidationError
+import persistence.journal_store as journal_store
+import persistence.sqlite_store as sqlite_store
+from persistence.journal_store import ReplaceOutcome, StoreValidationError
 from tools import journal_tool
 from mock_context import mock_ctx
 from user_settings import UserSettings

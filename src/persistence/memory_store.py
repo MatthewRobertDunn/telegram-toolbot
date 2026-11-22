@@ -1,6 +1,6 @@
 """Per-user key/value memory, backed by the ``kv`` table."""
 
-from sqlite_store import AsyncSQLiteStore
+from .sqlite_store import AsyncSQLiteStore
 
 KV_SCHEMA = '''
     CREATE TABLE IF NOT EXISTS kv (

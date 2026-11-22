@@ -15,9 +15,9 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-import settings_store
-from settings_store import load_settings, save_settings
-from settings_store import SettingsStore
+import persistence.settings_store as settings_store
+from persistence.settings_store import load_settings, save_settings
+from persistence.settings_store import SettingsStore
 from chat_update_context import create_chat_update_context
 from handlers import middleware
 from mock_context import mock_ctx

@@ -1,7 +1,7 @@
 from chat_update_context import ChatUpdateContext
 from command_spec import usage_line
 from handlers.middleware import handler
-from memory_store import create_memory_store
+from persistence.memory_store import create_memory_store
 
 # Usage syntax for this module's commands, also declared in the command
 # table (commands.COMMANDS) so the two cannot drift apart.

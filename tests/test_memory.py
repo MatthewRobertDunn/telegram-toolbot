@@ -10,8 +10,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import aiosqlite
-import sqlite_store
-from memory_store import MemoryStore, create_memory_store
+import persistence.sqlite_store as sqlite_store
+from persistence.memory_store import MemoryStore, create_memory_store
 
 
 def _counting_executescript(counter: dict):

@@ -25,7 +25,7 @@ from enum import Enum
 
 import aiosqlite
 
-from sqlite_store import AsyncSQLiteStore
+from .sqlite_store import AsyncSQLiteStore
 
 
 @dataclass(frozen=True)

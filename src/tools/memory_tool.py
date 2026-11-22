@@ -1,7 +1,7 @@
 import json
 
 from chat_update_context import AgentContext
-from memory_store import create_memory_store
+from persistence.memory_store import create_memory_store
 from tool_registry import BOTH, agent_tool
 
 

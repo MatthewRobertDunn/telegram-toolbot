@@ -34,7 +34,7 @@ from typing import Any
 
 from agent_inbox import get_main_inbox
 from chat_update_context import ChatUpdateContext
-from settings_store import save_conversation
+from persistence.settings_store import save_conversation
 from tool_registry import PARENT, surface_for
 from .run_llm import run_llm
 
