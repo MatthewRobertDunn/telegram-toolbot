@@ -279,9 +279,15 @@ async def _run_subagent(parent: ChatUpdateContext, record: SubagentRecord,
             "description": ("Subagent task. Include context, constraints, and "
                             "required final report contents."),
         },
+        "model": {
+            "type": "string",
+            "description": ("Optional model id for this subagent, overriding "
+                            "the subagent model setting. Omit to use the "
+                            "default."),
+        },
     })
 async def subagent_start(ctx: ChatUpdateContext, description: str,
-                         prompt: str) -> str:
+                         prompt: str, model: str | None = None) -> str:
     """Start a background subagent and return its id immediately."""
     description = description.strip()
     if not description:
@@ -293,6 +299,9 @@ async def subagent_start(ctx: ChatUpdateContext, description: str,
     subs = get_subagents(ctx)
     while sid in subs:
         sid = uuid.uuid4().hex[:6]
+    # A per-call model wins over the subagent model setting; a blank one is
+    # no override at all (a model can pass ""), so it falls back too.
+    effective_model = (model or "").strip() or ctx.settings.subagent_model
     # Prune oldest finished records so long sessions don't accumulate
     # full subagent histories (dicts preserve insertion order).
     finished = [sid for sid, old in subs.items()
@@ -311,7 +320,7 @@ async def subagent_start(ctx: ChatUpdateContext, description: str,
     )
     subs[sid] = record
     record.task = asyncio.create_task(
-        _run_subagent(ctx, record, model=ctx.settings.subagent_model))
+        _run_subagent(ctx, record, model=effective_model))
     return (f"Started subagent {sid} (`{description}`). It runs in the "
             f"background; you will be notified when it finishes. "
             f"Use subagent_steer to message it, subagent_list to check it.")
