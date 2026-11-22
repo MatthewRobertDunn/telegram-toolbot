@@ -19,7 +19,7 @@ from chat_update_context import (AgentContext,
 from conversation import Conversation, ConversationMessageType
 from messaging import Messaging
 from mock_context import mock_ctx
-from tool_registry import PARENT, SUBAGENT, ToolSurface, surface_for
+from tool_registry import PARENT, SUBAGENT, ToolSurface, all_tools, surface_for
 from tool_registration import register_tools
 from tools import subagent as subagent_mod
 from tools.subagent import (
@@ -306,6 +306,51 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(ctx.thread_data.subagents), 2)
             cancel_all_subagents(ctx)
             self.assertEqual(ctx.thread_data.subagents, {})
+
+
+class TestSubagentStartModel(unittest.IsolatedAsyncioTestCase):
+    # subagent_start's optional model overrides the per-user subagent model
+    # setting; anything blank is no override, so the setting decides.
+
+    @staticmethod
+    async def _started_model(ctx, **kwargs) -> str:
+        """Start one subagent, run it to the end, return the model it used."""
+        captured: dict = {}
+
+        async def fake_run_llm(ctx, **kw):
+            captured.update(kw)
+            return 'done'
+
+        with unittest.mock.patch.object(subagent_mod, 'run_llm',
+                                        fake_run_llm), \
+            unittest.mock.patch.object(subagent_mod, '_notify_parent',
+                                       unittest.mock.AsyncMock()):
+            await subagent_start(ctx, 'Task', 'Do it', **kwargs)
+            record = next(iter(ctx.thread_data.subagents.values()))
+            assert record.task is not None
+            await record.task
+        return captured['model']
+
+    async def test_explicit_model_overrides_the_setting(self):
+        ctx = _ctx()
+        self.assertEqual(await self._started_model(ctx, model='fast-m'),
+                         'fast-m')
+
+    async def test_omitted_model_uses_the_setting(self):
+        ctx = _ctx()
+        self.assertEqual(await self._started_model(ctx), 'sub-m')
+
+    async def test_blank_model_is_no_override(self):
+        # A model can send "" for an optional string; that is not a model
+        # id, so the setting stays in charge instead of failing the run.
+        ctx = _ctx()
+        self.assertEqual(await self._started_model(ctx, model='   '), 'sub-m')
+
+    def test_model_is_declared_optional(self):
+        register_tools()
+        tool = next(t for t in all_tools() if t.name == 'subagent_start')
+        self.assertEqual(tool.properties['model']['type'], 'string')
+        self.assertNotIn('model', tool.required)
 
 
 def _fake_bot():

@@ -143,6 +143,38 @@ class TestSubagentTools(unittest.IsolatedAsyncioTestCase):
                     await record.task
                 self.assertEqual(captured["model"], expected)
 
+    async def test_start_model_argument_overrides_settings(self):
+        # The per-call model is the top of the precedence chain: it beats
+        # both the /subagent_model setting and the config default. A blank
+        # one is no override at all.
+        cases = (
+            (None, "chat-model"),
+            ("explicit-model", "explicit-model"),
+            ("  ", "chat-model"),
+        )
+        for call_model, expected in cases:
+            with self.subTest(model=call_model):
+                ctx = self._context_with_settings(model="chat-model")
+                captured = {}
+
+                async def fake_run_llm(*args, **kwargs):
+                    captured.update(kwargs)
+                    return "ok"
+
+                kwargs = {} if call_model is None else {"model": call_model}
+                with unittest.mock.patch.object(config, "SUBAGENT_MODEL",
+                                                None), \
+                    unittest.mock.patch.object(
+                        subagent_mod, "run_llm", fake_run_llm), \
+                    unittest.mock.patch.object(
+                        subagent_mod, '_notify_parent',
+                        unittest.mock.AsyncMock()):
+                    await subagent_start(ctx, "Label", "Task", **kwargs)
+                    record = next(iter(ctx.thread_data.subagents.values()))
+                    assert record.task is not None
+                    await record.task
+                self.assertEqual(captured["model"], expected)
+
     def test_tool_definition_shapes(self):
         from tool_registry import all_tools
         declared = {t.name: t for t in all_tools()

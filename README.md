@@ -120,7 +120,7 @@ If you don't need the sandbox, you can disable its tools by removing the `tools.
 | `OPENAI_API_KEY` | *(required)* | API key for the OpenAI-compatible chat completions endpoint |
 | `OPENAI_BASE_URL` | `http://192.168.0.2:3001/v1` | OpenAI-compatible API endpoint. For NVIDIA NIM use `https://integrate.api.nvidia.com/v1` |
 | `LLM_MODEL` | `auto:smart` | Default chat model |
-| `SUBAGENT_MODEL` | *(falls back to the current `/model` setting)* | Optional override for the model used by the `subagent_start` tool |
+| `SUBAGENT_MODEL` | *(falls back to the current `/model` setting)* | Optional override for the model used by the `subagent_start` tool (a call that passes its own `model` wins) |
 | `STREAM_DRAFTS` | `1` | Stream partial replies into the chat as they are generated (`0`/`false`/`off` to disable) |
 | `THINK_SPLIT_MODELS` | `big-pickle` | Comma-separated model IDs whose inline chain-of-thought is split out of the reply text |
 | `TEMPERATURE` | `1.0` | Sampling temperature for chat completions |
@@ -250,7 +250,7 @@ The bot uses OpenAI-compatible function calling. These tools are available to th
 | `generate_image` | Generate an image (default `provider: "nvidia-flux3"`; also `"nvidia-flux2"`, `"cloudflare"`, `"horde"`) |
 | `memory_list` / `memory_get` / `memory_set` / `memory_delete` | The agent's persistent per-user memory |
 | `journal_add` / `journal_get` / `journal_edit` / `journal_delete` / `journal_topic_edit` / `journal_query` / `journal_list_topics` | The agent's persistent per-user journal of longer-term notes, searched by text and topic |
-| `subagent_start` | Spawn a subagent in a fresh conversation to work on a task (with the same tools and sandbox) and report back |
+| `subagent_start` | Spawn a subagent in a fresh conversation to work on a task (with the same tools and sandbox) and report back. Takes an optional `model` to run that subagent on a different model than the default |
 | `subagent_list` / `subagent_steer` / `subagent_stop` | List running subagents, message them mid-run, or stop them |
 
 Subagents get a restricted tool surface. Tools that write to the chat (`send_file` and the `subagent_start`/`subagent_list`/`subagent_stop`/`subagent_steer` controls) are never offered to them; `subagent_send_to_parent` is their channel back. `read_image` and `generate_image` keep the same name for both agents but swap implementation: the subagent's variant reads or generates without posting and reports the file path for the parent to share. Each subagent runs against its own isolated context copy with no bot, inbox, or generation queue it could touch. Tools declare themselves with `@agent_tool` (see `src/tool_registry.py`), which carries the schema, derives `required` from the signature, and defaults to parent-only.
