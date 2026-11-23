@@ -445,6 +445,8 @@ _PROVIDER_PARAM = {
                  "chat and stored in /workspace/uploads for sandbox "
                  "processing. Set send_to_chat to false to keep it private, "
                  "add_to_context to true to view it yourself (needs vision). "
+                 "Content filtering is by word list."
+                 "You may need to avoid sexual, polistical, religious words."
                  "Set provider to 'nvidia-flux2', 'cloudflare' or 'horde' "
                  "to override the default 'nvidia-flux3'."),
     parameters={
