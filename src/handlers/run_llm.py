@@ -7,9 +7,11 @@ from typing import Any
 import config
 from agent_inbox import (PARENT_ID, TERMINAL_STATES, SubagentInbox,
                          SubagentMessage)
+from async_utils import atomic, atomic_call
 from tool_registry import ToolSurface
 from chat_update_context import AgentContext, ChatUpdateContext
-from conversation import Conversation, ConversationMessageType
+from conversation import (Conversation, ConversationMessage,
+                          ConversationMessageType)
 from user_settings import UserSettings
 from .draft_streamer import DraftSink, DraftStreamer, NullDraftSink
 from .consume_stream import ConsumeStreamResult, consume_stream
@@ -163,14 +165,17 @@ async def _drain_inbox(conversation: Conversation,
         user_message = conversation.add_user(
             message.format(), message_type=ConversationMessageType.AGENT_MESSAGE)
         if chat is not None and chat.settings.show_tool_output:
-            for message_id in await chat.messaging.send_collapsible(
+            await atomic_call(
+                lambda: chat.messaging.send_collapsible(
                     _receipt_summary(message),
-                    message.result or f"({message.state})"):
-                user_message.add_telegram_message_id(message_id)
+                    message.result or f"({message.state})"),
+                user_message.add_telegram_message_id,
+            )
         drained += 1
     return drained
 
 
+@atomic
 async def _maybe_post_thinking(conversation: Conversation,
                                chat: ChatUpdateContext,
                                reasoning: str | None) -> None:
@@ -347,6 +352,16 @@ async def _one_completion(cfg: RunConfig,
     return None
 
 
+@atomic
+async def _announce_tool_call(assistant_message: ConversationMessage,
+                              chat: ChatUpdateContext, name: str,
+                              args: str) -> None:
+    """Post one tool-call announcement and link it to the tool round."""
+    message_ids = await chat.messaging.send_json(
+        f"Tool call: `{name}`", args)
+    assistant_message.add_telegram_message_id(message_ids)
+
+
 async def _dispatch_tool_calls(ctx: AgentContext,
                                conversation: Conversation,
                                message: ConsumeStreamResult,
@@ -385,9 +400,8 @@ async def _dispatch_tool_calls(ctx: AgentContext,
         args = tc.function.arguments
         logger.info("tool call: %s(%s)", name, args)
         if announce_chat is not None and ctx.settings.show_tool_output:
-            for message_id in await announce_chat.messaging.send_json(
-                    f"Tool call: `{name}`", args):
-                assistant_message.add_telegram_message_id(message_id)
+            await _announce_tool_call(assistant_message, announce_chat,
+                                      name, args)
         result = await execute_tool_call(ctx, tc, tool_map)
         if isinstance(result, ToolCallResult):
             logger.info("tool result (%s): image attached", name)

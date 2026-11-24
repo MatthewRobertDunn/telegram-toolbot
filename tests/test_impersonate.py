@@ -12,7 +12,8 @@ from conversation import CUSTOM, Conversation, ConversationMessageType
 from handlers import conversation_handlers
 from handlers import generation_queue as generation_queue_mod
 from handlers.conversation_handlers import (impersonate_command,
-                                            regenerate_command)
+                                            regenerate_command,
+                                            undo_command)
 from mock_context import mock_ctx
 
 
@@ -181,6 +182,120 @@ class TestImpersonate(unittest.TestCase):
         self.assertEqual(ctx.conversation.messages[-1].message_type,
                          ConversationMessageType.IMPERSONATION)
         self.assertEqual(bot.rich_sent, ['round two'])
+
+    def test_undo_after_impersonation_preserves_thinking_exchange(self):
+        async def scenario(keep_thinking):
+            bot = _Bot()
+            conversation = Conversation()
+            conversation.add_user('hello', telegram_message_ids=[11])
+            if keep_thinking:
+                conversation.add_thinking(telegram_message_ids=[22])
+            conversation.add_assistant('hi!', telegram_message_ids=[33])
+            previous = list(conversation.messages)
+            ctx = mock_ctx(
+                user_id=5, bot=bot, conversation=conversation,
+                settings=SimpleNamespace(system_prompt='sys', user_profile=None,
+                                         thinking_keep=keep_thinking))
+            ctx.messaging.run_with_typing = lambda coro: coro
+
+            await _run_command(ctx)
+            await undo_command(ctx)
+
+            # The impersonation is its own user turn. Undoing it must not
+            # walk into the preceding answer or its kept thinking block.
+            self.assertEqual(_roles(ctx.conversation),
+                             ['user', 'assistant', 'assistant']
+                             if keep_thinking else ['user', 'assistant'])
+            self.assertEqual(ctx.conversation.messages[1:], previous)
+            self.assertEqual(bot.deleted, [(5, 555)])
+
+        for keep_thinking in (False, True):
+            with self.subTest(thinking_keep=keep_thinking):
+                asyncio.run(scenario(keep_thinking))
+
+    def test_stop_during_post_commits_impersonation_for_undo(self):
+        async def scenario():
+            from handlers.message_handlers import stop_generation
+
+            bot = _Bot()
+            conversation = Conversation()
+            conversation.add_user('hello', telegram_message_ids=[11])
+            conversation.add_assistant('hi!', telegram_message_ids=[77])
+            previous = list(conversation.messages)
+            ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
+            ctx.messaging.run_with_typing = lambda coro: coro
+            posting = asyncio.Event()
+            release_post = asyncio.Event()
+
+            async def delayed_send(text):
+                # Telegram has accepted the post, but its response has not
+                # reached the handler yet. /stop lands in this window.
+                posting.set()
+                await release_post.wait()
+                return [555]
+
+            ctx.messaging.send_rich_message = delayed_send
+            command = asyncio.create_task(_run_command(ctx))
+            await posting.wait()
+            self.assertTrue(stop_generation(ctx))
+            await asyncio.sleep(0)
+            release_post.set()
+            await asyncio.wait_for(command, 5)
+
+            # Once the model output exists, finishing the post and history
+            # commit is atomic with respect to /stop. Otherwise the visible
+            # post has no row for a following /undo to delete.
+            self.assertEqual(ctx.conversation.messages[-1]['content'],
+                             'i would say this')
+            self.assertEqual(
+                ctx.conversation.messages[-1][CUSTOM]['telegram_message_ids'],
+                [555])
+            # atomic completes the commit, then lets /stop's cancellation
+            # reach run_tracked.
+            self.assertEqual(bot.sent, ['Impersonation stopped.'])
+
+            await undo_command(ctx)
+            self.assertEqual(ctx.conversation.messages[1:], previous)
+            self.assertEqual(bot.deleted, [(5, 555)])
+
+        asyncio.run(scenario())
+
+    def test_impersonation_rechecks_content_when_its_queue_item_runs(self):
+        async def scenario():
+            bot = _Bot()
+            ctx = mock_ctx(
+                user_id=5, bot=bot,
+                conversation=Conversation([
+                    {'role': 'user', 'content': 'hello'}]))
+            ctx.messaging.run_with_typing = lambda coro: coro
+            clearing = asyncio.Event()
+            release_clear = asyncio.Event()
+
+            async def clear_history():
+                clearing.set()
+                await release_clear.wait()
+                ctx.conversation.set_messages([])
+
+            # The command's pre-queue check sees "hello", but the undo-like
+            # job ahead of it removes that content before impersonation runs.
+            clearer = asyncio.create_task(
+                generation_queue_mod.submit_task(ctx, clear_history))
+            await clearing.wait()
+            with mock.patch.object(
+                    conversation_handlers, 'run_llm',
+                    mock.AsyncMock(return_value='must not be generated')) as llm:
+                impersonation = asyncio.create_task(impersonate_command(ctx))
+                while generation_queue_mod.generation_queue(ctx).qsize() < 1:
+                    await asyncio.sleep(0)
+                release_clear.set()
+                await clearer
+                await impersonation
+
+            llm.assert_not_awaited()
+            self.assertEqual(ctx.conversation.messages, [])
+            self.assertEqual(bot.sent, ['Nothing to impersonate yet.'])
+
+        asyncio.run(scenario())
 
     def test_no_model_output_reports_failure(self):
         bot = _Bot()

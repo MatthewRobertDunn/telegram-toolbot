@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent_inbox import get_main_inbox
+from async_utils import atomic_call
 from chat_update_context import ChatUpdateContext
 from persistence.settings_store import save_conversation
 from tool_registry import PARENT, surface_for
@@ -171,10 +172,13 @@ async def generate_response(ctx: ChatUpdateContext, content: str | None = None,
         finally:
             ctx.generation_task = None
 
-        message_ids = await ctx.messaging.send_message(gpt_response,
-                                                       parse_mode='LLM')
-        ctx.conversation.add_assistant(gpt_response,
-                                       telegram_message_ids=message_ids)
+        # The reply is visible once Telegram accepts it, so the history
+        # row must not be lost to cancellation in that window.
+        await atomic_call(
+            lambda: ctx.messaging.send_message(gpt_response,
+                                               parse_mode='LLM'),
+            lambda message_ids: ctx.conversation.add_assistant(
+                gpt_response, telegram_message_ids=message_ids))
     finally:
         ctx.generation_task = None
 

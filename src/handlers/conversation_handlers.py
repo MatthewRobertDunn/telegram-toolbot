@@ -4,6 +4,7 @@ turn, impersonating the user, and compacting the history."""
 import asyncio
 import logging
 
+from async_utils import atomic_call
 from chat_update_context import ChatUpdateContext
 from command_spec import usage_line
 from compaction import DEFAULT_KEEP_TOKENS, CompactionError, compact_context
@@ -283,11 +284,6 @@ async def impersonate_command(ctx: ChatUpdateContext):
 
     Runs as a queued unit of work like /compact, with the task tracked
     in ctx.generation_task, so /stop stops it like any other work."""
-    if not _has_content(ctx.conversation.messages):
-        message_ids = await ctx.messaging.send_message("Nothing to impersonate yet.")
-        _clear_command_later(ctx, message_ids)
-        return
-
     await submit_task(ctx, lambda: run_impersonation(ctx))
     #We don't clear the impersonate command because it helps the user know the text below is the impersonated text and not the original user text
 
@@ -297,6 +293,13 @@ async def run_impersonation(ctx: ChatUpdateContext) -> None:
     a user message and post it. The task is tracked in
     ctx.generation_task, so /stop cancels it just like a reply
     generation."""
+    # Check here, not in the command handler: earlier queued work may
+    # empty the history after the command arrives but before it runs.
+    if not _has_content(ctx.conversation.messages):
+        message_ids = await ctx.messaging.send_message("Nothing to impersonate yet.")
+        _clear_command_later(ctx, message_ids)
+        return
+
     await run_tracked(
         ctx,
         lambda: ctx.messaging.run_with_typing(impersonate_turn(ctx)),
@@ -320,11 +323,13 @@ async def impersonate_turn(ctx: ChatUpdateContext) -> None:
     # The real conversation gets the bare text as a user turn, tagged as
     # an impersonation so /regenerate can redo this flow. The posted
     # message ids are attached, so /undo and /regenerate can delete it
-    # from the chat too.
-    message_ids = await ctx.messaging.send_message(response, parse_mode='LLM')
-    ctx.conversation.add_user(
-        response, telegram_message_ids=message_ids,
-        message_type=ConversationMessageType.IMPERSONATION)
+    # from the chat too. Atomic keeps /stop from tearing that post away
+    # from its history row.
+    await atomic_call(
+        lambda: ctx.messaging.send_message(response, parse_mode='LLM'),
+        lambda message_ids: ctx.conversation.add_user(
+            response, telegram_message_ids=message_ids,
+            message_type=ConversationMessageType.IMPERSONATION))
 
 
 @handler
