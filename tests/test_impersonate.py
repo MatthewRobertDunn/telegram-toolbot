@@ -47,6 +47,8 @@ class _Bot:
         self.sent: list = []
         self.rich_sent: list = []
         self.deleted: list = []
+        # Typing is part of every queued item now; keep it quiet.
+        self.send_chat_action = mock.AsyncMock()
 
     async def send_message(self, chat_id, text, **kwargs):
         self.sent.append(text)
@@ -251,7 +253,7 @@ class TestImpersonate(unittest.TestCase):
                 ctx.conversation.messages[-1][CUSTOM]['telegram_message_ids'],
                 [555])
             # atomic completes the commit, then lets /stop's cancellation
-            # reach run_tracked.
+            # reach the queue supervisor.
             self.assertEqual(bot.sent, ['Impersonation stopped.'])
 
             await undo_command(ctx)

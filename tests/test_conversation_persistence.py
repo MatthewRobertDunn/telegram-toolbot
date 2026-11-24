@@ -83,7 +83,9 @@ class ConversationPersistenceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_worker_persists_conversation_after_queued_job(self):
         from handlers import generation_queue as gq
-        ctx = mock_ctx(user_id=5, conversation=[])
+        ctx = mock_ctx(user_id=5, conversation=[],
+                       bot=SimpleNamespace(
+                           send_chat_action=mock.AsyncMock()))
 
         async def job():
             ctx.conversation.add_user('hello')

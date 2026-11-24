@@ -42,7 +42,12 @@ SETTINGS = SimpleNamespace(
 
 
 def _ctx():
-    ctx = mock_ctx(settings=SETTINGS, conversation=[])
+    # A bot stub just for the typing indicator every queued item now
+    # sends; anything that really posts still has to be stubbed by the
+    # test that cares about it.
+    ctx = mock_ctx(settings=SETTINGS, conversation=[],
+                   bot=SimpleNamespace(
+                       send_chat_action=unittest.mock.AsyncMock()))
     return ctx
 
 

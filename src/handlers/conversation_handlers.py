@@ -19,7 +19,6 @@ from handlers.impersonate_prompt import IMPERSONATE_PROMPT
 from handlers.middleware import handler
 from handlers.run_llm import (NO_CONTENT_MESSAGE, NO_RESPONSE_MESSAGE,
                               run_llm)
-from handlers.supervision import run_tracked
 from messages import iter_parts, telegram_ids_of
 # Re-exports: the token accounting lives in tokens.py, but other branches
 # and tests import these names from here.
@@ -144,24 +143,17 @@ async def undo_command(ctx: ChatUpdateContext):
     ids, every message sharing those ids is stripped too - a call left
     without its results (or vice versa) can't be replayed.
 
-    Runs as a queued unit of work like /compact, with the task tracked
-    in ctx.generation_task, so /stop stops it like any other work.
+    Runs as a queued unit of work like /compact; the queue tracks it in
+    ctx.generation_task, so /stop stops it like any other work.
 
     The /undo command message and the status replies it sends are deleted
     a short while later, so the chat is left tidy."""
-    await submit_task(ctx, lambda: run_undo(ctx))
-
-
-async def run_undo(ctx: ChatUpdateContext) -> None:
-    """One unit of work: remove the last exchange. The task is tracked in
-    ctx.generation_task, so /stop cancels it just like a reply
-    generation."""
-    await run_tracked(ctx, lambda: undo_turn(ctx),
+    await submit_task(ctx, lambda: undo_turn(ctx),
                       stopped_message='Undo stopped.')
 
 
 async def undo_turn(ctx: ChatUpdateContext) -> None:
-    """The undo itself, runs as its own task.
+    """The undo itself, runs inside the queued unit of work.
 
     High-level orchestration only: the history trim lives in
     Conversation.undo_last_exchange, this just deletes the Telegram posts
@@ -203,27 +195,18 @@ async def regenerate_command(ctx: ChatUpdateContext):
     When the last user turn is an impersonation, that turn is removed and
     the impersonation flow runs again instead.
 
-    Runs as a queued unit of work like /compact, with the task tracked
-    in ctx.generation_task, so /stop stops it like any other work.
+    Runs as a queued unit of work like /compact; the queue tracks it in
+    ctx.generation_task, so /stop stops it like any other work.
 
     The /regenerate command message is deleted a short while later, so
     the chat is left tidy: the queued generation replies on its own and
     is not touched."""
-    await submit_task(ctx, lambda: run_regeneration(ctx))
-
-
-async def run_regeneration(ctx: ChatUpdateContext) -> None:
-    """One unit of work: pop the last turn and generate again. The task
-    is tracked in ctx.generation_task, so /stop cancels it just like a
-    reply generation. The generation phase itself is tracked by
-    generate_response / impersonate_turn, which overwrite the tracking;
-    the finally in run_tracked is then idempotent."""
-    await run_tracked(ctx, lambda: regeneration_turn(ctx),
+    await submit_task(ctx, lambda: regeneration_turn(ctx),
                       stopped_message='Regeneration stopped.')
 
 
 async def regeneration_turn(ctx: ChatUpdateContext) -> None:
-    """The regeneration itself, runs as its own task.
+    """The regeneration itself, runs inside the queued unit of work.
 
     High-level orchestration only: the history trim lives in
     Conversation.prepare_regeneration, this just deletes the Telegram
@@ -282,17 +265,17 @@ async def impersonate_command(ctx: ChatUpdateContext):
     added to the real conversation as a user message and posted as a
     user-labelled reply.
 
-    Runs as a queued unit of work like /compact, with the task tracked
-    in ctx.generation_task, so /stop stops it like any other work."""
-    await submit_task(ctx, lambda: run_impersonation(ctx))
+    Runs as a queued unit of work like /compact; the queue tracks it in
+    ctx.generation_task, so /stop stops it like any other work."""
     #We don't clear the impersonate command because it helps the user know the text below is the impersonated text and not the original user text
+    await submit_task(ctx, lambda: run_impersonation(ctx),
+                      stopped_message='Impersonation stopped.')
+
 
 async def run_impersonation(ctx: ChatUpdateContext) -> None:
     """One unit of work: clone the conversation, impersonate the user
     against the clone, then add the response to the real conversation as
-    a user message and post it. The task is tracked in
-    ctx.generation_task, so /stop cancels it just like a reply
-    generation."""
+    a user message and post it."""
     # Check here, not in the command handler: earlier queued work may
     # empty the history after the command arrives but before it runs.
     if not _has_content(ctx.conversation.messages):
@@ -300,14 +283,11 @@ async def run_impersonation(ctx: ChatUpdateContext) -> None:
         _clear_command_later(ctx, message_ids)
         return
 
-    await run_tracked(
-        ctx,
-        lambda: ctx.messaging.run_with_typing(impersonate_turn(ctx)),
-        stopped_message='Impersonation stopped.')
+    await impersonate_turn(ctx)
 
 
 async def impersonate_turn(ctx: ChatUpdateContext) -> None:
-    """The impersonation itself, runs as its own task.
+    """The impersonation itself, runs inside the queued unit of work.
 
     High-level orchestration only: the detached clone lives in
     Conversation.clone_for_impersonation, this just runs the model and
@@ -345,29 +325,21 @@ async def compact_command(ctx: ChatUpdateContext):
                 usage_line(ctx.command_name, COMPACT_USAGE))
             return
 
-    await submit_task(ctx, lambda: run_compaction(ctx, keep_tokens))
+    await submit_task(ctx, lambda: run_compaction(ctx, keep_tokens),
+                      stopped_message='Compaction stopped.')
 
 
 async def run_compaction(ctx: ChatUpdateContext, keep_tokens: int) -> None:
     """One unit of work: compact the conversation, reporting progress and
-    the token savings. The task is tracked in ctx.generation_task, so
-    /stop cancels it just like a reply generation."""
+    the token savings."""
     async def on_start() -> None:
         await ctx.messaging.send_message('Starting Compaction...')
 
     try:
-        result = await run_tracked(
-            ctx,
-            lambda: ctx.messaging.run_with_typing(
-                compact_context(ctx,
-                                keep_tokens=keep_tokens,
-                                on_start=on_start)),
-            stopped_message='Compaction stopped.')
+        result = await compact_context(ctx, keep_tokens=keep_tokens,
+                                       on_start=on_start)
     except CompactionError as e:
         await ctx.messaging.send_message(str(e))
-        return
-    if result is None:
-        # /stop: run_tracked already reported it.
         return
     await ctx.messaging.send_message(result.summary, parse_mode='LLM')
     await ctx.messaging.send_message(

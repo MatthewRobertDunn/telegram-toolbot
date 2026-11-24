@@ -48,6 +48,8 @@ class _Bot:
     def __init__(self):
         self.deleted: list = []
         self.sent: list = []
+        # Typing is part of every queued item now; keep it quiet.
+        self.send_chat_action = mock.AsyncMock()
 
     async def send_message(self, chat_id, text, **kwargs):
         self.sent.append(text)

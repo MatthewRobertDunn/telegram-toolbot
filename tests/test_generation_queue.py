@@ -81,6 +81,31 @@ class TestSubmitTask(unittest.TestCase):
                          {'telegram_message_ids': [9]})
         self.assertIsNone(ctx.generation_task)
 
+    def test_a_finished_generation_is_not_dangling_thinking(self):
+        # The item-end cleanup only ever removes an aborted reply's
+        # trailing thinking; a completed reply's thinking has its answer
+        # after it and must survive.
+        bot = _Bot()
+        ctx = mock_ctx(user_id=5, bot=bot,
+                       conversation=[{'role': 'user', 'content': 'hi'}])
+
+        async def thinking_then_reply(*args, **kwargs):
+            ctx.conversation.add_thinking(telegram_message_ids=[55])
+            return 'answer'
+
+        deleted: list = []
+        ctx.messaging.delete_message = mock.AsyncMock(
+            side_effect=lambda message_id: deleted.append(message_id))
+        with mock.patch.object(gq, 'run_llm', thinking_then_reply):
+            asyncio.run(gq.submit_generation(ctx, None))
+        self.assertEqual(deleted, [])
+        # The thinking block (an assistant-role message) kept both its
+        # history entry and its Telegram post, and the reply followed it.
+        roles = [m['role'] for m in ctx.conversation.messages
+                 if m['role'] != 'system']
+        self.assertEqual(roles, ['user', 'assistant', 'assistant'])
+        self.assertEqual(ctx.conversation.messages[-1]['content'], 'answer')
+
 
 class TestGenerateResponse(unittest.TestCase):
 
@@ -94,31 +119,31 @@ class TestGenerateResponse(unittest.TestCase):
                  if m['role'] != 'system']
         self.assertEqual(roles, ['assistant'])
 
-    def test_stopped_generation_records_nothing(self):
-        bot = _Bot()
-        ctx = mock_ctx(user_id=5, bot=bot, conversation=[])
-        cancelled = mock.AsyncMock(return_value='never seen')
-        cancelled.cancelled.return_value = True
-        cancelled.close.return_value = None
+    def test_stopped_generation_records_no_reply(self):
+        async def main():
+            bot = _Bot()
+            ctx = mock_ctx(user_id=5, bot=bot, conversation=[])
+            started = asyncio.Event()
 
-        async def cancel_inner(coro):
-            """Leave the tracked task cancelled, like a /stop."""
-            try:
-                await coro
-            except asyncio.CancelledError:
-                pass
-            inner = ctx.generation_task
-            inner.cancelled = lambda: True  # type: ignore[method-assign]
-            raise asyncio.CancelledError
+            async def hang(*args, **kwargs):
+                started.set()
+                await asyncio.sleep(60)
 
-        ctx.messaging.run_with_typing = cancel_inner
-        with mock.patch.object(gq, 'run_llm', cancelled):
-            asyncio.run(gq.generate_response(ctx, 'hello'))
-        roles = [m['role'] for m in ctx.conversation.messages
-                 if m['role'] != 'system']
-        self.assertEqual(roles, ['user'])
-        self.assertEqual(bot.sent, [])
-        self.assertIsNone(ctx.generation_task)
+            with mock.patch.object(gq, 'run_llm', hang):
+                driver = asyncio.ensure_future(
+                    gq.submit_generation(ctx, 'hello'))
+                await started.wait()
+                tracked = ctx.generation_task
+                assert tracked is not None
+                tracked.cancel()
+                await asyncio.wait_for(driver, 5)
+            roles = [m['role'] for m in ctx.conversation.messages
+                     if m['role'] != 'system']
+            self.assertEqual(roles, ['user'])
+            self.assertEqual(bot.sent, [])
+            self.assertIsNone(ctx.generation_task)
+
+        asyncio.run(main())
 
     def test_worker_survives_a_failing_job(self):
         ctx = mock_ctx(user_id=5, bot=_Bot())
@@ -227,7 +252,6 @@ class TestGenerateResponse(unittest.TestCase):
             deleted: list = []
             ctx.messaging.delete_message = mock.AsyncMock(
                 side_effect=lambda message_id: deleted.append(message_id))
-            ctx.messaging.run_with_typing = lambda coro: coro
 
             async def thinking_then_hang(*args, **kwargs):
                 ctx.conversation.add_thinking(
@@ -235,8 +259,8 @@ class TestGenerateResponse(unittest.TestCase):
                 await asyncio.sleep(60)
 
             with mock.patch.object(gq, 'run_llm', thinking_then_hang):
-                task = asyncio.ensure_future(
-                    gq.generate_response(ctx, None))
+                driver = asyncio.ensure_future(
+                    gq.submit_generation(ctx, None))
                 for _ in range(1000):
                     if ctx.generation_task is not None:
                         break
@@ -245,7 +269,9 @@ class TestGenerateResponse(unittest.TestCase):
                 inner = ctx.generation_task
                 assert inner is not None
                 inner.cancel()
-                await asyncio.wait_for(task, 5)
+                await asyncio.wait_for(driver, 5)
+            # The queue item's cleanup removed the aborted reply's
+            # thinking from history and Telegram.
             self.assertEqual(deleted, [55])
             roles = [m['role'] for m in ctx.conversation.messages
                      if m['role'] != 'system']

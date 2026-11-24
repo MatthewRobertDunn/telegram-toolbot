@@ -10,6 +10,15 @@ others tomorrow) can join the same serialization. All of that state (the
 queue, the worker claim, the tracked task) lives on the thread's
 ``ThreadData``, so two threads of one user never share a serialization.
 
+Every queued job gets the same treatment, written once here instead of
+pasted per command: it runs under the typing indicator (a busy spinner in
+all but name), tracked in ``ctx.generation_task`` so /stop cancels the
+work rather than the worker waiting on it, and reports the stop through
+the item's ``stopped_message``. When the job ends - successfully, with a
+failure, or stopped - dangling trailing thinking (an aborted reply's,
+with no answer to belong to) is dropped from history and Telegram, and
+the conversation is persisted once.
+
 Queue items carry a job thunk and a done event: submitting waits for the
 item's turn, runs to completion, and the handler resumes after its work
 has gone out. A job is a zero-arg callable returning the awaitable, so
@@ -51,6 +60,11 @@ class WorkItem:
     so an item dropped without running (a /stop drain) leaves nothing
     un-awaited.
 
+    ``stopped_message`` is what the item tells the user when /stop
+    cancelled it mid-run. It is None for jobs whose stop is visible in
+    the missing work itself (a reply generation: the reply just does not
+    come).
+
     ``done`` is owned by the queue machinery and set once the item is
     processed or released; ``error`` carries a failed job's exception out
     to the submitter (submit_task re-raises it).
@@ -58,6 +72,7 @@ class WorkItem:
 
     ctx: ChatUpdateContext
     job: Callable[[], Awaitable[Any]]
+    stopped_message: str | None = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
     error: BaseException | None = None
 
@@ -81,6 +96,8 @@ def generation_queue(ctx: ChatUpdateContext) -> asyncio.Queue:
 
 async def submit_task(ctx: ChatUpdateContext,
                       job: Callable[[], Awaitable[Any]],
+                      *,
+                      stopped_message: str | None = None,
                       ) -> None:
     """Enqueue a unit of work and wait for it to finish.
 
@@ -88,11 +105,16 @@ async def submit_task(ctx: ChatUpdateContext,
     callers see it instead of the worker swallowing it silently (a
     dropped or cancelled item simply returns).
 
+    ``stopped_message`` is posted to the chat when /stop cancels the job
+    mid-run. Everything else a queued job needs - the typing indicator,
+    /stop supervision, the dangling-thinking cleanup, persistence - is
+    the queue's job, not the caller's.
+
     ``job`` must be a zero-arg callable returning the awaitable: a
     coroutine built eagerly at the call site would exist even for an item
     that is later dropped without ever running.
     """
-    item = WorkItem(ctx=ctx, job=job)
+    item = WorkItem(ctx=ctx, job=job, stopped_message=stopped_message)
     generation_queue(ctx).put_nowait(item)
     if ctx.generation_worker is None:
         # Queue idle: nothing is draining it. Claims run without an await
@@ -129,8 +151,11 @@ def submit_generation(ctx, content: str | None = None,
 async def generate_response(ctx: ChatUpdateContext, content: str | None = None,
                             telegram_message_id: int | None = None) -> None:
     """One unit of work: append the user turn (if given) and carry a full
-    generation+reply cycle. The generation task is tracked in
-    ctx.generation_task, so /stop always acts on whatever is running.
+    generation+reply cycle.
+
+    The supervision around it - the typing indicator, the tracking /stop
+    acts on, the cleanup of an aborted reply's thinking - belongs to the
+    queue item that runs this, not to the generation itself.
 
     One run_llm call per turn: it drains the inbox at the top of every
     iteration, so mail present when the reply starts is answered by this
@@ -142,63 +167,91 @@ async def generate_response(ctx: ChatUpdateContext, content: str | None = None,
         ctx.conversation.add_user(
             content, telegram_message_ids=telegram_message_id)
 
-    try:
-        ctx.generation_task = inner = asyncio.create_task(
-            ctx.messaging.run_with_typing(
-                run_llm(ctx,
-                        tools=surface_for(PARENT),
-                        inbox=get_main_inbox(ctx))))
-        try:
-            gpt_response = await inner
-        except asyncio.CancelledError:
-            if not inner.cancelled():
-                # This job itself was cancelled (bot shutdown): take the
-                # generation down too and re-raise.
-                inner.cancel()
-                raise
-            # /stop cancelled just the generation task. Thinking already
-            # appended for the aborted reply has no answer to belong to,
-            # so drop it now (history and Telegram): leaving it would
-            # strand a dangling block a later /regenerate would miss.
-            for thinking in ctx.conversation.pop_trailing_thinking():
-                for message_id in thinking.telegram_message_ids:
-                    try:
-                        await ctx.messaging.delete_message(message_id)
-                    except Exception:
-                        logger.warning(
-                            'Could not delete thinking message %s',
-                            message_id, exc_info=True)
-            return
-        finally:
-            ctx.generation_task = None
+    gpt_response = await run_llm(ctx,
+                                 tools=surface_for(PARENT),
+                                 inbox=get_main_inbox(ctx))
 
-        # The reply is visible once Telegram accepts it, so the history
-        # row must not be lost to cancellation in that window.
-        await atomic_call(
-            lambda: ctx.messaging.send_message(gpt_response,
-                                               parse_mode='LLM'),
-            lambda message_ids: ctx.conversation.add_assistant(
-                gpt_response, telegram_message_ids=message_ids))
+    # The reply is visible once Telegram accepts it, so the history
+    # row must not be lost to cancellation in that window.
+    await atomic_call(
+        lambda: ctx.messaging.send_message(gpt_response,
+                                           parse_mode='LLM'),
+        lambda message_ids: ctx.conversation.add_assistant(
+            gpt_response, telegram_message_ids=message_ids))
+
+
+async def _supervise(item: WorkItem) -> None:
+    """Run the item's job under the typing indicator, tracked for /stop.
+
+    The tracked task is always the freshly created inner task, never the
+    queue worker awaiting it, so /stop cancels the model-facing work
+    directly. Cancellation semantics:
+    - /stop (the inner task cancelled): posts the item's
+      ``stopped_message`` and returns.
+    - Bot shutdown (the worker itself cancelled): cancels the inner task
+      and re-raises, posting nothing.
+    ``ctx.generation_task`` is cleared on every path.
+    """
+    ctx = item.ctx
+    ctx.generation_task = inner = asyncio.create_task(
+        ctx.messaging.run_with_typing(item.job()))
+    try:
+        await inner
+    except asyncio.CancelledError:
+        # This worker was cancelled (bot shutdown). The cancellation rode
+        # down the await into the inner task; make sure it is down, take
+        # the worker with it, and post nothing. current_task() is always
+        # the worker here, but the type checker cannot prove it.
+        worker = asyncio.current_task()
+        assert worker is not None
+        if worker.cancelling():
+            inner.cancel()
+            raise
+        if item.stopped_message is not None:
+            await ctx.messaging.send_message(item.stopped_message)
     finally:
         ctx.generation_task = None
 
 
+async def _drop_dangling_thinking(ctx: ChatUpdateContext) -> None:
+    """Delete thinking left behind by an aborted reply.
+
+    Thinking already appended for a reply that never arrived has no
+    answer to belong to, so it goes: both the history entry and its
+    Telegram post. Leaving it would strand a dangling block a later
+    /regenerate would miss. A finished reply has its answer after the
+    thinking, so this is a no-op for every run that got that far.
+    """
+    if ctx.thread_data.conversation is None:
+        # A bare context (nothing loaded) has no history to clean.
+        return
+    for thinking in ctx.conversation.pop_trailing_thinking():
+        for message_id in thinking.telegram_message_ids:
+            try:
+                await ctx.messaging.delete_message(message_id)
+            except Exception:
+                logger.warning('Could not delete thinking message %s',
+                               message_id, exc_info=True)
+
+
 async def _run_item(item: WorkItem) -> None:
-    """Run one dequeued item: the job, its failure record, persistence.
+    """Run one dequeued item: supervise the job, clean up, persist.
 
     A failing job is recorded on the item (submit_task re-raises it to
     the submitter) and logged, but never kills the worker: the next item
-    still runs. A cancelled job skips persistence (nothing completed to
-    save) but still sets ``done``, so its submitter wakes either way.
+    still runs. A cancelled job skips the cleanup and the persistence
+    (nothing completed to save) but still sets ``done``, so its submitter
+    wakes either way.
     """
     try:
         try:
-            await item.job()
+            await _supervise(item)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             item.error = e
             logger.error('Queued work failed', exc_info=True)
+        await _drop_dangling_thinking(item.ctx)
         # Single persistence point: every dequeued job is persisted once,
         # right here - replies, /undo, /regenerate, /retry, /impersonate,
         # /compact, and parent wakeups alike. A wakeup that finds an
