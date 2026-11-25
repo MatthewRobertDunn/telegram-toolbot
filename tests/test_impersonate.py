@@ -14,6 +14,7 @@ from handlers import generation_queue as generation_queue_mod
 from handlers.conversation_handlers import (impersonate_command,
                                             regenerate_command,
                                             undo_command)
+from handlers.impersonate_prompt import IMPERSONATE_PROMPT
 from mock_context import mock_ctx
 
 
@@ -82,7 +83,7 @@ class TestImpersonate(unittest.TestCase):
         self.assertEqual(bot.sent, ['Nothing to impersonate yet.'])
         self.assertEqual(_roles(ctx.conversation), [])
 
-    def test_impersonation_is_added_as_a_user_turn(self):
+    def test_impersonation_is_added_as_a_tagged_user_turn(self):
         bot = _Bot()
         conversation = Conversation([
             {'role': 'user', 'content': 'hello'},
@@ -93,27 +94,18 @@ class TestImpersonate(unittest.TestCase):
         # The existing history is untouched; the fake turn was added.
         self.assertEqual(_roles(ctx.conversation),
                          ['user', 'assistant', 'user'])
-        self.assertEqual(ctx.conversation.messages[-1]['content'],
-                         'i would say this')
+        last = ctx.conversation.messages[-1]
+        self.assertEqual(last['content'], 'i would say this')
         # Telegram got the turn as rich markdown, and the posted id is
         # attached to the message.
         self.assertEqual(bot.sent, [])
         self.assertEqual(bot.rich_sent, ['i would say this'])
-        self.assertEqual(
-            ctx.conversation.messages[-1][CUSTOM]['telegram_message_ids'],
-            [555])
-
-    def test_impersonated_turn_is_tagged_and_scoped_locally(self):
-        bot = _Bot()
-        conversation = Conversation([
-            {'role': 'user', 'content': 'hello'},
-        ])
-        ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
-        asyncio.run(_run_command(ctx))
-        last = ctx.conversation.messages[-1]
+        self.assertEqual(last[CUSTOM]['telegram_message_ids'], [555])
+        # The turn is tagged as an impersonation...
         self.assertEqual(last.message_type,
                          ConversationMessageType.IMPERSONATION)
-        # The tag lives in custom metadata, so the endpoint never sees it.
+        # ...but the tag lives in custom metadata, so the endpoint
+        # never sees it.
         self.assertNotIn(CUSTOM, ctx.conversation.to_openai()[-1])
 
     def test_clone_is_isolated_from_the_real_history(self):
@@ -158,7 +150,8 @@ class TestImpersonate(unittest.TestCase):
             asyncio.run(impersonate_command(ctx))
         clone = captured['conversation']
         self.assertEqual(_roles(clone), ['user', 'user'])
-        self.assertIn('impersonating the user', clone.messages[-1]['content'])
+        # The appended turn is exactly the impersonation prompt.
+        self.assertEqual(clone.messages[-1]['content'], IMPERSONATE_PROMPT)
 
     def test_regenerate_of_impersonation_redoes_the_impersonation(self):
         bot = _Bot()
