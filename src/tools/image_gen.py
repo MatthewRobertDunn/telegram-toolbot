@@ -33,7 +33,7 @@ PROVIDER_NVIDIA_FLUX3 = "nvidia-flux3"
 PROVIDER_NVIDIA_FLUX2 = "nvidia-flux2"
 PROVIDER_PHOENIX = "phoenix"
 PROVIDER_RECRAFT = "recraft"
-DEFAULT_PROVIDER = PROVIDER_NVIDIA_FLUX3
+DEFAULT_PROVIDER = PROVIDER_RECRAFT
 
 NVIDIA_REQUEST_TIMEOUT = 180.0
 CLOUDFLARE_REQUEST_TIMEOUT = 120.0
@@ -395,8 +395,7 @@ _PROVIDER_PARAM = {
                  "add_to_context to true to view it yourself (needs vision). "
                  "Content filtering is by word list; avoid sexual, political, "
                  "religious words."
-                 "Set provider to 'nvidia-flux2', 'phoenix' or "
-                 "'recraft' to override the default 'nvidia-flux3'."),
+                 f"Set provider to override the default '{DEFAULT_PROVIDER}'."),
     parameters={
         "prompt": {
             "type": "string",
