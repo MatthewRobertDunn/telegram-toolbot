@@ -10,8 +10,6 @@ logger = logging.getLogger(__name__)
 
 
 SETTINGS_KEY = "user_settings"
-# Conversation rows live in the settings table too: one CONVERSATION_KEY
-# row per (user, thread), told apart by the thread_id column.
 CONVERSATION_KEY = "conversation"
 
 SETTINGS_SCHEMA = '''
@@ -66,8 +64,6 @@ class SettingsStore(AsyncSQLiteStore):
                 '(user_id, key, value, thread_id) VALUES (?, ?, ?, ?)',
                 (user_id, key, value, thread_id))
         await db.commit()
-
-    # get_all_keys is inherited from AsyncSQLiteStore.
 
     async def purge_stale_threads(self, max_age_days: int = 7) -> int:
         """Delete every threaded group of rows untouched for the cutoff.
@@ -135,8 +131,7 @@ async def load_settings(user_id: int,
                         thread_id: int | None = None) -> UserSettings | None:
     """Load one thread's settings, or None when absent/corrupt.
 
-    Thread ``None`` is the template every new thread clones: the legacy
-    global row keeps working untouched.
+    Thread ``None`` is the settings template every new thread clones.
     """
     async with create_settings_store() as store:
         raw = await store.get(user_id, SETTINGS_KEY, thread_id)
@@ -163,9 +158,7 @@ async def save_conversation(user_id: int, thread_id: int | None,
 
     The single save point is the generation worker (which covers every
     queued unit of work); the few direct mutations (/start reset, ambient
-    group chatter) save explicitly at their call site. Inline images
-    beyond the newest ``MAX_IMAGES`` are pruned to placeholders: the row
-    is rewritten whole each time, and the payloads are the bulk of it."""
+    group chatter) save explicitly at their call site."""
     payload = json.dumps({'id': conversation.id,
                           'messages': _prune_inline_images(
                               list(conversation.messages))})
@@ -177,8 +170,8 @@ async def save_conversation(user_id: int, thread_id: int | None,
 async def load_conversation(user_id: int,
                             thread_id: int | None) -> Conversation | None:
     """Load the persisted conversation for the thread, or None when
-    absent/corrupt. Stored payloads are pruned on the way out too, so a
-    blob carrying more images than the cap cannot resurrect them."""
+    absent/corrupt. Stored payloads are pruned on the way out too (see
+    ``_prune_inline_images``)."""
     async with create_settings_store() as store:
         raw = await store.get(user_id, CONVERSATION_KEY,
                               thread_id)
