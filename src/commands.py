@@ -81,9 +81,8 @@ COMMANDS: tuple[Command, ...] = (
     Command('stop', 'Stop the current AI response', stop_command),
     Command('regenerate', 'Regenerate the last response',
             regenerate_command),
-    # /continue is the same command under an older name: the original
-    # registration gave it its own handler but never its own behaviour,
-    # so it is an alias rather than a row (no duplicate menu entry).
+    # /continue is an older spelling of /retry: an alias, not its own row,
+    # so it gets no separate menu entry.
     Command('retry', 'Retry the conversation', retry_command,
             aliases=('continue',)),
     Command('undo', 'Undo the last message', undo_command),

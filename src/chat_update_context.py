@@ -306,11 +306,7 @@ def _thread_data_for(threads: dict, thread_id: int | None) -> ThreadData:
 
 
 def _parse_command_text(text: str) -> str:
-    """Everything after the command token (the arguments), stripped.
-
-    Private because it has exactly one consumer: the per-update parse in
-    ``create_chat_update_context`` below.
-    """
+    """Everything after the command token (the arguments), stripped."""
     _, _, args = text.partition(' ')
     return args.strip()
 
@@ -325,9 +321,6 @@ def _parse_command_name(text: str) -> str:
     ``@mention`` is stripped too: ``/start@MyBot arg`` yields ``start`` -
     the mention addresses the bot, not the command, so carrying it would
     render usage lines like ``/start@MyBot <text>``.
-
-    Private because it has exactly one consumer: the per-update parse in
-    ``create_chat_update_context`` below.
     """
     if not text.startswith("/"):
         return ""

@@ -101,15 +101,14 @@ NVIDIA_FLUX2_GEN_URL = os.environ.get(
     "NVIDIA_FLUX2_GEN_URL",
     "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b")
 
-# Sampling parameters and the LLM retry budget, in one convention.
 TEMPERATURE = _float_env("TEMPERATURE", "1.0")
 TOP_P = _float_env("TOP_P", "0.95")
 API_RETRY_TIME = _int_env("API_RETRY_TIME", "36000")
 # The longest single backoff sleep; the 1.2x growth is clamped to this so
 # one sleep cannot swallow hours of the retry budget.
 API_RETRY_MAX_DELAY = _float_env("API_RETRY_MAX_DELAY", "300")
-# Legacy lowercase names, still imported elsewhere (user_settings,
-# handlers.run_llm); they are the same values, just spelled the old way.
+# Lowercase aliases imported by user_settings and handlers.run_llm;
+# same values as the constants above.
 temperature = TEMPERATURE
 top_p = TOP_P
 api_retry_time = API_RETRY_TIME
