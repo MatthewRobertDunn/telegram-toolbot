@@ -28,7 +28,6 @@ class TestMessageNormalization(unittest.TestCase):
                 self.assertEqual(len(conversation.messages), 1)
                 self.assertIsInstance(conversation.messages[0],
                                       ConversationMessage)
-                # The content is unchanged.
                 self.assertEqual(conversation.messages[0], raw)
 
     def test_wrapping_keeps_your_messages(self):
@@ -128,7 +127,6 @@ class TestConversationHelpers(unittest.TestCase):
 
 
 class TestMessageType(unittest.TestCase):
-    """The message_type property: get/set over the custom metadata."""
 
     def test_roundtrip_sets_the_tag(self):
         message = ConversationMessage({'role': 'user', 'content': 'hi'})
@@ -168,8 +166,7 @@ class TestMessageType(unittest.TestCase):
 class TestConversationAddImage(unittest.TestCase):
 
     def test_only_the_most_recent_max_images_are_kept(self):
-        # The cap is a per-conversation constructor parameter, not a
-        # class attribute tests were expected to monkey-patch. Both an
+        # The cap is a per-conversation constructor parameter; both an
         # explicit small cap and the default are honoured by pruning.
         for max_images in (2, MAX_IMAGES):
             with self.subTest(max_images=max_images):
@@ -357,11 +354,10 @@ class TestThinkingMessages(unittest.TestCase):
                           {'role': 'assistant', 'content': 'final'}])
 
     def test_unknown_tag_is_treated_as_not_thinking(self):
-        # The old string comparison returned False for any unknown
-        # message_type value; a hand-edited or older persisted history
-        # must keep loading instead of raising on a stale tag. The tag
-        # is not coerced to a known type - it simply cannot be
-        # display-only, so it reaches the endpoint like any message.
+        # An unknown message_type value is never coerced to a known
+        # type: a hand-edited or older persisted history keeps loading
+        # on a stale tag, and such a message cannot be display-only,
+        # so it reaches the endpoint like any message.
         message = {'role': 'assistant', 'content': 'hi',
                    CUSTOM: {'message_type': 'defunct-kind'}}
         self.assertFalse(is_thinking_message(message))
