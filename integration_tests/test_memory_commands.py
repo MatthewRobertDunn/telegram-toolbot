@@ -15,8 +15,6 @@ class TestMemoryCommands(unittest.IsolatedAsyncioTestCase):
     # Each test uses a distinct user_id so they don't collide on the
     # shared test database (wiped + recreated once per test run).
 
-    # -- memory_command: set + get ---------------------------------------
-
     async def test_memory_set_and_get(self):
         uid = _uid()
         ctx_set = create_mock_context(
@@ -45,8 +43,6 @@ class TestMemoryCommands(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(ctx.sent), 1)
             self.assertIn("Usage", ctx.sent[0]["text"])
 
-    # -- memory_list_command ---------------------------------------------
-
     async def test_memory_list_with_keys(self):
         uid = _uid()
         ctx_set1 = create_mock_context(
@@ -62,8 +58,6 @@ class TestMemoryCommands(unittest.IsolatedAsyncioTestCase):
         self.assertIn("alpha", text)
         self.assertIn("beta", text)
 
-    # -- memory_delete_command -------------------------------------------
-
     async def test_memory_delete(self):
         uid = _uid()
         ctx_set = create_mock_context(
@@ -74,7 +68,6 @@ class TestMemoryCommands(unittest.IsolatedAsyncioTestCase):
         await memory_delete_command(ctx_del)
         self.assertEqual(len(ctx_del.sent), 1)
         self.assertIn("Forgot", ctx_del.sent[0]["text"])
-        # Verify the key was actually deleted
         ctx_get = create_mock_context(
             user_id=uid, command_text="tmp", command_name="memory")
         await memory_command(ctx_get)
@@ -86,8 +79,6 @@ class TestMemoryCommands(unittest.IsolatedAsyncioTestCase):
         await memory_delete_command(ctx)
         self.assertEqual(len(ctx.sent), 1)
         self.assertIn("Forgot", ctx.sent[0]["text"])
-
-    # -- memory_delete_all_command ---------------------------------------
 
     async def test_memory_delete_all(self):
         uid = _uid()
@@ -102,7 +93,6 @@ class TestMemoryCommands(unittest.IsolatedAsyncioTestCase):
         await memory_delete_all_command(ctx_del)
         self.assertEqual(len(ctx_del.sent), 1)
         self.assertIn("forgotten", ctx_del.sent[0]["text"])
-        # Verify all keys were actually deleted
         ctx_list = create_mock_context(
             user_id=uid, command_name="memory_list")
         await memory_list_command(ctx_list)

@@ -1,12 +1,10 @@
 """Shared setup for integration tests.
 
 Importing this module establishes the isolated test environment (same
-harness as the unit tier, see ``tests/_bootstrap.py``). Import does
-have one filesystem effect: it creates the isolated per-run temporary
-database (and its schema). What it never touches is the repo's real
-``store.db`` — the old import-time delete/recreate of
-``integration_tests/test_store.db`` is gone, and a guard forbids
-opening any real database.
+harness as the unit tier, see ``tests/_bootstrap.py``). Import has one
+filesystem effect: it creates the isolated per-run temporary database
+(and its schema); it never touches the repo's real ``store.db``, and a
+guard forbids opening any real database.
 
 * ``integration_tests/.env`` is loaded first, before the shared harness
   imports any application module: ``config.py`` snapshots the
@@ -37,12 +35,10 @@ import unittest
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 
-# ------------------------------------------------------------------ .env
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(_HERE, '.env'))
 
-# ------------------------------------------------------------------ harness
 # Imported after the .env load above and before any src module is
 # imported: config.py reads the environment (including STORE_DB_PATH)
 # when it is first imported, and the harness pulls in the store modules
@@ -54,7 +50,6 @@ from tests import _bootstrap  # noqa: E402
 
 _bootstrap.setup()
 
-# ------------------------------------------------------------------ uid
 _next_uid = 3000
 
 
@@ -63,8 +58,6 @@ def next_uid() -> int:
     global _next_uid
     _next_uid += 1
     return _next_uid
-
-# ------------------------------------------------------------------ docker
 
 
 @functools.lru_cache(maxsize=1)
@@ -107,10 +100,6 @@ def nvidia_key_available() -> bool:
     """True when an image-generation API key is configured.
 
     Mirrors src/config.py: NVIDIA_API_KEY, falling back to OPENAI_API_KEY.
-    By the time this runs, bootstrap has already loaded
-    integration_tests/.env into the process environment (load_dotenv above
-    precedes every config import), so a key added there is picked up
-    with no further edits.
     """
     return bool(os.environ.get("NVIDIA_API_KEY")
                 or os.environ.get("OPENAI_API_KEY"))
