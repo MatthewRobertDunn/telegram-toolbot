@@ -1,6 +1,6 @@
 import { Plugin } from "@opencode/plugin"
 
-const DELAY_MS = 30_000 // Your fixed delay
+const DELAY_MS = 30_000
 
 export default Plugin.define({
   id: "disable-exponential-retry",
