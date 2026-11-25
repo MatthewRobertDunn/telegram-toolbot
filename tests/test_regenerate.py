@@ -164,11 +164,15 @@ class TestUndo(unittest.TestCase):
 
     def test_undo_preview_is_truncated_to_the_limit(self):
         message = {'role': 'user', 'content': 'a' * 30}
-        self.assertEqual(message_preview(message, limit=7),
-                         "```\n" + 'a' * 7 + "\n```")
-        # At the limit or below, the text is returned whole.
-        self.assertEqual(message_preview(message, limit=30),
-                         "```\n" + 'a' * 30 + "\n```")
+        # (limit, expected text)
+        cases = [
+            (7, 'a' * 7),  # Over the limit: truncated.
+            (30, 'a' * 30),  # At the limit or below: returned whole.
+        ]
+        for limit, expected in cases:
+            with self.subTest(limit=limit):
+                self.assertEqual(message_preview(message, limit=limit),
+                                 "```\n" + expected + "\n```")
 
     def test_undo_of_assistant_turn_names_the_role(self):
         bot = _Bot()
