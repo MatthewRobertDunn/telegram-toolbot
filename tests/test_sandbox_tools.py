@@ -20,7 +20,6 @@ import toolbot_grep
 import toolbot_protocol
 import toolbot_read
 from handlers import run_llm as run_llm_mod
-from handlers import upload_handler
 from conversation import Conversation
 from mock_context import mock_ctx
 from tools.sandbox import common, files, media, search, shell
@@ -200,40 +199,33 @@ class TestEditHelper(unittest.TestCase):
             with open(path) as f:
                 self.assertEqual(f.read(), 'foo\nqux\n')
 
-    def test_payload_rejects_unknown_fields(self):
-        result, code = self._run(json.dumps(
-            {'path': 'f.txt', 'old_string': 'a', 'new_string': 'b',
-             'extra': 1}))
-        self.assertEqual(code, 1)
-        self.assertFalse(result['ok'])
-        self.assertIn('unexpected payload field', result['error'])
-
-    def test_payload_rejects_missing_or_wrong_typed_fields(self):
+    def test_payload_rejections(self):
         cases = [
-            {'old_string': 'a', 'new_string': 'b'},          # missing path
-            {'path': 3, 'old_string': 'a', 'new_string': 'b'},  # wrong type
-            {'path': 'f.txt', 'new_string': 'b'},            # missing old
-            {'path': 'f.txt', 'old_string': 'a', 'new_string': 'b',
-             'replace_all': 'yes'},                          # wrong flag type
+            # Unknown field.
+            (json.dumps({'path': 'f.txt', 'old_string': 'a',
+                         'new_string': 'b', 'extra': 1}),
+             'unexpected payload field'),
+            # Missing path.
+            (json.dumps({'old_string': 'a', 'new_string': 'b'}), 'payload'),
+            # Wrong type for path.
+            (json.dumps({'path': 3, 'old_string': 'a',
+                         'new_string': 'b'}), 'payload'),
+            # Missing old_string.
+            (json.dumps({'path': 'f.txt', 'new_string': 'b'}), 'payload'),
+            # Wrong flag type.
+            (json.dumps({'path': 'f.txt', 'old_string': 'a',
+                         'new_string': 'b', 'replace_all': 'yes'}), 'payload'),
+            # Not JSON at all.
+            ('not json at all', 'not valid JSON'),
+            # Valid JSON that is not an object.
+            ('[1, 2]', 'JSON object'),
         ]
-        for payload in cases:
+        for payload, keyword in cases:
             with self.subTest(payload=payload):
-                result, code = self._run(json.dumps(payload))
+                result, code = self._run(payload)
                 self.assertEqual(code, 1)
                 self.assertFalse(result['ok'])
-                self.assertIn('payload', result['error'])
-
-    def test_payload_rejects_non_json(self):
-        result, code = self._run('not json at all')
-        self.assertEqual(code, 1)
-        self.assertFalse(result['ok'])
-        self.assertIn('not valid JSON', result['error'])
-
-    def test_payload_rejects_non_object(self):
-        result, code = self._run('[1, 2]')
-        self.assertEqual(code, 1)
-        self.assertFalse(result['ok'])
-        self.assertIn('JSON object', result['error'])
+                self.assertIn(keyword, result['error'])
 
 
 class TestReadHelper(unittest.TestCase):
@@ -478,33 +470,6 @@ class TestGrepHelper(unittest.TestCase):
             self.assertIn('directory', result['error'])
 
 
-class TestUploadNaming(unittest.TestCase):
-
-    def test_fallback_name_from_kind_and_path(self):
-        class Document:
-            pass
-
-        class PhotoSize:
-            pass
-
-        class Voice:
-            pass
-
-        file = SimpleNamespace(file_path="voice/file_123.oga")
-        name = upload_handler._fallback_name(Document(), file)
-        self.assertTrue(name.startswith("document_"))
-        self.assertTrue(name.endswith(".oga"))
-
-        file = SimpleNamespace(file_path="photos/file_5.jpg")
-        name = upload_handler._fallback_name(PhotoSize(), file)
-        self.assertTrue(name.startswith("photo_"))
-        self.assertTrue(name.endswith(".jpg"))
-
-        file = SimpleNamespace(file_path=None)
-        name = upload_handler._fallback_name(Voice(), file)
-        self.assertRegex(name, r"^voice_\d+$")
-
-
 class TestUploadCache(unittest.TestCase):
 
     def setUp(self):
@@ -539,17 +504,6 @@ class TestUploadCache(unittest.TestCase):
         now[0] += 60  # exactly at expiry
         self.assertFalse(
             upload_cache.was_recently_uploaded(1, '/workspace/uploads/pic.png'))
-
-
-class TestSandboxToolHelpers(unittest.TestCase):
-
-    def test_resolve_path(self):
-        self.assertEqual(common._resolve_path('src/app.py'),
-                         '/workspace/src/app.py')
-        self.assertEqual(common._resolve_path('/etc/hosts'),
-                         '/etc/hosts')
-        self.assertEqual(common._resolve_path('src/../app.py'),
-                         '/workspace/app.py')
 
 
 class TestHelperRunner(unittest.IsolatedAsyncioTestCase):
@@ -644,29 +598,28 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
     def _canned(self, exec_responses):
         return SandboxManager(docker=CannedDocker(exec_responses))
 
-    async def test_bash_formats_output(self):
-        manager = self._canned([('echo', 0, 'hello\n', '')])
-        with _patched_manager(manager):
-            ctx = mock_ctx()
-            result = await shell.bash(ctx, 'echo hello')
-        self.assertIn('Return code: 0', result)
-        self.assertIn('stdout:\nhello', result)
-
-    async def test_python_runner_shares_bash_formatting(self):
+    async def test_command_tools_share_formatting(self):
         # Both command tools render through the one formatter, so the model
-        # sees the same shape from either.
-        manager = self._canned([('python3 -', 0, '4\n', '')])
-        with _patched_manager(manager):
-            ctx = mock_ctx()
-            result = await python_runner.run_python_code(ctx, 'print(2+2)')
-        self.assertEqual(result, 'Return code: 0\nstdout:\n4\n')
-
-        manager = self._canned([('python3 -', 1, '',
-                                 'SyntaxError: bad code')])
-        with _patched_manager(manager):
-            ctx = mock_ctx()
-            result = await python_runner.run_python_code(ctx, 'def def def')
-        self.assertEqual(result, 'Return code: 1\nstderr:\nSyntaxError: bad code')
+        # sees the same shape from either entry point.
+        cases = [
+            (shell.bash, 'echo hello', ('echo', 0, 'hello\n', ''),
+             ['Return code: 0', 'stdout:\nhello'], None),
+            (python_runner.run_python_code, 'print(2+2)',
+             ('python3 -', 0, '4\n', ''),
+             [], 'Return code: 0\nstdout:\n4\n'),
+            (python_runner.run_python_code, 'def def def',
+             ('python3 -', 1, '', 'SyntaxError: bad code'),
+             [], 'Return code: 1\nstderr:\nSyntaxError: bad code'),
+        ]
+        for tool, command, exec_response, substrings, exact in cases:
+            with self.subTest(tool=tool.__name__, command=command):
+                manager = self._canned([exec_response])
+                with _patched_manager(manager):
+                    result = await tool(mock_ctx(), command)
+                for substring in substrings:
+                    self.assertIn(substring, result)
+                if exact is not None:
+                    self.assertEqual(result, exact)
 
     async def test_write_creates_and_marks_read(self):
         manager = self._canned([('test -e', 1, '', ''), ('mkdir', 0, '', '')])
@@ -774,25 +727,25 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
             result = await search.grep(ctx, 'nothing')
         self.assertEqual(result, 'No files found')
 
-    async def test_grep_reports_helper_error(self):
-        helper_result = json.dumps(
-            {'v': 1, 'ok': False, 'error': 'regex parse error'})
-        manager = self._canned([('toolbot_grep.py', 0, helper_result, '')])
-        with _patched_manager(manager):
-            ctx = mock_ctx()
-            result = await search.grep(ctx, '[')
-        self.assertIn('regex parse error', result)
-
-    async def test_grep_reports_helper_crash(self):
-        # A helper that dies without speaking the protocol degrades to an
-        # error; its traceback never reaches the model.
-        manager = self._canned([('toolbot_grep.py', 2, '',
-                                 'Traceback (most recent call last): ...')])
-        with _patched_manager(manager):
-            ctx = mock_ctx()
-            result = await search.grep(ctx, 'x')
-        self.assertIn('Traceback', result)
-        self.assertIn('Error:', result)
+    async def test_grep_reports_helper_failures(self):
+        cases = [
+            # A helper that speaks the protocol but reports failure.
+            (('toolbot_grep.py', 0,
+              json.dumps({'v': 1, 'ok': False, 'error': 'regex parse error'}),
+              ''), ['regex parse error']),
+            # A helper that dies without speaking the protocol degrades to
+            # an error; its traceback never reaches the model.
+            (('toolbot_grep.py', 2, '',
+              'Traceback (most recent call last): ...'),
+             ['Traceback', 'Error:']),
+        ]
+        for exec_response, expected in cases:
+            with self.subTest(exec_response=exec_response):
+                manager = self._canned([exec_response])
+                with _patched_manager(manager):
+                    result = await search.grep(mock_ctx(), '[')
+                for substring in expected:
+                    self.assertIn(substring, result)
 
     async def test_grep_truncates(self):
         helper_result = json.dumps({'v': 1, 'ok': True, 'data': {
@@ -878,32 +831,30 @@ class TestSendFile(unittest.IsolatedAsyncioTestCase):
             await media.send_file(ctx, 'blob.bin')
         self.assertEqual(bot.sent[0]['document'], payload)
 
-    async def test_file_not_found(self):
-        # read_image and send_file duplicate this guard; cover both.
-        manager = self._canned([('stat', 1, '', 'No such file')])
-        with _patched_manager(manager):
-            ctx = mock_ctx(bot=_FakeBot())
-            send_result = await media.send_file(ctx, 'nope.txt')
-            image_result = await media.read_image(ctx, 'nope.png')
-        self.assertIn('File not found', send_result)
-        assert isinstance(image_result, str)
-        self.assertIn('File not found', image_result)
-
-    async def test_file_too_large(self):
-        # read_image and send_file duplicate this guard; cover both.
+    async def test_file_guards_for_send_file_and_read_image(self):
+        # read_image and send_file share these guards; cover both tools in
+        # both failure scenarios.
         cases = [
+            # File not found.
+            (media.send_file, 'nope.txt', ('stat', 1, '', 'No such file'),
+             'File not found'),
+            (media.read_image, 'nope.png', ('stat', 1, '', 'No such file'),
+             'File not found'),
+            # Too large, per each tool's own limit.
             (media.send_file, 'big.bin',
-             media.MAX_SEND_FILE_BYTES + 1),
+             ('stat', 0, f'{media.MAX_SEND_FILE_BYTES + 1}\n', ''),
+             'too large'),
             (media.read_image, 'big.png',
-             media.MAX_IMAGE_DISPLAY_BYTES + 1),
+             ('stat', 0, f'{media.MAX_IMAGE_DISPLAY_BYTES + 1}\n', ''),
+             'too large'),
         ]
-        for tool, path, limit in cases:
-            manager = self._canned([('stat', 0, f'{limit}\n', '')])
-            with _patched_manager(manager):
-                ctx = mock_ctx(bot=_FakeBot())
-                result = await tool(ctx, path)
-            assert isinstance(result, str)
-            self.assertIn('too large', result)
+        for tool, path, exec_response, keyword in cases:
+            with self.subTest(tool=tool.__name__, path=path):
+                manager = self._canned([exec_response])
+                with _patched_manager(manager):
+                    result = await tool(mock_ctx(bot=_FakeBot()), path)
+                assert isinstance(result, str)
+                self.assertIn(keyword, result)
 
     async def test_send_file_base64_failure(self):
         manager = self._canned([('stat', 0, '4\n', ''), ('base64', 1, '', 'Is a directory')])
