@@ -27,21 +27,15 @@ MAX_RICH_MSG_LEN = 32000
 
 
 class Messaging:
-    """The chat-writing half of an interactive context.
-
-    Constructed by ``ChatUpdateContext`` and exposed as ``ctx.messaging``.
-    Everything that mutates the chat (messages, media, typing, deletes)
-    lives here, so "can this code reach the user?" is answered by "does it
-    hold an interactive context?".
-    """
+    """The chat-writing half of an interactive context, exposed as
+    ``ctx.messaging``."""
 
     def __init__(self, ctx: "ChatUpdateContext") -> None:
         self._ctx = ctx
 
     async def send_rich_message(self, text: str) -> list:
-        """Send markdown via sendRichMessage, chunking if needed. Returns
-        the message_ids of all posted chunks, like send_message, so callers
-        can link them back to the conversation."""
+        """Send markdown via sendRichMessage, chunking if needed.
+        Returns the chunks' message_ids."""
         ctx = self._ctx
         message_ids = []
         # PTB doesn't expose sendRichMessage yet (Bot API 10.1); we use the
@@ -63,14 +57,8 @@ class Messaging:
         return message_ids
 
     async def send_collapsible(self, summary: str, body: str) -> list:
-        """Post a collapsible rich-text block, chunking long bodies.
-
-        Each posted message is a self-contained <details> block; bodies
-        over the rich-message limit are split at line breaks across
-        continuations ("summary (cont. N)"). Returns the message_ids of all
-        posted chunks, like send_message, so callers can link them back to
-        the conversation.
-        """
+        """Post a collapsible rich-text block, chunking long bodies at
+        line breaks."""
         overhead = len("<details>\n<summary></summary>\n\n\n\n</details>")
         budget = max(1024, MAX_RICH_MSG_LEN - len(summary) - overhead)
         message_ids = []
@@ -81,11 +69,9 @@ class Messaging:
         return message_ids
 
     async def send_json(self, summary: str, json_text: str) -> list:
-        """Post a JSON payload as a collapsible pretty-printed code block.
-
-        Malformed input falls back to the raw text, so model output never
-        fails to display. Returns the message_ids, like send_collapsible.
-        """
+        """Post a JSON payload as a collapsible code block; malformed
+        input falls back to the raw text so model output never fails to
+        display."""
         try:
             pretty = json.dumps(json.loads(json_text), indent=2,
                                 ensure_ascii=False)
@@ -112,8 +98,8 @@ class Messaging:
 
     async def send_message(self, text: str, parse_mode='Markdown',
                            disable_web_page_preview=True) -> list:
-        """Send text, chunking if needed. Returns the message_ids of all
-        posted chunks, so callers can link them back to the conversation."""
+        """Send text, chunking if needed. Returns the posted chunks'
+        message_ids so callers can link them to the conversation."""
         message_ids = []
         if parse_mode == 'LLM':
             message_ids.extend(await self.send_rich_message(text))
@@ -126,10 +112,7 @@ class Messaging:
         return message_ids
 
     async def send_preformatted_message(self, text: str) -> list[int]:
-        """Send monospaced text (e.g. /memory dumps) chunked to fit.
-
-        Returns the message ids of every posted chunk, like send_message.
-        """
+        """Send monospaced text (e.g. /memory dumps) chunked to fit."""
         overhead = len("<pre></pre>")
         chunk_len = max(1, MAX_MSG_LEN - overhead)
         message_ids = []
@@ -145,8 +128,6 @@ class Messaging:
         return message_ids
 
     async def send_image(self, photo: bytes, caption: str = "") -> list[int]:
-        """Post a photo. Returns its message id, so the caller can link it
-        to the conversation turn it belongs to."""
         message = await self._ctx.bot.send_photo(
             chat_id=self._ctx.chat_id,
             photo=photo,
@@ -159,7 +140,6 @@ class Messaging:
 
     async def send_document(self, document: bytes,
                             filename: str) -> list[int]:
-        """Post a file. Returns its message id, like send_image."""
         message = await self._ctx.bot.send_document(
             chat_id=self._ctx.chat_id, document=document, filename=filename,
             message_thread_id=self._ctx.message_thread_id)
