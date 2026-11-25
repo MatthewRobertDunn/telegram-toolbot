@@ -1,9 +1,4 @@
-"""Web tools: DuckDuckGo search and reader-proxied page fetching.
-
-Neither tool may block the event loop: the search runs ddgs' blocking
-client in a worker thread (it has no async API), and the page fetch goes
-through the shared async client in :mod:`http_client`.
-"""
+"""Web tools: DuckDuckGo search and reader-proxied page fetching."""
 import asyncio
 import logging
 import re
@@ -23,11 +18,9 @@ MAX_SEARCH_RESULTS = 10
 # otherwise produce a misleading "page content was empty" result, and huge
 # values would defeat the point of truncating what the model receives.
 MAX_FETCH_CHARS = 1_000_000
-# Cap on the exception text echoed to the model as the tool result. The
-# text itself is returned verbatim — it is the model's only diagnostic
-# signal (proxy host, status, TLS/socket and timeout detail all help it
-# decide whether to retry, change the URL, or give up) — only its length
-# is capped, so a pathological error cannot flood the context.
+# Cap on the exception text echoed to the model: returned verbatim (its detail
+# is the model's only diagnostic signal), length-capped so a pathological
+# error cannot flood the context.
 MAX_ERROR_CHARS = 500
 
 READER_URL = "https://r.jina.ai/"
@@ -64,7 +57,6 @@ async def web_search(query: str, max_results: int = 5) -> str:
             output.append(f"{i+1}. {r['title']}\n URL: {r['href']}\n {r['body']}")
         return "\n\n".join(output)
     except Exception as e:
-        # Exception text verbatim (see MAX_ERROR_CHARS above), length-capped.
         logger.warning("web_search failed: %s", e)
         return f"Web search error: {str(e)[:MAX_ERROR_CHARS]}"
 
@@ -99,7 +91,6 @@ async def web_fetch(url: str, max_chars: int = 100000) -> str:
     except http_client.HttpStatusError as e:
         return f"Failed to fetch {url}: HTTP {e.status}"
     except Exception as e:
-        # Exception text verbatim (see MAX_ERROR_CHARS above), length-capped.
         logger.warning("web_fetch failed for %s: %s", url, e)
         return f"Web fetch error for {url}: {str(e)[:MAX_ERROR_CHARS]}"
     return text[:max_chars] if text else "(page content was empty after parsing)"
