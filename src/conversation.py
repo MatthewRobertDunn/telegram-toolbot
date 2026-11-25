@@ -1,16 +1,11 @@
 """The assistant/LLM conversation history object.
 
-A Conversation owns the raw OpenAI-style message dicts and an identity: a
-fresh uuid assigned at construction. Whoever creates a Conversation gets a
-session id for the x-opencode-session header for free - no hashing of
-contents, no id(...) bookkeeping.
-
 The class owns the message-list behaviors: append helpers, system-prompt
 head management, tool-call pairing, the trims commands need, and the
 endpoint contract check. Concerns that are not the list itself live in
 sibling modules: message-dict accessors (messages), token accounting
 (tokens), transcript rendering (transcript). This module re-exports the
-names those moved because everything already imports it.
+names from those modules because callers import them from here.
 """
 
 import base64
@@ -27,11 +22,9 @@ from tokens import (TOKENS_PER_CHAR, IMAGE_TOKEN_ESTIMATE, token_count,
                     estimate_conversation_tokens, estimate_message_tokens)
 from transcript import IMAGE_PLACEHOLDER
 
-# How many of the most recent images a conversation holds onto.
 MAX_IMAGES = 8
 
-# Public names that used to be defined here; other branches and tests
-# import them from conversation.
+# Re-export: callers import these names from conversation.
 is_thinking_message = is_thinking
 
 
@@ -47,23 +40,18 @@ class ConversationMessage(dict):
     plus a helper for the local-only Telegram linkage. Plain dicts stay
     valid wherever a message is only read; `ConversationMessage` is what
     the add_ helpers hand back so callers can attach ids as replies are
-    sent. Every behavior is the messages accessor of the same name, so a
-    plain dict and a ConversationMessage read identically."""
+    sent."""
 
     def add_telegram_message_id(self,
                                 message_ids: int | list[int] | None) -> None:
-        """Link Telegram messages to this conversation message."""
         add_telegram_ids(self, message_ids)
 
     @property
     def telegram_message_ids(self) -> list:
-        """The Telegram message ids linked to this message, or []."""
         return telegram_ids_of(self)
 
     @property
     def message_type(self) -> ConversationMessageType | None:
-        """What produced this message (see ConversationMessageType), or
-        None when untagged."""
         return message_type_of(self)
 
     @message_type.setter
@@ -103,13 +91,12 @@ class Conversation:
                          else ConversationMessage(message)
                          for message in (messages or [])]
         self.id = id or uuid.uuid4().hex
-        # Cap on retained inline images (see add_image).
         self.max_images = max_images
 
     def set_messages(self,
                      messages: Iterable[dict | ConversationMessage]) -> None:
-        """Replace the whole message list, wrapping plain dicts like the
-        constructor does (for in-place rebuilds that keep the id)."""
+        """In-place rebuild keeping the id: plain dicts are wrapped like
+        the constructor does."""
         self.messages = [message if isinstance(message, ConversationMessage)
                          else ConversationMessage(message)
                          for message in messages]
@@ -281,16 +268,13 @@ class Conversation:
 
     @property
     def head_is_system(self) -> bool:
-        """Whether messages[0] is a system prompt message."""
         return bool(self.messages) and \
             self.messages[0].get('role') == 'system'
 
     @property
     def token_estimate(self) -> int:
-        """Estimated tokens of the whole conversation, images included.
-
-        Thinking blocks are display-only and excluded, matching
-        estimate_conversation_tokens / to_openai()."""
+        """Whole-conversation estimate, images included; thinking blocks
+        excluded to match to_openai()."""
         return estimate_conversation_tokens(self.messages)
 
     def pop_trailing_tool_results(self) -> list:
