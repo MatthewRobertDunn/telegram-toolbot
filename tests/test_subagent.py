@@ -42,9 +42,9 @@ SETTINGS = SimpleNamespace(
 
 
 def _ctx():
-    # A bot stub just for the typing indicator every queued item now
-    # sends; anything that really posts still has to be stubbed by the
-    # test that cares about it.
+    # A bot stub just for the typing indicator every queued item sends;
+    # anything that really posts has to be stubbed by the test that cares
+    # about it.
     ctx = mock_ctx(settings=SETTINGS, conversation=[],
                    bot=SimpleNamespace(
                        send_chat_action=unittest.mock.AsyncMock()))
@@ -86,7 +86,6 @@ class TestInboxDrain(unittest.IsolatedAsyncioTestCase):
         users = [m for m in ctx.conversation.messages if m['role'] == 'user']
         self.assertEqual(len(users), 1)
         self.assertIn('done stuff', users[0]['content'])
-        # The injected turn was part of the request.
         self.assertIn('done stuff', captured['messages'][-1]['content'])
 
     async def test_no_inbox_means_no_user_turn(self):
@@ -131,7 +130,6 @@ class TestToolSets(unittest.TestCase):
     def test_subagent_tools_have_no_subagent_controls(self):
         names = {t['function']['name'] for t in surface_for(SUBAGENT).definitions}
         self.assertIn('subagent_send_to_parent', names)
-        # Shared toolbox: file, sandbox, web, journal and memory work.
         for name in ('bash', 'read', 'write', 'web_search', 'python',
                      'journal_add', 'memory_set'):
             self.assertIn(name, names)
@@ -272,7 +270,6 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
         self.assertIn('sent', result.lower())
         notify.assert_awaited_once()
         self.assertIn('halfway there', notify.call_args.args[1].result)
-        # The record identifies the sender.
         self.assertEqual(notify.call_args.args[1].id, 'abc')
 
     async def test_send_to_parent_without_record_is_an_error(self):
@@ -303,7 +300,6 @@ class TestSubagentStartModel(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     async def _started_model(ctx, **kwargs) -> str:
-        """Start one subagent, run it to the end, return the model it used."""
         captured: dict = {}
 
         async def fake_run_llm(ctx, **kw):
@@ -351,12 +347,11 @@ def _fake_bot():
 
 class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
     # Always-enqueue wakeup protocol: every delivery schedules one wakeup
-    # job; there is no "loop active" flag left to leak. The first job
-    # drains the whole inbox, the rest no-op on the empty inbox.
+    # job. The first job drains the whole inbox, the rest no-op on the
+    # empty inbox.
 
     @staticmethod
     def _draining_run_llm():
-        """A run_llm stand-in that drains the inbox like the real one."""
         async def fake_run_llm(ctx, **kwargs):
             inbox = kwargs.get('inbox')
             if inbox is not None:
@@ -390,7 +385,6 @@ class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
         saver, run, send = await self._patch_generation()
         with saver, run, send:
             await subagent_mod._wakeup_parent(ctx, epoch=0)
-        # Mail was consumed by a real parent turn.
         self.assertTrue(get_main_inbox(ctx).empty())
         users = [m for m in ctx.conversation.messages if m['role'] == 'user']
         self.assertIn('done stuff', users[0]['content'])
@@ -474,7 +468,6 @@ class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
                         # Drain the inbox before the queued job's turn.
                         inbox.get_nowait()
                         await submitted[0]()
-                        # The job resubmitted nothing.
                         self.assertEqual(len(submitted), 1)
                     else:
                         self.assertEqual(submitted, [])
@@ -528,7 +521,6 @@ class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Error', result)
         self.assertTrue(record.inbox.empty())
         wake.assert_not_called()
-        # And nothing reached the parent inbox either.
         self.assertTrue(get_main_inbox(ctx).empty())
 
 
@@ -838,7 +830,6 @@ class TestAgentMessageUndo(unittest.IsolatedAsyncioTestCase):
                 {'role': 'user', 'content': 'human question'},
                 {'role': 'assistant', 'content': 'human answer'},
             ])
-        # A subagent report arrives and gets answered.
         from agent_inbox import SubagentMessage
         ctx.conversation.add_user(
             SubagentMessage(id='abc', state=SubagentStatus.FINISHED,
@@ -849,8 +840,6 @@ class TestAgentMessageUndo(unittest.IsolatedAsyncioTestCase):
         await conversation_handlers.undo_turn(ctx)
         roles = [(m.get('role'), m.get('content'))
                  for m in ctx.conversation.messages]
-        # The human exchange is gone; nothing of the agent tail survives
-        # as a dangling repliable turn.
         self.assertEqual(roles, [])
 
 
