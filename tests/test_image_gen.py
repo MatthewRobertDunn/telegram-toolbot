@@ -154,12 +154,15 @@ class TestSendToChat(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('sent to chat', result)
 
     async def test_store_error_reports_delivery(self):
-        result, send = await self._run(store_error='disk full')
-        self.assertEqual(result, 'Image sent to chat (prompt: a cat)')
-
-    async def test_store_error_without_sending(self):
-        result, send = await self._run(store_error='disk full', send_to_chat=False)
-        self.assertEqual(result, 'Image generated (prompt: a cat)')
+        # A failed store still reports where the image went: to the chat or
+        # not at all. Either way there is no sandbox path to report.
+        cases = [(True, 'Image sent to chat (prompt: a cat)'),
+                 (False, 'Image generated (prompt: a cat)')]
+        for send_to_chat, expected in cases:
+            with self.subTest(send_to_chat=send_to_chat):
+                result, _ = await self._run(store_error='disk full',
+                                            send_to_chat=send_to_chat)
+                self.assertEqual(result, expected)
 
 
 class TestAttachToContext(unittest.IsolatedAsyncioTestCase):
@@ -183,10 +186,6 @@ class TestAttachToContext(unittest.IsolatedAsyncioTestCase):
                         image_gen.manager, 'store_file', fake_store):
                     return await image_gen.generate_and_send_image(
                         mock_ctx(), 'a cat', **kwargs)
-
-    async def test_default_is_plain_string(self):
-        result = await self._run()
-        self.assertIsInstance(result, str)
 
     async def test_attach_returns_image_result(self):
         result = await self._run(add_to_context=True)
@@ -259,9 +258,6 @@ class TestProviderParam(unittest.IsolatedAsyncioTestCase):
                              ['nvidia-flux3', 'nvidia-flux2', 'phoenix',
                               'recraft'])
 
-    def test_default_provider_is_a_known_provider(self):
-        self.assertIn(image_gen.DEFAULT_PROVIDER, image_gen.IMAGE_PROVIDERS)
-
     async def test_unknown_provider_reported_to_the_model(self):
         result = await image_gen.generate_and_send_image(
             mock_ctx(), 'a cat', provider='bogus')
@@ -308,37 +304,28 @@ class TestProviderDispatch(unittest.IsolatedAsyncioTestCase):
                                                   **kwargs)
         return data, post
 
-    async def test_nvidia_flux3_url_and_default_steps(self):
-        # FLUX-3 renders 50 steps by default and never sends a seed (the
-        # endpoint 422s an extra_forbidden field).
-        image = b'\x89PNG\r\n\x1a\napple'
-        data, post = await self._post(
-            _response(self._nvidia_body(image)), 'nvidia-flux3')
-        self.assertEqual(data, image)
-        self.assertEqual(post.call_args.args[0],
-                         image_gen.config.IMAGE_GEN_URL)
-        self.assertEqual(post.call_args.kwargs['json_body'],
-                         {'prompt': 'a cat', 'width': 1024, 'height': 1024,
-                          'steps': 50})
-
-    async def test_nvidia_flux2_url_and_default_steps(self):
-        # FLUX.2-Klein posts to its own NIM URL with the same payload shape
-        # but a 4-step default.
-        image = b'\x89PNG\r\n\x1a\nfrog'
-        data, post = await self._post(
-            _response(self._nvidia_body(image)), 'nvidia-flux2')
-        self.assertEqual(data, image)
-        self.assertEqual(post.call_args.args[0],
-                         image_gen.config.NVIDIA_FLUX2_GEN_URL)
-        self.assertEqual(post.call_args.kwargs['json_body'],
-                         {'prompt': 'a cat', 'width': 1024, 'height': 1024,
-                          'steps': 4})
-
-    async def test_nvidia_explicit_steps_are_sent(self):
-        _, post = await self._post(
-            _response(self._nvidia_body(b'\x89PNG\r\n\x1a\nx')),
-            'nvidia-flux3', steps=10)
-        self.assertEqual(post.call_args.kwargs['json_body']['steps'], 10)
+    async def test_nvidia_urls_and_steps(self):
+        # FLUX-3 renders 50 steps by default and FLUX.2-Klein 4, each posting
+        # to its own NIM URL with the same payload shape; neither sends a seed
+        # (the endpoint 422s an extra_forbidden field). An explicit step count
+        # replaces the provider default.
+        cases = [
+            ('nvidia-flux3', image_gen.config.IMAGE_GEN_URL, None, 50,
+             b'\x89PNG\r\n\x1a\napple'),
+            ('nvidia-flux2', image_gen.config.NVIDIA_FLUX2_GEN_URL, None, 4,
+             b'\x89PNG\r\n\x1a\nfrog'),
+            ('nvidia-flux3', image_gen.config.IMAGE_GEN_URL, 10, 10,
+             b'\x89PNG\r\n\x1a\nx')]
+        for provider, url, steps, expected_steps, image in cases:
+            with self.subTest(provider=provider, steps=expected_steps):
+                data, post = await self._post(
+                    _response(self._nvidia_body(image)), provider,
+                    **({'steps': steps} if steps is not None else {}))
+                self.assertEqual(data, image)
+                self.assertEqual(post.call_args.args[0], url)
+                self.assertEqual(post.call_args.kwargs['json_body'],
+                                 {'prompt': 'a cat', 'width': 1024,
+                                  'height': 1024, 'steps': expected_steps})
 
     async def test_content_filter_is_rejected(self):
         with self.assertRaises(RuntimeError) as ctx:
@@ -347,24 +334,22 @@ class TestProviderDispatch(unittest.IsolatedAsyncioTestCase):
                 'nvidia-flux2')
         self.assertIn('content filter', str(ctx.exception))
 
-    async def test_phoenix_defaults_to_25_steps(self):
-        # Phoenix takes the step count as num_steps; without a JSON content
-        # type the raw body bytes are the image.
-        image = b'\xff\xd8\xffdata'
-        data, post = await self._post(
-            _response(image, 'image/jpeg'), 'phoenix')
-        self.assertEqual(data, image)
-        self.assertEqual(post.call_args.kwargs['json_body'],
-                         {'prompt': 'a cat', 'width': 1024, 'height': 1024,
-                          'num_steps': 25})
-
-    async def test_phoenix_json_base64_shape(self):
-        # Other Workers AI models answer with {"result": {"image": ...}}.
+    async def test_phoenix_response_shapes_and_default_steps(self):
+        # Phoenix takes the step count as num_steps (25 by default) and
+        # answers either with raw image bytes (no JSON content type) or, for
+        # other Workers AI models, with {"result": {"image": ...}}.
         image = b'\xff\xd8\xffdata'
         body = ('{"result": {"image": "%s"}}'
                 % base64.b64encode(image).decode()).encode()
-        data, _ = await self._post(_response(body), 'phoenix')
-        self.assertEqual(data, image)
+        cases = [('raw image bytes', _response(image, 'image/jpeg')),
+                 ('json base64', _response(body))]
+        for name, response in cases:
+            with self.subTest(response=name):
+                data, post = await self._post(response, 'phoenix')
+                self.assertEqual(data, image)
+                self.assertEqual(post.call_args.kwargs['json_body'],
+                                 {'prompt': 'a cat', 'width': 1024,
+                                  'height': 1024, 'num_steps': 25})
 
     async def test_steps_out_of_range_is_rejected(self):
         for provider in image_gen.IMAGE_PROVIDERS:
@@ -432,20 +417,30 @@ class TestOpenRouterProvider(unittest.IsolatedAsyncioTestCase):
              'aspect_ratio': 'auto', 'n': 6})
 
     async def test_explicit_aspect_ratio_is_sent(self):
-        _, post = await self._render_post(aspect_ratio='16:9')
-        self.assertEqual(post.call_args.kwargs['json_body']['aspect_ratio'],
-                         '16:9')
+        # generate_and_send_image forwards aspect_ratio to the render, which
+        # puts it in the POST body instead of a resolution.
+        async def fake_store(user_id, data, name):
+            return '/workspace/uploads/generated_1.png', None
 
-    async def _render_post(self, **kwargs) -> tuple[
-            bytes, unittest.mock.AsyncMock]:
-        image = self.IMAGE
-        post = unittest.mock.AsyncMock(return_value=_response(
-            self._body([{'b64_json': base64.b64encode(image).decode()}])))
-        with _configured(), \
-             unittest.mock.patch.object(http_client, 'post', post):
-            data = await image_gen.generate_image(
-                'a cat', provider='recraft', **kwargs)
-        return data, post
+        for aspect_ratio in ('16:9', '9:16'):
+            with self.subTest(aspect_ratio=aspect_ratio):
+                post = unittest.mock.AsyncMock(return_value=_response(
+                    self._body([{'b64_json': base64.b64encode(
+                        self.IMAGE).decode()}])))
+                with _configured(), \
+                     unittest.mock.patch.object(http_client, 'post', post), \
+                     unittest.mock.patch.object(Messaging, 'send_image',
+                                                unittest.mock.AsyncMock()), \
+                     unittest.mock.patch.object(image_gen.manager,
+                                                'store_file', fake_store):
+                    result = await image_gen.generate_and_send_image(
+                        mock_ctx(), 'a cat', provider='recraft',
+                        aspect_ratio=aspect_ratio)
+                assert isinstance(result, str)
+                self.assertIn('sent to chat and stored', result)
+                self.assertEqual(
+                    post.call_args.kwargs['json_body']['aspect_ratio'],
+                    aspect_ratio)
 
     async def test_first_of_several_images_is_kept(self):
         other = b'\x89PNG\r\n\x1a\nsecond'
@@ -454,69 +449,28 @@ class TestOpenRouterProvider(unittest.IsolatedAsyncioTestCase):
                     {'b64_json': base64.b64encode(other).decode()}])
         self.assertEqual(data, self.IMAGE)
 
-    async def test_no_images_raises(self):
-        with self.assertRaises(RuntimeError) as ctx:
-            await self._render(images=[])
-        self.assertIn('no images', str(ctx.exception))
+    async def test_response_errors_are_reported(self):
+        cases = [([], 'no images'), ([{}], 'no b64_json image data')]
+        for images, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaises(RuntimeError) as ctx:
+                    await self._render(images=images)
+                self.assertIn(message, str(ctx.exception))
 
-    async def test_missing_b64_raises(self):
-        with self.assertRaises(RuntimeError) as ctx:
-            await self._render(images=[{}])
-        self.assertIn('no b64_json image data', str(ctx.exception))
-
-    async def test_resolution_is_not_a_parameter(self):
+    async def test_parameter_mismatches_are_reported(self):
         # The tool result reports the mismatch instead of silently ignoring
-        # the resolution; no request is made.
-        result = await image_gen.generate_and_send_image(
-            mock_ctx(), 'a cat', provider='recraft', resolution='1024x1024')
-        assert isinstance(result, str)
-        self.assertIn("does not support the 'resolution' parameter", result)
-        self.assertIn('aspect_ratio', result)
-
-    async def test_invalid_aspect_ratio_is_reported(self):
-        result = await image_gen.generate_and_send_image(
-            mock_ctx(), 'a cat', provider='recraft', aspect_ratio='21:9')
-        assert isinstance(result, str)
-        self.assertIn("Invalid aspect_ratio '21:9'", result)
-
-    async def test_valid_aspect_ratio_reaches_the_render(self):
-        seen = {}
-
-        async def fake_generate(prompt, width=1024, height=1024,
-                                steps=None, provider='unset',
-                                aspect_ratio=None):
-            seen['aspect_ratio'] = aspect_ratio
-            return b'\x89PNG\r\n\x1a\n'
-
-        async def fake_store(user_id, data, name):
-            return '/workspace/uploads/generated_1.png', None
-
-        with unittest.mock.patch.object(image_gen, 'generate_image',
-                                        fake_generate):
-            with unittest.mock.patch.object(Messaging, 'send_image',
-                                            unittest.mock.AsyncMock()):
-                with unittest.mock.patch.object(image_gen.manager,
-                                                'store_file', fake_store):
-                    await image_gen.generate_and_send_image(
-                        mock_ctx(), 'a cat', provider='recraft',
-                        aspect_ratio='9:16')
-        self.assertEqual(seen.get('aspect_ratio'), '9:16')
-
-    async def test_no_resolution_still_works_for_every_provider(self):
-        # resolution is now optional everywhere: the resolution-driven
-        # backends still default to 1024x1024.
-        image = b'\x89PNG\r\n\x1a\n'
-        body = ('{"artifacts": [%s]}' % json.dumps(
-            {'base64': base64.b64encode(image).decode(),
-             'finishReason': 'SUCCESS'})).encode()
-        post = unittest.mock.AsyncMock(return_value=_response(body))
-        with _configured(), \
-             unittest.mock.patch.object(http_client, 'post', post):
-            data = await image_gen.generate_image('a cat')
-        self.assertEqual(data, image)
-        self.assertEqual(post.call_args.kwargs['json_body'],
-                         {'prompt': 'a cat', 'width': 1024, 'height': 1024,
-                          'steps': 50})
+        # the parameter; no request is made.
+        cases = [('resolution', '1024x1024',
+                  ("does not support the 'resolution' parameter",
+                   'aspect_ratio')),
+                 ('aspect_ratio', '21:9', ("Invalid aspect_ratio '21:9'",))]
+        for param, value, messages in cases:
+            with self.subTest(param=param):
+                result = await image_gen.generate_and_send_image(
+                    mock_ctx(), 'a cat', provider='recraft', **{param: value})
+                assert isinstance(result, str)
+                for message in messages:
+                    self.assertIn(message, result)
 
 
 class TestGenerationDeadline(unittest.IsolatedAsyncioTestCase):

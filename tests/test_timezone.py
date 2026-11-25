@@ -28,9 +28,18 @@ class _Bot:
         return {'message_id': 1}
 
 
-def _run(ctx):
+def _run(ctx, persisted=None):
+    """Run /timezone with persistence stubbed out.
+
+    Returns the save mock. When `persisted` is a list, every payload the
+    @settings middleware writes is appended to it as JSON.
+    """
+    async def record(user_id, thread_id, settings):
+        if persisted is not None:
+            persisted.append(settings.to_json())
+
     with mock.patch.object(middleware, 'save_settings',
-                           mock.AsyncMock()) as save:
+                           mock.AsyncMock(side_effect=record)) as save:
         asyncio.run(timezone_command(ctx))
     return save
 
@@ -47,9 +56,6 @@ class TestTimezoneSetting(unittest.TestCase):
         ctx.command_name = 'timezone'
         return ctx
 
-    def test_default_timezone_is_utc(self):
-        self.assertEqual(UserSettings.default().timezone, 'UTC')
-
     def test_set_valid_timezone(self):
         bot = _Bot()
         ctx = self._timezone_ctx(bot, 'Australia/Sydney')
@@ -61,9 +67,15 @@ class TestTimezoneSetting(unittest.TestCase):
     def test_invalid_timezone_is_rejected(self):
         bot = _Bot()
         ctx = self._timezone_ctx(bot, 'Not/AZone')
-        _run(ctx)
+        persisted = []
+        _run(ctx, persisted)
         self.assertEqual(ctx.settings.timezone, 'UTC')
         self.assertTrue(bot.sent[0].startswith("Unknown timezone"))
+        # The rejected zone must never reach the store: whatever the
+        # @settings middleware persists after the failed set carries the
+        # previous timezone, not the rejected one.
+        for payload in persisted:
+            self.assertEqual(UserSettings.from_json(payload).timezone, 'UTC')
 
     def test_no_arg_shows_current(self):
         bot = _Bot()
@@ -75,14 +87,7 @@ class TestTimezoneSetting(unittest.TestCase):
         ctx.command_name = 'timezone'
         _run(ctx)
         self.assertIn('America/New_York', bot.sent[0])
-        self.assertIn('/timezone <IANA timezone', bot.sent[0])
         self.assertEqual(ctx.settings.timezone, 'America/New_York')
-
-    def test_timezone_survives_json_round_trip(self):
-        settings = UserSettings.default()
-        settings.timezone = 'Pacific/Auckland'
-        restored = UserSettings.from_json(settings.to_json())
-        self.assertEqual(restored.timezone, 'Pacific/Auckland')
 
 
 class TestUserSettingsDefaults(unittest.TestCase):

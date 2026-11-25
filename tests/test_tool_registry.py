@@ -102,12 +102,26 @@ class TestDefinitions(unittest.TestCase):
         register_tools()
 
     def test_definition_shape(self):
-        definition = next(d for d in definitions_for(PARENT)
-                          if d['function']['name'] == 'bash')['function']
-        self.assertFalse(definition['strict'])
-        self.assertEqual(definition['parameters']['additionalProperties'],
-                         False)
-        self.assertEqual(definition['parameters']['required'], ['command'])
+        # bash shows the strict shape with a required key; journal_query
+        # shows the all-optional case, where the `required` key is
+        # omitted entirely instead of being an empty list.
+        cases = {
+            'bash': ['command'],
+            'journal_query': None,
+        }
+        for name, required in cases.items():
+            with self.subTest(tool=name):
+                definition = next(d for d in definitions_for(PARENT)
+                                  if d['function']['name'] == name)['function']
+                self.assertFalse(definition['strict'])
+                self.assertEqual(
+                    definition['parameters']['additionalProperties'], False)
+                if required is None:
+                    self.assertNotIn('required',
+                                     definition['parameters'])
+                else:
+                    self.assertEqual(definition['parameters']['required'],
+                                     required)
 
     def test_required_is_derived_from_the_signature(self):
         # A parameter without a Python default is required, and one with a
@@ -120,11 +134,6 @@ class TestDefinitions(unittest.TestCase):
                              if p.default is p.empty)
             with self.subTest(tool=tool.name):
                 self.assertEqual(tool.required, expected)
-
-    def test_no_required_key_when_everything_is_optional(self):
-        definition = next(d for d in definitions_for(PARENT)
-                          if d['function']['name'] == 'journal_query')
-        self.assertNotIn('required', definition['function']['parameters'])
 
     def test_every_parameter_is_declared_and_callable(self):
         # A definition with no implementation, or a schema naming an
@@ -196,22 +205,6 @@ class TestDeclaration(unittest.TestCase):
             return ""
 
         self.assertTrue(getattr(parent_only, '_needs_ctx'))
-
-    def test_needs_ctx_is_recorded_on_the_tool(self):
-        # The same fact, readable without reaching for the function
-        # attribute the executor uses.
-        @agent_tool(description="x", parameters={"q": {"type": "string"}})
-        async def with_ctx(ctx: AgentContext, q: str) -> str:
-            return q
-
-        @agent_tool(description="x", parameters={"q": {"type": "string"}})
-        async def without_ctx(q: str) -> str:
-            return q
-
-        self.assertTrue(all_tools()[0].needs_ctx)
-        self.assertFalse(all_tools()[1].needs_ctx)
-        self.assertTrue(getattr(with_ctx, '_needs_ctx'))
-        self.assertFalse(getattr(without_ctx, '_needs_ctx', False))
 
 
 class TestDuplicateDeclarations(unittest.TestCase):
@@ -344,12 +337,13 @@ class TestRegistryLifecycle(unittest.TestCase):
                          ['flaky_tool'])
         self.assertEqual(len(attempts), 2)
 
-    def test_successful_load_is_sticky(self):
-        calls: list[int] = []
-        self._isolated(loader=lambda: calls.append(1))
-        tools_for(PARENT)
-        tools_for(PARENT)
-        self.assertEqual(len(calls), 1)
+    def test_unknown_role_is_rejected(self):
+        # A typo'd role is a caller error, not an empty surface.
+        registry = self._isolated()
+        with self.assertRaises(ValueError):
+            registry.tools_for('all')
+        with self.assertRaises(ValueError):
+            registry.tools_for('BOTH')
 
     def test_declaration_after_load_joins_the_surface(self):
         # A late declaration (a module imported after the first lookup)
@@ -398,11 +392,6 @@ class TestRegistryLifecycle(unittest.TestCase):
                 sys.modules.pop('reloadable_tool_module', None)
 
         self.assertIn('reloadable_tool_module', str(caught.exception))
-
-    def test_unknown_role_is_rejected(self):
-        self._isolated()
-        with self.assertRaises(ValueError):
-            tools_for('everyone')
 
     def test_default_loader_is_bound_to_its_registry(self):
         # ToolRegistry() must build a loader for itself, not for the

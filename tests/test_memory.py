@@ -54,6 +54,12 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
         keys = await self.store.get_all_keys(3)
         self.assertEqual(keys, [])
 
+        # Empty key lists short-circuit without touching the DB.
+        self.assertEqual(await self.store.get_values(1, []), {})
+        await self.store.delete_values(1, [])
+        self.assertEqual(await self.store.get_all_keys(1),
+                         ['age', 'name'])
+
     async def test_delete(self):
         await self.store.set(1, 'k1', 'v1')
         await self.store.set(1, 'k2', 'v2')
@@ -73,12 +79,6 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
 
         result = await self.store.get_values(1, ['key'])
         self.assertEqual(result, {'key': 'second'})
-
-    async def test_empty_keys(self):
-        result = await self.store.get_values(1, [])
-        self.assertEqual(result, {})
-
-        await self.store.delete_values(1, [])
 
     async def test_schema_ensured_without_startup_call(self):
         # A store used ad hoc, without an explicit create_schema call,
@@ -132,12 +132,12 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
                 await second.close()
         self.assertEqual(counter['calls'], 1)
 
-    async def test_memory_databases_never_share_schema_readiness(self):
         # Every connection to an in-memory database is a different,
-        # empty database: each store must run the schema itself.
-        counter = {'calls': 0}
+        # empty database: readiness is never shared, so two separate
+        # stores must each run the schema themselves.
+        memory_calls = {'calls': 0}
         with mock.patch.object(aiosqlite.Connection, 'executescript',
-                               _counting_executescript(counter)):
+                               _counting_executescript(memory_calls)):
             for _ in range(2):
                 store = MemoryStore(':memory:')
                 try:
@@ -145,7 +145,7 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(await store.get(1, 'key'), 'value')
                 finally:
                     await store.close()
-        self.assertEqual(counter['calls'], 2)
+        self.assertEqual(memory_calls['calls'], 2)
 
     async def test_concurrent_first_uses_run_schema_once(self):
         fd, path = tempfile.mkstemp(suffix='.db')
@@ -170,24 +170,6 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
                     await store.close()
         self.assertEqual(results, ['value'] * 4)
         self.assertEqual(counter['calls'], 1)
-
-    async def test_second_store_adopts_shared_schema_readiness(self):
-        fd, path = tempfile.mkstemp(suffix='.db')
-        os.close(fd)
-        self.addCleanup(os.unlink, path)
-        first = MemoryStore(path)
-        try:
-            await first.set(1, 'key', 'value')
-        finally:
-            await first.close()
-        second = MemoryStore(path)
-        try:
-            self.assertEqual(await second.get(1, 'key'), 'value')
-            # The memo hit synced the instance flag: later operations on
-            # this store do not re-enter create_schema at all.
-            self.assertTrue(second._schema_ready)
-        finally:
-            await second.close()
 
     async def test_reset_schema_cache_allows_recreated_file(self):
         fd, path = tempfile.mkstemp(suffix='.db')

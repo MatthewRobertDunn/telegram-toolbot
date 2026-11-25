@@ -1,0 +1,4 @@
+# Files copied into git worktrees created by isolated subagents.
+# Tests read the project-root .env (see src/config.py), so isolated
+# workers need it to run the suite.
+.env

@@ -133,25 +133,26 @@ class TestGetText(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.body, 'missing')
 
     async def test_timeout_becomes_readable_runtime_error(self):
-        with _patched(_FakeSession(exc=asyncio.TimeoutError())):
-            with self.assertRaises(RuntimeError) as ctx:
-                await http_client.get_text('https://unit.test/x',
-                                           timeout=7, max_chars=100)
-        self.assertIn('timed out after 7s', str(ctx.exception))
+        for entry_point in ('get_text', 'request'):
+            with self.subTest(entry_point=entry_point):
+                with _patched(_FakeSession(exc=asyncio.TimeoutError())):
+                    with self.assertRaises(RuntimeError) as ctx:
+                        if entry_point == 'get_text':
+                            await http_client.get_text('https://unit.test/x',
+                                                       timeout=7,
+                                                       max_chars=100)
+                        else:
+                            await http_client.request(
+                                'GET', 'https://unit.test/x', timeout=7)
+                self.assertIn('timed out after 7s', str(ctx.exception))
+                if entry_point == 'request':
+                    self.assertIn('https://unit.test/x', str(ctx.exception))
 
 
 class TestRequest(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await http_client.aclose()
-
-    async def test_timeout_becomes_readable_runtime_error(self):
-        with _patched(_FakeSession(exc=asyncio.TimeoutError())):
-            with self.assertRaises(RuntimeError) as ctx:
-                await http_client.request('GET', 'https://unit.test/x',
-                                          timeout=7)
-        self.assertIn('timed out after 7s', str(ctx.exception))
-        self.assertIn('https://unit.test/x', str(ctx.exception))
 
     async def test_response_is_buffered_with_status_and_headers(self):
         with _patched(_FakeSession(_FakeResponse(201, b'hello'))):
@@ -167,10 +168,9 @@ class TestSessionLifecycle(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await http_client.aclose()
 
-    async def test_session_is_reused_on_the_same_loop(self):
-        self.assertIs(http_client.session(), http_client.session())
-
     async def test_aclose_clears_the_session(self):
+        # The session is reused across calls on the same loop.
+        self.assertIs(http_client.session(), http_client.session())
         first = http_client.session()
         await http_client.aclose()
         self.assertTrue(first.closed)
@@ -221,23 +221,21 @@ class TestWebFetch(unittest.IsolatedAsyncioTestCase):
         await http_client.aclose()
 
     async def test_result_never_exceeds_max_chars(self):
-        async def fake_get_text(url, *, timeout, max_chars):
-            return '漢' * 100
+        for max_chars, body in ((10, '漢' * 100), (0, 'hello')):
+            with self.subTest(max_chars=max_chars):
+                async def fake_get_text(url, *, timeout, max_chars):
+                    return body
 
-        with unittest.mock.patch.object(http_client, 'get_text',
-                                        fake_get_text):
-            result = await web_fetch('https://example.com', max_chars=10)
-        self.assertEqual(len(result), 10)
-
-    async def test_zero_max_chars_is_clamped(self):
-        async def fake_get_text(url, *, timeout, max_chars):
-            return 'hello'
-
-        with unittest.mock.patch.object(http_client, 'get_text',
-                                        fake_get_text):
-            result = await web_fetch('https://example.com', max_chars=0)
-        self.assertNotIn('page content was empty', result)
-        self.assertLessEqual(len(result), 1)
+                with unittest.mock.patch.object(http_client, 'get_text',
+                                                fake_get_text):
+                    result = await web_fetch('https://example.com',
+                                             max_chars=max_chars)
+                if max_chars == 0:
+                    # Zero is clamped to a usable limit, not "empty page".
+                    self.assertNotIn('page content was empty', result)
+                    self.assertLessEqual(len(result), 1)
+                else:
+                    self.assertEqual(len(result), 10)
 
     async def test_fragment_is_percent_encoded_into_the_path(self):
         # '#' must not be a safe character: yarl would strip it and the

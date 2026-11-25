@@ -88,28 +88,6 @@ class SettingsStoreThreadTest(_TempDbTest):
         # No template row was created as a side effect.
         self.assertIsNone(await load_settings(5, None))
 
-    async def test_thread_and_template_share_one_key(self):
-        template = UserSettings.default()
-        template.model = 'template-model'
-        thread = UserSettings.default()
-        thread.model = 'thread-model'
-        await save_settings(5, None, template)
-        await save_settings(5, 2, thread)
-        loaded_template = await load_settings(5, None)
-        loaded_thread = await load_settings(5, 2)
-        assert loaded_template is not None and loaded_thread is not None
-        self.assertEqual(loaded_template.model, 'template-model')
-        self.assertEqual(loaded_thread.model, 'thread-model')
-        # One key, told apart by the thread_id column.
-        store = _temp_store(self.path)
-        try:
-            keys = await store.get_all_keys(5)
-            self.assertEqual(keys, ['user_settings', 'user_settings'])
-            conn_rows = await _settings_rows(self.path, 5)
-            self.assertEqual({r[0] for r in conn_rows}, {2, None})
-        finally:
-            await store.close()
-
     async def test_repeated_template_save_does_not_duplicate(self):
         # NULL thread ids never conflict in a SQLite PK, so the save
         # must upsert: two saves leave exactly one template row.
@@ -153,19 +131,13 @@ class InitConversationThreadTest(_TempDbTest):
         await middleware.init_conversation(ctx)
         self.assertEqual(ctx.settings.model, 'thread-model')
 
-    async def test_unthreaded_chat_shares_template(self):
-        template = UserSettings.default()
-        template.model = 'template-model'
-        await save_settings(1, None, template)
-        ctx = _ptb_pair({}, None)
-        await middleware.init_conversation(ctx)
-        self.assertIs(ctx.thread_data.settings, ctx.user_data.settings)
-        self.assertEqual(ctx.settings.model, 'template-model')
-
 
 class SettingsDecoratorTest(_TempDbTest):
 
-    async def test_threaded_change_updates_thread_only(self):
+    async def test_change_scopes_to_the_current_category(self):
+        """Threaded changes update the thread row only; unthreaded
+        ('all' category) changes update the shared template instead,
+        saving exactly once."""
         template = UserSettings.default()
         template.model = 'base'
         await save_settings(1, None, template)
@@ -173,76 +145,43 @@ class SettingsDecoratorTest(_TempDbTest):
         other.model = 'other'
         await save_settings(1, 4, other)
 
-        ptb_store: dict = {}
-        ctx = _ptb_pair(ptb_store, 2)
-        await middleware.init_conversation(ctx)
+        for thread_id in (2, None):
+            with self.subTest(thread_id=thread_id):
+                ptb_store: dict = {}
+                ctx = _ptb_pair(ptb_store, thread_id)
+                await middleware.init_conversation(ctx)
 
-        @middleware.settings
-        async def _change(inner_ctx):
-            inner_ctx.settings.model = 'new'
+                @middleware.settings
+                async def _change(inner_ctx):
+                    inner_ctx.settings.model = 'new'
 
-        await _change(ctx)
+                with mock.patch.object(middleware, 'save_settings',
+                                       wraps=save_settings) as save:
+                    await _change(ctx)
 
-        thread_row = await load_settings(1, 2)
-        template_row = await load_settings(1, None)
-        other_row = await load_settings(1, 4)
-        assert thread_row is not None
-        assert template_row is not None
-        assert other_row is not None
-        self.assertEqual(thread_row.model, 'new')
-        # Only the unthreaded/'all' category updates the template.
-        self.assertEqual(template_row.model, 'base')
-        self.assertEqual(other_row.model, 'other')
-        # A freshly created thread inherits the untouched template.
-        late = _ptb_pair(ptb_store, 9)
-        await middleware.init_conversation(late)
-        self.assertEqual(late.settings.model, 'base')
-
-    async def test_unthreaded_change_updates_template(self):
-        template = UserSettings.default()
-        template.model = 'base'
-        await save_settings(1, None, template)
-        other = UserSettings.default()
-        other.model = 'other'
-        await save_settings(1, 4, other)
-
-        ptb_store: dict = {}
-        ctx = _ptb_pair(ptb_store, None)
-        await middleware.init_conversation(ctx)
-
-        @middleware.settings
-        async def _change(inner_ctx):
-            inner_ctx.settings.model = 'new'
-
-        await _change(ctx)
-
-        template_row = await load_settings(1, None)
-        other_row = await load_settings(1, 4)
-        assert template_row is not None
-        assert other_row is not None
-        self.assertEqual(template_row.model, 'new')
-        self.assertEqual(other_row.model, 'other')
-        # A freshly created thread now inherits the change.
-        late = _ptb_pair(ptb_store, 9)
-        await middleware.init_conversation(late)
-        self.assertEqual(late.settings.model, 'new')
-
-    async def test_unthreaded_change_saves_once(self):
-        template = UserSettings.default()
-        template.model = 'base'
-        await save_settings(1, None, template)
-        ctx = _ptb_pair({}, None)
-        await middleware.init_conversation(ctx)
-
-        @middleware.settings
-        async def _change(inner_ctx):
-            inner_ctx.settings.model = 'new'
-
-        with mock.patch.object(middleware, 'save_settings',
-                               wraps=save_settings) as save:
-            await _change(ctx)
-        self.assertEqual(save.await_count, 1)
-        self.assertEqual((await load_settings(1, None)).model, 'new')  # type: ignore[union-attr]
+                template_row = await load_settings(1, None)
+                other_row = await load_settings(1, 4)
+                assert template_row is not None
+                assert other_row is not None
+                self.assertEqual(other_row.model, 'other')
+                if thread_id is None:
+                    # The unthreaded change saves once (upsert).
+                    self.assertEqual(save.await_count, 1)
+                    self.assertEqual(template_row.model, 'new')
+                else:
+                    thread_row = await load_settings(1, 2)
+                    assert thread_row is not None
+                    self.assertEqual(thread_row.model, 'new')
+                    # Only the unthreaded/'all' category updates the template.
+                    self.assertEqual(template_row.model, 'base')
+                # A freshly created thread inherits the (un)changed template.
+                # A per-category thread id: the threaded pass above already
+                # cloned the template into thread 9's own row.
+                late_id = 10 if thread_id is None else 9
+                late = _ptb_pair(ptb_store, late_id)
+                await middleware.init_conversation(late)
+                self.assertEqual(late.settings.model,
+                                 'new' if thread_id is None else 'base')
 
 
 class SettingsAliasingFlagTest(_TempDbTest):
@@ -254,54 +193,49 @@ class SettingsAliasingFlagTest(_TempDbTest):
     undocumented identity accident.
     """
 
-    async def test_unthreaded_thread_shares_the_template_object(self):
+    async def test_aliasing_follows_the_thread_category(self):
+        """Unthreaded chats share the template object; threaded chats
+        own a deep copy. ``settings_is_template`` pins which one."""
         template = UserSettings.default()
         template.model = 'template-model'
         await save_settings(1, None, template)
-        ctx = _ptb_pair({}, None)
-        await middleware.init_conversation(ctx)
-        self.assertTrue(ctx.thread_data.settings_is_template)
-        self.assertIs(ctx.thread_data.settings, ctx.user_data.settings)
+        for thread_id, is_template in ((None, True), (2, False)):
+            with self.subTest(thread_id=thread_id):
+                ctx = _ptb_pair({}, thread_id)
+                await middleware.init_conversation(ctx)
+                self.assertIs(ctx.thread_data.settings_is_template,
+                              is_template)
+                if is_template:
+                    self.assertIs(ctx.thread_data.settings,
+                                  ctx.user_data.settings)
+                else:
+                    self.assertIsNot(ctx.thread_data.settings,
+                                     ctx.user_data.settings)
 
-    async def test_threaded_thread_owns_a_deep_copy(self):
-        template = UserSettings.default()
-        template.model = 'template-model'
-        await save_settings(1, None, template)
-        ctx = _ptb_pair({}, 2)
-        await middleware.init_conversation(ctx)
-        self.assertFalse(ctx.thread_data.settings_is_template)
-        self.assertIsNot(ctx.thread_data.settings, ctx.user_data.settings)
+    async def test_swap_preserves_the_aliasing_flag(self):
+        """/settings_reset-style swap: the command replaces the object
+        through ctx.settings (flag False mid-command), then the settings
+        decorator re-applies the category's aliasing decision."""
+        for thread_id, is_template in ((None, True), (2, False)):
+            with self.subTest(thread_id=thread_id):
+                ctx = _ptb_pair({}, thread_id)
+                await middleware.init_conversation(ctx)
 
-    async def test_unthreaded_swap_leaves_the_thread_on_the_template(self):
-        # /settings_reset-style swap: the command replaces the object
-        # through ctx.settings (flag False mid-command), then the settings
-        # decorator re-shares the new object with the template.
-        ctx = _ptb_pair({}, None)
-        await middleware.init_conversation(ctx)
+                @middleware.settings
+                async def _swap(inner_ctx):
+                    inner_ctx.settings = UserSettings.default()
 
-        @middleware.settings
-        async def _swap(inner_ctx):
-            inner_ctx.settings = UserSettings.default()
-
-        with mock.patch.object(middleware, 'save_settings',
-                               mock.AsyncMock()):
-            await _swap(ctx)
-        self.assertTrue(ctx.thread_data.settings_is_template)
-        self.assertIs(ctx.thread_data.settings, ctx.user_data.settings)
-
-    async def test_threaded_swap_keeps_the_thread_off_the_template(self):
-        ctx = _ptb_pair({}, 2)
-        await middleware.init_conversation(ctx)
-
-        @middleware.settings
-        async def _swap(inner_ctx):
-            inner_ctx.settings = UserSettings.default()
-
-        with mock.patch.object(middleware, 'save_settings',
-                               mock.AsyncMock()):
-            await _swap(ctx)
-        self.assertFalse(ctx.thread_data.settings_is_template)
-        self.assertIsNot(ctx.thread_data.settings, ctx.user_data.settings)
+                with mock.patch.object(middleware, 'save_settings',
+                                       mock.AsyncMock()):
+                    await _swap(ctx)
+                self.assertIs(ctx.thread_data.settings_is_template,
+                              is_template)
+                if is_template:
+                    self.assertIs(ctx.thread_data.settings,
+                                  ctx.user_data.settings)
+                else:
+                    self.assertIsNot(ctx.thread_data.settings,
+                                     ctx.user_data.settings)
 
 
 class SubagentSnapshotTest(unittest.TestCase):

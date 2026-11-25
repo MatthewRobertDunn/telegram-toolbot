@@ -192,10 +192,8 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertIn(config.SANDBOX_IMAGE, run)
         self.assertEqual(run[-2:], ['sleep', 'infinity'])
 
-    async def test_one_sandbox_per_user_are_distinct(self):
-        first = await self._ensure(1)
+        # A second user gets a distinct container, not the same sandbox.
         second = await self._ensure(2)
-        self.assertEqual(first.container_name, 'toolbot-sandbox-1')
         self.assertEqual(second.container_name, 'toolbot-sandbox-2')
         self.assertEqual(len(self.fake.run_calls()), 2)
 
@@ -347,63 +345,50 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         # Destroying a user with no sandbox at all is a no-op, not an error.
         self.assertFalse(await self.manager.destroy(1))
 
-    async def test_reap_stops_only_idle_sandboxes(self):
-        await self._ensure(1)
-        await self._ensure(2)
-        assert isinstance(self.manager._sandboxes[1], Sandbox)
-        self.manager._sandboxes[1].last_activity = (
-            time.time() - config.SANDBOX_IDLE_STOP_TIMEOUT - 1)
+    async def test_reap_idle_boundaries(self):
+        # One table, every reap threshold boundary: a sandbox a second
+        # under the stop timeout keeps running; one past it is stopped but
+        # - still under the destroy timeout - kept tracked for a later
+        # pass; one past that is removed and untracked; an already-stopped
+        # sandbox is not stopped twice.
+        cases = [
+            # (label, pre_stop, idle_offset, expected_stopped,
+            #  expected_destroyed, container_state, tracked)
+            ('under stop timeout', False,
+             config.SANDBOX_IDLE_STOP_TIMEOUT - 1, [], [], 'true', True),
+            ('past stop timeout', False,
+             config.SANDBOX_IDLE_STOP_TIMEOUT + 1, [1], [], 'false', True),
+            ('past destroy timeout', False,
+             config.SANDBOX_IDLE_DESTROY_TIMEOUT + 1, [], [1], None, False),
+            ('already stopped', True,
+             config.SANDBOX_IDLE_STOP_TIMEOUT + 1, [], [], 'false', True),
+        ]
+        for label, pre_stop, offset, stopped, destroyed, state, tracked \
+                in cases:
+            with self.subTest(label):
+                self.fake.containers.clear()
+                self.manager._sandboxes.clear()
+                sandbox = await self._ensure(1)
+                if pre_stop:
+                    self.assertTrue(
+                        await self.manager._stop_sandbox(1, sandbox))
+                sandbox.last_activity = time.time() - offset
 
-        stopped, destroyed = await self.manager.reap_idle()
-
-        self.assertEqual((stopped, destroyed), ([1], []))
-        self.assertEqual(self.fake.stop_calls()[-1], ['stop', 'toolbot-sandbox-1'])
-        self.assertEqual(self.fake.containers['toolbot-sandbox-1'], 'false')
-        self.assertEqual(self.fake.containers['toolbot-sandbox-2'], 'true')
-        # Still tracked so it is destroyed once the destroy timeout passes.
-        self.assertIn(1, self.manager._sandboxes)
-
-    async def test_reap_leaves_sandbox_just_under_stop_timeout(self):
-        # One reap pass, both thresholds: a sandbox a second under the
-        # stop timeout is left running, while one past it is stopped but -
-        # still under the destroy timeout - kept for a later pass.
-        await self._ensure(1)
-        await self._ensure(2)
-        self.manager._sandboxes[1].last_activity = (
-            time.time() - config.SANDBOX_IDLE_STOP_TIMEOUT + 1)
-        self.manager._sandboxes[2].last_activity = (
-            time.time() - config.SANDBOX_IDLE_DESTROY_TIMEOUT + 1)
-
-        stopped, destroyed = await self.manager.reap_idle()
-
-        self.assertEqual((stopped, destroyed), ([2], []))
-        self.assertEqual(self.fake.containers['toolbot-sandbox-1'], 'true')
-        self.assertEqual(self.fake.containers['toolbot-sandbox-2'], 'false')
-        self.assertIn(1, self.manager._sandboxes)
-        self.assertIn(2, self.manager._sandboxes)
-
-    async def test_reap_destroys_sandboxes_past_destroy_timeout(self):
-        await self._ensure(1)
-        self.manager._sandboxes[1].last_activity = (
-            time.time() - config.SANDBOX_IDLE_DESTROY_TIMEOUT - 1)
-
-        stopped, destroyed = await self.manager.reap_idle()
-
-        self.assertEqual((stopped, destroyed), ([], [1]))
-        self.assertNotIn('toolbot-sandbox-1', self.fake.containers)
-        self.assertNotIn(1, self.manager._sandboxes)
-
-    async def test_reap_ignores_already_stopped_sandbox(self):
-        await self._ensure(1)
-        sandbox = self.manager._sandboxes[1]
-        self.assertTrue(await self.manager._stop_sandbox(1, sandbox))
-        sandbox.last_activity = (
-            time.time() - config.SANDBOX_IDLE_STOP_TIMEOUT - 1)
-
-        stop_before = len(self.fake.stop_calls())
-        self.assertEqual(await self.manager.reap_idle(), ([], []))
-        self.assertEqual(len(self.fake.stop_calls()), stop_before)
-        self.assertIn(1, self.manager._sandboxes)
+                stop_before = len(self.fake.stop_calls())
+                self.assertEqual(await self.manager.reap_idle(),
+                                 (stopped, destroyed))
+                if stopped:
+                    self.assertEqual(self.fake.stop_calls()[-1],
+                                     ['stop', 'toolbot-sandbox-1'])
+                if pre_stop:
+                    self.assertEqual(len(self.fake.stop_calls()), stop_before)
+                if state is None:
+                    self.assertNotIn('toolbot-sandbox-1',
+                                     self.fake.containers)
+                else:
+                    self.assertEqual(
+                        self.fake.containers['toolbot-sandbox-1'], state)
+                self.assertEqual(1 in self.manager._sandboxes, tracked)
 
     async def test_recover_adopts_stopped_leftover(self):
         now = time.time()
@@ -456,20 +441,16 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sandbox.running)
         self.assertEqual(self.fake.containers['toolbot-sandbox-1'], 'true')
 
+        # A reap pass counts neither the failed stop...
         sandbox.last_activity = (
             time.time() - config.SANDBOX_IDLE_STOP_TIMEOUT - 1)
-        self.fake.fail_stop = False
-        self.assertEqual(await self.manager.reap_idle(), ([1], []))
-
-    async def test_reap_does_not_count_a_failed_stop(self):
-        await self._ensure(1)
-        sandbox = self.manager._sandboxes[1]
-        sandbox.last_activity = (
-            time.time() - config.SANDBOX_IDLE_STOP_TIMEOUT - 1)
-        self.fake.fail_stop = True
-
         self.assertEqual(await self.manager.reap_idle(), ([], []))
         self.assertIn(1, self.manager._sandboxes)
+
+        # ...nor the destruction of the still-running container; once the
+        # failure clears, the next pass stops it for real.
+        self.fake.fail_stop = False
+        self.assertEqual(await self.manager.reap_idle(), ([1], []))
 
     async def test_destroy_waits_for_a_running_exec(self):
         # The lock spans the whole operation, so a destroy issued while a
@@ -579,18 +560,10 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fake.inputs[-1], b'hello')
         self.assertEqual(self.fake.exec_calls()[0][0], 'exec')
         self.assertIn('-i', self.fake.exec_calls()[0])
-
-    async def test_store_file_script_is_atomic(self):
-        # The script picks a free name itself, so two uploads racing cannot
-        # both write to note.txt.
-        await self.manager.store_file(1, b'hello', 'note.txt')
-        script = self.fake.exec_calls()[-1][-1]
-        self.assertIn('mkdir -p', script)
-        self.assertIn('cat > "$p"', script)
-        self.assertIn('/workspace/uploads', script)
-        # The exact script the manager built is what got wrapped (the
-        # printf's single quotes are shlex-escaped inside the wrapper).
-        self.assertIn(shlex.quote(sandbox._store_script('note.txt')), script)
+        # The wrapped payload is the manager's own atomic script verbatim
+        # (the printf's single quotes are shlex-escaped inside the wrapper).
+        self.assertIn(shlex.quote(sandbox._store_script('note.txt')),
+                      self.fake.exec_calls()[0][-1])
 
     async def test_store_file_reports_write_failure(self):
         self.fake.exec_responses = [
