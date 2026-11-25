@@ -9,14 +9,25 @@ from handlers.consume_stream import _split_thinking
 # Build the tag literals here so nothing in this file can strip them.
 TAG_OPEN = '<' + 'think' + '>'
 TAG_CLOSE = '</' + 'think' + '>'
+TAG_OPEN_UPPER = '<' + 'THINK' + '>'
+TAG_CLOSE_UPPER = '</' + 'THINK' + '>'
 
 
 class TestSplitThinking(unittest.TestCase):
 
-    def test_no_tags(self):
-        visible, reasoning = _split_thinking("Hello world.")
-        self.assertEqual(visible, "Hello world.")
-        self.assertEqual(reasoning, '')
+    def test_passes_through_untouched(self):
+        # None of these can be classified as reasoning, so the whole
+        # text stays visible and nothing is reported as reasoning: text
+        # with no tags at all, an unclosed open tag (cut short by an
+        # error), and differently-cased tags (matching is
+        # case-sensitive).
+        for text in ("Hello world.",
+                     TAG_OPEN + "cut short by an error",
+                     TAG_OPEN_UPPER + "hidden" + TAG_CLOSE_UPPER + "shown"):
+            with self.subTest(text=text):
+                visible, reasoning = _split_thinking(text)
+                self.assertEqual(visible, text)
+                self.assertEqual(reasoning, '')
 
     def test_full_span(self):
         text = TAG_OPEN + "Let me check." + TAG_CLOSE + "Hi there!"
@@ -34,19 +45,6 @@ class TestSplitThinking(unittest.TestCase):
         # ...or no reasoning at all, just a stray close tag
         visible, reasoning = _split_thinking(TAG_CLOSE + "Ready.")
         self.assertEqual(visible, "Ready.")
-        self.assertEqual(reasoning, '')
-
-    def test_unclosed_tag_left_alone(self):
-        # no close tag anywhere: nothing can be classified as reasoning
-        text = TAG_OPEN + "cut short by an error"
-        visible, reasoning = _split_thinking(text)
-        self.assertEqual(visible, text)
-        self.assertEqual(reasoning, '')
-
-    def test_case_sensitive(self):
-        text = "<THINK>hidden</THINK>shown"
-        visible, reasoning = _split_thinking(text)
-        self.assertEqual(visible, text)
         self.assertEqual(reasoning, '')
 
 

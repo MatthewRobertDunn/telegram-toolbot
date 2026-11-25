@@ -80,22 +80,19 @@ class PurgeStaleThreadsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_rows(self.path, 5, 'user_settings'), [])
         self.assertEqual(_rows(self.path, 5, 'conversation'), [])
 
-    async def test_recent_group_survives(self):
-        _insert_row(self.path, 5, 'conversation', 2, _RECENT)
-        self.assertEqual(await self._purge(), 0)
-        self.assertEqual(
-            _rows(self.path, 5, 'conversation'), [(2,)])
-
     async def test_group_with_one_recent_row_survives_whole(self):
         # A recent save anywhere in the group keeps the older rows of
         # the same group: the cleanup judges threads, not rows.
         _insert_row(self.path, 5, 'user_settings', 2, _OLD)
         _insert_row(self.path, 5, 'conversation', 2, _RECENT)
+        # A group whose rows are all recent (thread 3) is left alone
+        # entirely.
+        _insert_row(self.path, 5, 'conversation', 3, _RECENT)
         self.assertEqual(await self._purge(), 0)
         self.assertEqual(
             _rows(self.path, 5, 'user_settings'), [(2,)])
         self.assertEqual(
-            _rows(self.path, 5, 'conversation'), [(2,)])
+            _rows(self.path, 5, 'conversation'), [(2,), (3,)])
 
     async def test_unthreaded_rows_are_never_touched(self):
         _insert_row(self.path, 5, 'user_settings', None, _OLD)

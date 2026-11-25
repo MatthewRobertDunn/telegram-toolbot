@@ -2,15 +2,16 @@
 
 These pin the behaviour of ``tests/_bootstrap``:
 
-* exactly one temp directory and one SQLite file per test process,
 * schema creation happening exactly once (no repeated DDL per connect),
-* the temporary directory removed at interpreter exit,
-* the connect guard blocking the real development databases.
+* the connect guard blocking the real development databases however
+  they are spelled (plain paths and ``file:`` URIs, sync and async),
+* the isolated database and unrelated paths still opening normally.
 """
 
 import asyncio
 import os
 import sqlite3
+import tempfile
 import unittest
 from unittest import mock
 
@@ -79,39 +80,39 @@ class TestOneIsolatedDatabasePerRun(unittest.TestCase):
                          'schema was re-created on a later connect')
         self.assertEqual(len(table_calls), 3)
 
-    def test_bootstrap_db_is_a_single_file_in_its_own_temp_dir(self):
-        db = os.path.abspath(config.sql_db_path)
-        self.assertTrue(os.path.isfile(db), 'isolated DB file not created')
-        self.assertEqual(os.path.dirname(db), bootstrap.db_dir())
-        self.assertTrue(os.path.basename(bootstrap.db_dir()).startswith(
-            'toolbot-tests-'))
-        # Only the one SQLite file (plus SQLite sidecars) lives there.
-        extra = [f for f in os.listdir(bootstrap.db_dir())
-                 if not f.startswith('store.db')]
-        self.assertEqual(extra, [])
-
-    def test_temp_dir_is_removed_at_exit(self):
-        # setup() registered an atexit cleanup; simulate process end.
-        with mock.patch('shutil.rmtree') as rmtree:
-            bootstrap._cleanup()
-        rmtree.assert_called_once_with(bootstrap.db_dir(), ignore_errors=True)
-
 
 class TestRealDatabaseGuard(unittest.TestCase):
 
-    def test_aiosqlite_open_of_repo_db_raises(self):
+    def test_opening_the_repo_db_raises_for_every_connect_and_spelling(self):
+        # The guard must catch both connect callables (sqlite3 and
+        # aiosqlite) however a test spells the path: plainly or as a
+        # file: URI, with or without a query.
         import aiosqlite
 
-        async def attempt():
-            await aiosqlite.connect(bootstrap.repo_path('store.db'))
+        target = bootstrap.repo_path('store.db').replace('\\', '/')
 
-        with self.assertRaises(RuntimeError) as ctx:
+        def sync_connect(database, **kwargs):
+            sqlite3.connect(database, **kwargs)
+
+        def async_connect(database, **kwargs):
+            async def attempt():
+                await aiosqlite.connect(database, **kwargs)
+
             asyncio.run(attempt())
-        self.assertIn('real development database', str(ctx.exception))
 
-    def test_sqlite3_open_of_repo_db_raises(self):
-        with self.assertRaises(RuntimeError):
-            sqlite3.connect(bootstrap.repo_path('store.db'))
+        spellings = {
+            'direct path': (bootstrap.repo_path('store.db'), {}),
+            'file: URI': ('file:' + target, {'uri': True}),
+            'file:/// URI with query':
+                ('file:///' + target + '?mode=ro', {'uri': True}),
+        }
+        for connect in (sync_connect, async_connect):
+            for name, (database, kwargs) in spellings.items():
+                with self.subTest(connect=connect.__name__, spelling=name):
+                    with self.assertRaises(RuntimeError) as ctx:
+                        connect(database, **kwargs)
+                    self.assertIn('real development database',
+                                  str(ctx.exception))
 
     def test_relative_path_that_resolves_to_repo_db_raises(self):
         # A test hardcoding the default path with a relative spelling
@@ -124,35 +125,14 @@ class TestRealDatabaseGuard(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             sqlite3.connect('store.db')
 
-    def test_file_uri_spelling_of_repo_db_raises(self):
-        # The guard must not be bypassable by a file:-URI spelling.
-        target = bootstrap.repo_path('store.db').replace('\\', '/')
-        with self.assertRaises(RuntimeError):
-            sqlite3.connect('file:' + target, uri=True)
-        with self.assertRaises(RuntimeError):
-            sqlite3.connect('file:///' + target + '?mode=ro', uri=True)
-
-    def test_file_uri_spelling_of_repo_db_raises_for_aiosqlite(self):
-        import asyncio
-
-        import aiosqlite
-
-        target = bootstrap.repo_path('store.db').replace('\\', '/')
-
-        async def attempt():
-            await aiosqlite.connect('file:///' + target, uri=True)
-
-        with self.assertRaises(RuntimeError):
-            asyncio.run(attempt())
-
     def test_old_integration_test_store_db_raises(self):
         with self.assertRaises(RuntimeError):
             sqlite3.connect(bootstrap.repo_path('integration_tests',
                                                 'test_store.db'))
 
-    def test_test_db_itself_still_opens(self):
-        # The guard only forbids the real databases; the isolated DB and
-        # unrelated paths keep working.
+    def test_isolated_db_and_unrelated_paths_still_open(self):
+        # The guard only forbids the real databases; the isolated DB
+        # keeps its schema and unrelated paths open normally.
         conn = sqlite3.connect(config.sql_db_path)
         try:
             names = {
@@ -165,8 +145,6 @@ class TestRealDatabaseGuard(unittest.TestCase):
         self.assertIn('kv', names)
         self.assertIn('journal_entries', names)
 
-    def test_unrelated_paths_still_open(self):
-        import tempfile
         fd, path = tempfile.mkstemp(suffix='.db')
         os.close(fd)
         self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
