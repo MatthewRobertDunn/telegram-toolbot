@@ -21,11 +21,11 @@ What :func:`setup` does, in order:
    application code included — uses the isolated database. The repo's
    ``store.db`` is never read, written, or created.
 2. Puts the repo root, ``src/`` and ``tests/`` on ``sys.path``
-   (idempotently, so test files that still carry their own
-   ``sys.path.insert`` lines keep working).
+   (idempotently, so test files with their own ``sys.path.insert``
+   lines keep working).
 3. Installs a hard guard around ``aiosqlite.connect`` and
    ``sqlite3.connect``: opening a path that resolves to the repo's
-   ``store.db`` (or the integration tier's old ``test_store.db``)
+   ``store.db`` (or ``integration_tests/test_store.db``)
    raises immediately, so a future test that hardcodes the real
    database fails loudly instead of silently reading dev data.
 4. Creates the store schemas once (memory, settings, journal — mirroring
@@ -154,7 +154,6 @@ def _is_test_db(database: object) -> bool:
 
 
 def _install_connect_guard() -> None:
-    """Wrap connect() so the real databases cannot be opened."""
     import sqlite3
 
     import aiosqlite

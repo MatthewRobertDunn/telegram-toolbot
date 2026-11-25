@@ -5,19 +5,12 @@ Usage (from any working directory):
     python tests/run.py                     # unit tier (tests/)
     python tests/run.py integration_tests   # integration tier
 
-``pake unittest`` / ``pake integration_test`` call this runner. It
-exists so the isolated database is in place before any application
-module is imported:
+``pake unittest`` / ``pake integration_test`` call this runner; it runs
+``tests._bootstrap.setup()`` first so the isolated database exists before
+any application module is imported.
 
-1. ``tests._bootstrap.setup()`` exports ``STORE_DB_PATH`` at a fresh
-   per-run temp directory (config.py reads it at import), puts the repo
-   root, ``src/`` and ``tests/`` on sys.path, installs the guard that
-   forbids opening the repo's real databases, and creates the schema.
-2. unittest discovery runs for the requested start directory.
-
-The runner also self-checks the isolation (``check_isolation``): if
-``config.sql_db_path`` ever resolves to the repo database, the run
-fails loudly instead of silently testing against dev data.
+``check_isolation`` fails the run if ``config.sql_db_path`` resolves to a
+repo database instead of the per-run one.
 
 Plain unittest discovery works too, but the top-level directory must be
 the repo root so the ``tests`` package (and its isolation) is imported:

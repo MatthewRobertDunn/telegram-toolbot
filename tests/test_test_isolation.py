@@ -25,8 +25,8 @@ class TestOneIsolatedDatabasePerRun(unittest.TestCase):
         # Every store operation opens a fresh aiosqlite connection, so if
         # each connect re-ran the DDL the suite would pay for it on every
         # operation. Force the one-time creation to run again and count
-        # it. All three tables now share one code path, so the count is
-        # one DDL script each: memory (kv), settings and journal.
+        # it. All three tables share one code path, so the count is one
+        # DDL script each: memory (kv), settings and journal.
         import aiosqlite
 
         import persistence.sqlite_store as sqlite_store

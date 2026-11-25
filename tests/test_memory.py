@@ -191,7 +191,7 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
         finally:
             await stale.close()
 
-        # Resetting the cache explicitly restores self-healing.
+        # After clearing the cache, the recreated file creates its own schema.
         sqlite_store._reset_schema_cache()
         recreated = MemoryStore(path)
         try:

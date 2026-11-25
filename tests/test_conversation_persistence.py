@@ -70,8 +70,6 @@ class ConversationPersistenceTest(unittest.IsolatedAsyncioTestCase):
             loaded.messages[-1]['custom']['telegram_message_ids'], [77])
 
     async def test_load_missing_or_corrupt_returns_none(self):
-        # A missing row and a corrupt stored payload both degrade to
-        # None instead of raising.
         for label, user_id, thread_id in [('missing row', 999, None),
                                           ('missing thread row', 999, 2)]:
             with self.subTest(case=label):

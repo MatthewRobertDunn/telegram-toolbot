@@ -48,7 +48,7 @@ class _Bot:
         self.sent: list = []
         self.rich_sent: list = []
         self.deleted: list = []
-        # Typing is part of every queued item now; keep it quiet.
+        # Every queued item sends typing; keep it quiet.
         self.send_chat_action = mock.AsyncMock()
 
     async def send_message(self, chat_id, text, **kwargs):
@@ -169,7 +169,6 @@ class TestImpersonate(unittest.TestCase):
         # The removed impersonation turn's message was deleted from
         # Telegram; the earlier assistant turn's message stays.
         self.assertEqual(bot.deleted, [(5, 99)])
-        # ...and the impersonation flow ran again, replacing the turn.
         self.assertEqual(_roles(ctx.conversation),
                          ['user', 'assistant', 'user'])
         self.assertEqual(ctx.conversation.messages[-1]['content'],
