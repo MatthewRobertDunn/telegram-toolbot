@@ -16,23 +16,25 @@ class TestMessageNormalization(unittest.TestCase):
     """The constructor takes plain dicts freely and wraps them, so every
     stored message is a ConversationMessage instance."""
 
-    def test_constructor_wraps_plain_dicts(self):
+    def test_plain_dicts_are_wrapped_at_every_entry_point(self):
         raw = {'role': 'user', 'content': 'hi'}
-        conversation = Conversation([raw])
-        self.assertEqual(len(conversation.messages), 1)
-        self.assertIsInstance(conversation.messages[0], ConversationMessage)
-        # The content is unchanged.
-        self.assertEqual(conversation.messages[0], raw)
+        conversations = [Conversation([raw])]
+        via_set = Conversation()
+        via_set.set_messages([raw])
+        conversations.append(via_set)
+        for label, conversation in zip(('constructor', 'set_messages'),
+                                       conversations):
+            with self.subTest(entry_point=label):
+                self.assertEqual(len(conversation.messages), 1)
+                self.assertIsInstance(conversation.messages[0],
+                                      ConversationMessage)
+                # The content is unchanged.
+                self.assertEqual(conversation.messages[0], raw)
 
     def test_wrapping_keeps_your_messages(self):
         message = ConversationMessage({'role': 'user', 'content': 'hi'})
         conversation = Conversation([message])
         self.assertIs(conversation.messages[0], message)
-
-    def test_set_messages_wraps_plain_dicts_too(self):
-        conversation = Conversation()
-        conversation.set_messages([{'role': 'user', 'content': 'hi'}])
-        self.assertIsInstance(conversation.messages[0], ConversationMessage)
 
 
 def _user(text):
@@ -128,10 +130,6 @@ class TestConversationHelpers(unittest.TestCase):
 class TestMessageType(unittest.TestCase):
     """The message_type property: get/set over the custom metadata."""
 
-    def test_default_is_none(self):
-        message = ConversationMessage({'role': 'user', 'content': 'hi'})
-        self.assertIsNone(message.message_type)
-
     def test_roundtrip_sets_the_tag(self):
         message = ConversationMessage({'role': 'user', 'content': 'hi'})
         message.message_type = ConversationMessageType.IMPERSONATION
@@ -169,26 +167,28 @@ class TestMessageType(unittest.TestCase):
 
 class TestConversationAddImage(unittest.TestCase):
 
-    def test_max_images_is_a_constructor_parameter(self):
-        # The retention cap is a per-conversation argument now, not a
-        # class attribute tests were expected to monkey-patch.
-        conversation = Conversation(max_images=2)
-        self.assertEqual(conversation.max_images, 2)
-        for n in range(5):
-            conversation.add_image(bytes([n]), 'image/png', f'img {n}')
-        image_urls = [part['image_url']['url']
-                      for message in conversation
-                      for part in message['content']
-                      if part['type'] == 'image_url']
-        self.assertEqual(len(image_urls), 2)
-        # The three oldest merged their placeholder into the caption.
-        self.assertEqual(
-            [message['content'] for message in conversation[:3]],
-            [[{'type': 'text', 'text': f'img {n}\n{IMAGE_PLACEHOLDER}'}]
-             for n in range(3)])
-
-    def test_max_images_defaults_to_MAX_IMAGES(self):
-        self.assertEqual(Conversation().max_images, MAX_IMAGES)
+    def test_only_the_most_recent_max_images_are_kept(self):
+        # The cap is a per-conversation constructor parameter, not a
+        # class attribute tests were expected to monkey-patch. Both an
+        # explicit small cap and the default are honoured by pruning.
+        for max_images in (2, MAX_IMAGES):
+            with self.subTest(max_images=max_images):
+                conversation = Conversation(max_images=max_images)
+                self.assertEqual(conversation.max_images, max_images)
+                for n in range(max_images + 4):
+                    conversation.add_image(bytes([n]), 'image/png',
+                                           f'img {n}')
+                image_urls = [part['image_url']['url']
+                              for message in conversation
+                              for part in message['content']
+                              if part['type'] == 'image_url']
+                self.assertEqual(len(image_urls), max_images)
+                # The four oldest images merged their placeholder into
+                # the caption.
+                self.assertEqual(
+                    [message['content'] for message in conversation[:4]],
+                    [[{'type': 'text', 'text': f'img {n}\n{IMAGE_PLACEHOLDER}'}]
+                     for n in range(4)])
 
     def test_max_images_below_one_is_rejected(self):
         # A cap of 0 cannot be honoured: the prune runs before the append,
@@ -200,41 +200,26 @@ class TestConversationAddImage(unittest.TestCase):
                 Conversation(max_images=bad)
 
     def test_add_image_appends_a_caption_and_base64_image(self):
-        conversation = Conversation()
-        message = conversation.add_image(b'abc', 'image/png', 'look at this')
         b64 = base64.b64encode(b'abc').decode()
-        self.assertEqual(message, {
-            'role': 'user',
-            'content': [
-                {'type': 'text', 'text': 'look at this'},
-                {'type': 'image_url',
-                 'image_url': {'url': f'data:image/png;base64,{b64}'}},
-            ],
-        })
-
-    def test_add_image_without_caption_has_just_the_image(self):
-        conversation = Conversation()
-        message = conversation.add_image(b'abc', 'image/jpeg')
-        self.assertEqual(message['content'], [
-            {'type': 'image_url',
-             'image_url': {'url': f'data:image/jpeg;base64,'
-                                  f'{base64.b64encode(b"abc").decode()}'}},
-        ])
-
-    def test_only_the_most_recent_max_images_are_kept(self):
-        conversation = Conversation()
-        for n in range(conversation.max_images + 4):
-            conversation.add_image(bytes([n]), 'image/png', f'img {n}')
-        image_urls = [part['image_url']['url']
-                      for message in conversation
-                      for part in message['content']
-                      if part['type'] == 'image_url']
-        self.assertEqual(len(image_urls), conversation.max_images)
-        # The four oldest images merged their placeholder into the caption.
-        self.assertEqual(
-            [message['content'] for message in conversation[:4]],
-            [[{'type': 'text', 'text': f'img {n}\n{IMAGE_PLACEHOLDER}'}]
-             for n in range(4)])
+        for caption, mime, expected in [
+            ('look at this', 'image/png',
+             {'role': 'user',
+              'content': [
+                  {'type': 'text', 'text': 'look at this'},
+                  {'type': 'image_url',
+                   'image_url': {'url': f'data:image/png;base64,{b64}'}},
+              ]}),
+            (None, 'image/jpeg',
+             {'role': 'user',
+              'content': [
+                  {'type': 'image_url',
+                   'image_url': {'url': f'data:image/jpeg;base64,{b64}'}},
+              ]}),
+        ]:
+            with self.subTest(caption=caption):
+                conversation = Conversation()
+                message = conversation.add_image(b'abc', mime, caption)
+                self.assertEqual(message, expected)
 
     def test_pruning_leaves_messages_without_images_untouched(self):
         conversation = Conversation()
@@ -340,14 +325,11 @@ class TestOpenAiContract(unittest.TestCase):
 
 class TestConversationListCompat(unittest.TestCase):
 
-    def test_equals_a_message_list_with_the_same_contents(self):
+    def test_two_conversations_with_same_messages_are_equal_but_distinct_ids(self):  # noqa: E501
         messages = [_user('hello'), {'role': 'assistant', 'content': 'hi'}]
         conversation = Conversation(messages)
         self.assertEqual(conversation, messages)
         self.assertNotEqual(conversation, [_user('hello')])
-
-    def test_two_conversations_with_same_messages_are_equal_but_distinct_ids(self):  # noqa: E501
-        messages = [_user('hello')]
         a = Conversation(list(messages))
         b = Conversation(list(messages))
         self.assertEqual(a, b)
@@ -404,26 +386,24 @@ class TestThinkingMessages(unittest.TestCase):
         self.assertEqual(len(removed), 3)
 
     def test_prepare_regeneration_drops_thinking_and_answer(self):
-        conversation = Conversation()
-        conversation.add_user('q')
-        conversation.add_thinking(telegram_message_ids=[2])
-        conversation.add_assistant('a', telegram_message_ids=[3])
-        removed, action = conversation.prepare_regeneration()
-        self.assertEqual(action, RegenerationAction.ANSWER)
-        self.assertEqual([m.get('role') for m in conversation.messages],
-                         ['user'])
-        ids = sorted(i for m in removed for i in m.telegram_message_ids)
-        self.assertEqual(ids, [2, 3])
-
-    def test_prepare_regeneration_drops_orphan_thinking(self):
-        conversation = Conversation()
-        conversation.add_user('q')
-        conversation.add_thinking()
-        removed, action = conversation.prepare_regeneration()
-        self.assertEqual(action, RegenerationAction.ANSWER)
-        self.assertEqual([m.get('role') for m in conversation.messages],
-                         ['user'])
-        self.assertEqual(len(removed), 1)
+        for label, with_answer in (('thinking and answer', True),
+                                   ('orphan thinking', False)):
+            with self.subTest(exchange=label):
+                conversation = Conversation()
+                conversation.add_user('q')
+                conversation.add_thinking(telegram_message_ids=[2])
+                if with_answer:
+                    conversation.add_assistant('a', telegram_message_ids=[3])
+                removed, action = conversation.prepare_regeneration()
+                self.assertEqual(action, RegenerationAction.ANSWER)
+                self.assertEqual(
+                    [m.get('role') for m in conversation.messages], ['user'])
+                if with_answer:
+                    ids = sorted(i for m in removed
+                                 for i in m.telegram_message_ids)
+                    self.assertEqual(ids, [2, 3])
+                else:
+                    self.assertEqual(len(removed), 1)
 
     def test_clone_for_impersonation_has_a_fresh_id(self):
         conversation = Conversation()
