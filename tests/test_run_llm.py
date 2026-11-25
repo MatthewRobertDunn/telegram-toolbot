@@ -123,8 +123,8 @@ class TestRunLlmSessionHeader(unittest.IsolatedAsyncioTestCase):
         parent = await call(conversation)
         self.assertNotEqual(parent, ctx.conversation.id)
         self.assertEqual(parent, conversation.id)
-        # to_openai() builds a fresh sanitized list, but it still reflects
-        # the conversation's content at call time.
+        # to_openai() builds a fresh sanitized list that reflects the
+        # conversation's content at call time.
         self.assertEqual(captured['messages'], conversation.to_openai())
         self.assertEqual(captured['messages'][0]['content'], 'parent')
         other = await call(
@@ -157,7 +157,6 @@ def _fake_client_calls(captured: list, streams: list):
 class TestReasoningContentPassback(unittest.IsolatedAsyncioTestCase):
     # DeepSeek/Kimi thinking mode reject later turns when a tool-call
     # assistant message drops the reasoning_content the model produced.
-    # Regression: it used to be discarded when the message was appended.
 
     async def _run_tool_turn(self, reasoning):
         captured: list = []
@@ -304,7 +303,6 @@ class TestToolArgumentJson(unittest.IsolatedAsyncioTestCase):
                 mock_ctx(settings=SETTINGS, conversation=[]),
                 tools=ToolSurface(definitions=tool_defs,
                                   functions={'t': fake_tool}))
-        # The loop survived and gave the model a chance to fix it.
         self.assertEqual(result, 'done')
         self.assertEqual(len(calls), 2)
         tool_messages = [m for m in calls[1]['messages']

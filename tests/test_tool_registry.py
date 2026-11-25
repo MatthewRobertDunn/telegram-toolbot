@@ -239,8 +239,6 @@ class TestDuplicateDeclarations(unittest.TestCase):
         self.assertIn(PARENT, message)
 
     def test_same_name_for_disjoint_audiences_is_allowed(self):
-        # The read_image / generate_image pattern: one model-facing name,
-        # one implementation per audience.
         self._declare('read_image', PARENT, 'tools.sandbox.media')
         self._declare('read_image', SUBAGENT, 'tools.sandbox.media')
         self.assertEqual({tool.name for tool in all_tools()},
@@ -259,7 +257,6 @@ class TestDuplicateDeclarations(unittest.TestCase):
 
 
 class TestRegistryLifecycle(unittest.TestCase):
-    """Loading, and the failure modes of the module-reload world."""
 
     def _isolated(self, loader=None) -> ToolRegistry:
         registry = ToolRegistry(
@@ -310,7 +307,6 @@ class TestRegistryLifecycle(unittest.TestCase):
                 tools_for(PARENT)
             self.assertNotIn('declared twice', str(caught.exception))
             self.assertIn('tool module import failed', str(caught.exception))
-            # The partial declarations were rolled back.
             self.assertEqual(registry.declared(), [])
 
     def test_retry_after_failed_load_succeeds(self):
@@ -365,8 +361,7 @@ class TestRegistryLifecycle(unittest.TestCase):
         self.assertEqual([t.name for t in tools_for(SUBAGENT)], ['late'])
 
     def test_reload_of_a_tool_module_is_rejected_not_duplicated(self):
-        # The concrete failure reload used to cause: the module runs its
-        # decorators a second time and every lookup then raised. Now the
+        # A reload runs the module's decorators a second time; the
         # second declaration itself is the loud failure.
         self._isolated()
         source = "\n".join([

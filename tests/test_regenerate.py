@@ -43,12 +43,11 @@ def _roles(conversation):
 
 
 class _Bot:
-    """Captures sends, deletions, and rich posts."""
 
     def __init__(self):
         self.deleted: list = []
         self.sent: list = []
-        # Typing is part of every queued item now; keep it quiet.
+        # Typing is part of every queued item; keep it quiet.
         self.send_chat_action = mock.AsyncMock()
 
     async def send_message(self, chat_id, text, **kwargs):
@@ -64,14 +63,12 @@ class _Bot:
 
 
 async def _run_regenerate(ctx, canned='fresh reply'):
-    """Run regenerate_command with a stubbed model replacing run_llm."""
     with mock.patch.object(generation_queue_mod, 'run_llm',
                            mock.AsyncMock(return_value=canned)):
         await regenerate_command(ctx)
 
 
 async def _run_retry(ctx, canned='fresh reply'):
-    """Run retry_command with a stubbed model replacing run_llm."""
     with mock.patch.object(generation_queue_mod, 'run_llm',
                            mock.AsyncMock(return_value=canned)):
         await retry_command(ctx)
@@ -87,13 +84,10 @@ class TestRegenerate(unittest.TestCase):
         conversation.add_assistant('old reply', telegram_message_ids=[77])
         ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
         asyncio.run(_run_regenerate(ctx))
-        # The stale assistant turn is gone; a fresh one was generated.
         messages = ctx.conversation.messages
         self.assertEqual(_roles(ctx.conversation), ['user', 'assistant'])
         self.assertEqual(messages[-1]['content'], 'fresh reply')
-        # The old reply's telegram message was deleted...
         self.assertEqual(bot.deleted, [(5, 77)])
-        # ...and the fresh reply was recorded with its new id.
         self.assertEqual(messages[-1][CUSTOM]['telegram_message_ids'], [555])
 
     def test_last_user_turns_into_a_reply_without_appending(self):
@@ -103,7 +97,6 @@ class TestRegenerate(unittest.TestCase):
         ])
         ctx = mock_ctx(user_id=5, bot=bot, conversation=conversation)
         asyncio.run(_run_regenerate(ctx))
-        # The user turn stays single; a reply was generated and recorded.
         self.assertEqual(_roles(ctx.conversation), ['user', 'assistant'])
         self.assertEqual(ctx.conversation.messages[-1]['content'],
                          'fresh reply')
@@ -164,7 +157,6 @@ class TestUndo(unittest.TestCase):
 
     def test_undo_preview_is_truncated_to_the_limit(self):
         message = {'role': 'user', 'content': 'a' * 30}
-        # (limit, expected text)
         cases = [
             (7, 'a' * 7),  # Over the limit: truncated.
             (30, 'a' * 30),  # At the limit or below: returned whole.
@@ -262,8 +254,8 @@ class TestUndo(unittest.TestCase):
         self.assertIn('a {}', bot.sent[0])
 
     def test_undo_removes_everything_from_the_last_user_prompt_inclusively(self):
-        # /undo now walks the conversation back to and including the last
-        # user turn, so a whole exchange is gone in one command.
+        # /undo walks back to and including the last user turn, so a
+        # whole exchange goes in one command.
         bot = _Bot()
         conversation = Conversation()
         conversation.add_assistant('first reply', telegram_message_ids=[10])
