@@ -380,7 +380,7 @@ _ADD_TO_CONTEXT_PARAM = {
 _PROVIDER_PARAM = {
     "type": "string",
     "enum": list(IMAGE_PROVIDERS),
-    "description": ("Image backend: 'nvidia-flux3' (default), "
+    "description": ("Image backend: 'nvidia-flux3', "
                     "'nvidia-flux2' (fast few-step), 'phoenix' (Leonardo "
                     "Phoenix 1.0 via Cloudflare) or 'recraft' (OpenRouter "
                     "images API)."),
