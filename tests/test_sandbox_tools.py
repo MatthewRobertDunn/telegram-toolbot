@@ -39,7 +39,6 @@ _SANDBOX_MODULES = (common, shell, files, media, python_runner)
 
 @contextlib.contextmanager
 def _patched_manager(manager):
-    """Point every sandbox tool module at a canned SandboxManager."""
     with contextlib.ExitStack() as stack:
         for module in _SANDBOX_MODULES:
             stack.enter_context(
@@ -113,10 +112,9 @@ class CannedDocker:
 
 
 def _run_main(argv: list[str], fn) -> tuple[dict, int]:
-    """Run a helper's main() with the given argv.
+    """Run a helper's main() with argv; returns (stdout payload, exit code).
 
-    Returns (protocol payload from stdout, process exit code): helpers
-    exit 0 only on success (toolbot_protocol.py).
+    Helpers exit 0 only on success (toolbot_protocol.py).
     """
     original = sys.argv
     sys.argv = ['helper'] + argv
@@ -202,23 +200,16 @@ class TestEditHelper(unittest.TestCase):
 
     def test_payload_rejections(self):
         cases = [
-            # Unknown field.
             (json.dumps({'path': 'f.txt', 'old_string': 'a',
                          'new_string': 'b', 'extra': 1}),
              'unexpected payload field'),
-            # Missing path.
             (json.dumps({'old_string': 'a', 'new_string': 'b'}), 'payload'),
-            # Wrong type for path.
             (json.dumps({'path': 3, 'old_string': 'a',
                          'new_string': 'b'}), 'payload'),
-            # Missing old_string.
             (json.dumps({'path': 'f.txt', 'new_string': 'b'}), 'payload'),
-            # Wrong flag type.
             (json.dumps({'path': 'f.txt', 'old_string': 'a',
                          'new_string': 'b', 'replace_all': 'yes'}), 'payload'),
-            # Not JSON at all.
             ('not json at all', 'not valid JSON'),
-            # Valid JSON that is not an object.
             ('[1, 2]', 'JSON object'),
         ]
         for payload, keyword in cases:
@@ -317,7 +308,6 @@ class TestReadHelper(unittest.TestCase):
             self.assertIn('Did you mean', result['error'])
             self.assertIn('app.py', result['error'])
 
-        # With no candidates at all there is no suggestion section.
         with tempfile.TemporaryDirectory() as tmp:
             result, code = self._read('--path', os.path.join(tmp, 'missing.txt'))
             self.assertEqual(code, 1)
@@ -584,8 +574,6 @@ class PhotoSize(SimpleNamespace):
 
 
 class _UploadBot:
-    """Fake bot: get_file returns a file stub with a configurable path."""
-
     def __init__(self, file_path):
         self.file_path = file_path
         self.fail_download = False
@@ -638,7 +626,6 @@ class TestUploadCache(unittest.TestCase):
         upload_cache._recent_uploads = self._original_cache
 
     def _swap_cache(self, ttl):
-        """Replace the cache with one over a controllable timer at t=1000."""
         now = [1000.0]
         upload_cache._recent_uploads = cachetools.TTLCache(
             maxsize=8, ttl=ttl, timer=lambda: now[0])
@@ -666,8 +653,6 @@ class TestUploadCache(unittest.TestCase):
 
 
 class TestHelperRunner(unittest.IsolatedAsyncioTestCase):
-    """_run_helper validates the toolbot protocol on every response."""
-
     def _manager(self, rc: int, stdout: str, stderr: str = ''):
         return SandboxManager(docker=CannedDocker([('helper.py', rc, stdout,
                                                     stderr)]))
@@ -708,9 +693,8 @@ class TestHelperRunner(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['error'], 'helper.py exited with code 3.')
 
     async def test_missing_version_read_as_v1(self):
-        # Helpers from before the version field existed (any currently
-        # deployed image) answer without "v": accepted, so a code-only
-        # deploy keeps working against an older image.
+        # No "v" field reads as v1, so sandbox images deployed without
+        # the version field keep working.
         payload = json.dumps({'ok': True, 'data': {'x': 1}})
         result = await self._run(self._manager(0, payload + '\n'))
         self.assertEqual(result, {'ok': True, 'data': {'x': 1}})
@@ -888,7 +872,6 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
 
     async def test_grep_reports_helper_failures(self):
         cases = [
-            # A helper that speaks the protocol but reports failure.
             (('toolbot_grep.py', 0,
               json.dumps({'v': 1, 'ok': False, 'error': 'regex parse error'}),
               ''), ['regex parse error']),
@@ -930,7 +913,6 @@ class TestSandboxTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn('/workspace/a.py', result)
         self.assertIn('/workspace/b.py', result)
 
-        # An empty listing is a distinct result string.
         helper_result = json.dumps(
             {'v': 1, 'ok': True, 'data': {'files': [], 'truncated': False}})
         manager = self._canned([('toolbot_glob.py', 0, helper_result, '')])
@@ -994,7 +976,6 @@ class TestSendFile(unittest.IsolatedAsyncioTestCase):
         # read_image and send_file share these guards; cover both tools in
         # both failure scenarios.
         cases = [
-            # File not found.
             (media.send_file, 'nope.txt', ('stat', 1, '', 'No such file'),
              'File not found'),
             (media.read_image, 'nope.png', ('stat', 1, '', 'No such file'),
@@ -1060,7 +1041,7 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
             bot.send_photo = broken
         with _patched_manager(manager):
             result = await media.read_image(
-                mock_ctx(bot=bot), path, **kwargs)  # user_id defaults to 1
+                mock_ctx(bot=bot), path, **kwargs)
         return result, bot
 
     async def test_unsupported_extension(self):
@@ -1090,8 +1071,7 @@ class TestReadImage(unittest.IsolatedAsyncioTestCase):
 
     async def test_recent_upload_is_not_resent_to_the_chat(self):
         # An image the user just uploaded is already visible in the chat
-        # window; read_image attaches it for the model without re-sending
-        # it. Another user's upload of the same file is not spared.
+        # window; read_image attaches it for the model without re-sending it.
         result, bot = await self._read_image(
             path='uploads/pic.png', uploaded_by=1)
         assert isinstance(result, ToolCallResult)
