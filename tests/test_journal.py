@@ -19,8 +19,6 @@ from user_settings import UserSettings
 
 
 def _counting_executescript(counter: dict):
-    """A replacement for aiosqlite.Connection.executescript that counts
-    calls and passes them through unchanged."""
     original = aiosqlite.Connection.executescript
 
     def counting(conn, sql, *args, **kwargs):
@@ -74,8 +72,8 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             finally:
                 await second.close()
                 await first.close()
-        # One 8-statement script application for the whole process, not
-        # one per store or per operation.
+        # One script application for the whole process, not one per store
+        # or per operation.
         self.assertEqual(counter["calls"], 1)
 
     async def test_db_path_resolved_at_call_time(self):
@@ -211,7 +209,6 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
                 user_id=2, query="one"), [])
         self.assertEqual(
             await self.store.list_topics(user_id=2), [])
-        # Owner still sees everything.
         self.assertIsNotNone(await self.store.get_entry(
             user_id=1, entry_id=record.id))
 
@@ -250,7 +247,6 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             user_id=1, entry_id=record.id)
         assert fetched is not None
         self.assertEqual(fetched.entry, "Felt calm and tired.")
-        # Creation timestamp is untouched.
         self.assertEqual(fetched.created, created)
         self.assertEqual(fetched.created_epoch_ms, epoch)
         # FTS index followed the edit.
@@ -284,7 +280,6 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
                 user_id=1, entry_id=record.id, old_string="ha",
                 new_string="he"),
             ReplaceOutcome.MULTIPLE_MATCHES)
-        # Entry unchanged after ambiguous edit.
         fetched = await self.store.get_entry(
             user_id=1, entry_id=record.id)
         assert fetched is not None
@@ -336,7 +331,6 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             user_id=1, entry_id=record.id)
         assert fetched is not None
         self.assertEqual(fetched.topic, "sleep")
-        # Other users see nothing.
         self.assertEqual(
             await self.store.update_entry_topic(
                 user_id=2, entry_id=record.id,
@@ -363,15 +357,12 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             user_id=1, query="anxious dreams")
         self.assertEqual(len(narrow), 1)
         self.assertEqual(narrow[0].topic, "sleep")
-        # Quoted phrase.
         phrase = await self.store.search_entries(
             user_id=1, query='"anxious dreams"')
         self.assertEqual(len(phrase), 1)
-        # Prefix search.
         prefix = await self.store.search_entries(
             user_id=1, query="anx")
         self.assertEqual(len(prefix), 2)
-        # Case-insensitive.
         upper = await self.store.search_entries(
             user_id=1, query="ANXIOUS")
         self.assertEqual(len(upper), 2)
@@ -404,11 +395,9 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             await self.store.add_entry(
                 user_id=1, topic="Log", entry=f"entry {i}",
                 created=stamp, created_epoch_ms=_ms(stamp))
-        # A start after everything keeps the whole newest-first list.
         self.assertEqual([r.entry for r in await self.store.search_entries(
             user_id=1, start_ms=_ms("2026-11-15T00:00:00+00:00"))],
             ["entry 2", "entry 1", "entry 0"])
-        # Ascending order returns oldest first, and limit truncates.
         self.assertEqual([r.entry for r in await self.store.search_entries(
             user_id=1, sort_descending=False)],
             ["entry 0", "entry 1", "entry 2"])
@@ -442,16 +431,13 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
                 user_id=1, topic=topic, entry=entry,
                 created=stamp, created_epoch_ms=_ms(stamp))
         start = _ms("2026-11-12T09:00:00+00:00")
-        # Newest-first: only the older match is at or before start.
         self.assertEqual([r.entry for r in await self.store.search_entries(
             user_id=1, start_ms=start, query="anxious")],
             ["anxious morning"])
-        # Oldest-first: only the newer match is at or after it.
         self.assertEqual([r.entry for r in await self.store.search_entries(
             user_id=1, start_ms=start, query="anxious",
             sort_descending=False)],
             ["anxious night"])
-        # Without start the filter matches both.
         self.assertEqual([r.entry for r in await self.store.search_entries(
             user_id=1, query="anxious")],
             ["anxious night", "anxious morning"])
@@ -466,8 +452,6 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             await self.store.add_entry(
                 user_id=1, topic="Log", entry=f"entry {i}",
                 created=stamp, created_epoch_ms=_ms(stamp))
-        # Middle page, newest-first: resumed from the id the first page
-        # handed back, truncated by limit so more exist.
         page = await self.store.search_page(user_id=1, cursor_id=3, limit=1)
         self.assertEqual([r.entry for r in page.entries], ["entry 1"])
         self.assertTrue(page.has_more)
@@ -475,17 +459,14 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         # for the tool to report.
         self.assertEqual(page.next_cursor, 2)
         self.assertIsInstance(page.next_cursor, int)
-        # First page truncated by limit: more exist.
         first = await self.store.search_page(user_id=1, limit=1)
         self.assertEqual([r.entry for r in first.entries], ["entry 2"])
         self.assertTrue(first.has_more)
         self.assertEqual(first.next_cursor, 3)
-        # Last page: nothing more in this direction.
         last = await self.store.search_page(user_id=1, cursor_id=2)
         self.assertEqual([r.entry for r in last.entries], ["entry 0"])
         self.assertFalse(last.has_more)
         self.assertIsNone(last.next_cursor)
-        # Oldest-first: more newer entries exist.
         asc_first = await self.store.search_page(
             user_id=1, limit=1, sort_descending=False)
         self.assertEqual([r.entry for r in asc_first.entries], ["entry 0"])
@@ -496,19 +477,16 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r.entry for r in asc_last.entries], ["entry 2"])
         self.assertFalse(asc_last.has_more)
         self.assertIsNone(asc_last.next_cursor)
-        # Full result: no hints.
         full = await self.store.search_page(user_id=1)
         self.assertEqual(len(full.entries), 3)
         self.assertFalse(full.has_more)
         self.assertIsNone(full.next_cursor)
-        # Empty page: no hints. A start before every entry has nothing at
-        # or before it to return.
+        # A start before every entry has nothing at or before it to return.
         empty = await self.store.search_page(
             user_id=1, start_ms=_ms("2026-11-10T08:59:59+00:00"))
         self.assertEqual(empty.entries, [])
         self.assertFalse(empty.has_more)
         self.assertIsNone(empty.next_cursor)
-        # Hints respect topic filters.
         await self.store.add_entry(
             user_id=1, topic="Mood", entry="mood entry",
             created="2026-11-09T09:00:00+00:00",
@@ -557,7 +535,6 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r.entry for r in page.entries], ["oldest"])
         self.assertFalse(page.has_more)
         self.assertIsNone(page.next_cursor)
-        # Oldest-first pages the same rows in reverse.
         page = await self.store.search_page(user_id=1, limit=1,
                                             sort_descending=False)
         self.assertEqual([r.entry for r in page.entries], ["oldest"])
@@ -579,7 +556,6 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             await self.store.add_entry(
                 user_id=1, topic=topic, entry=topic,
                 created=created, created_epoch_ms=epoch)
-        # ids 1..3, newest-first 3, 2, 1.
         page = await self.store.search_page(user_id=1, limit=2)
         self.assertEqual([r.id for r in page.entries], [3, 2])
         self.assertTrue(page.has_more)
@@ -588,7 +564,6 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r.id for r in page.entries], [1])
         self.assertFalse(page.has_more)
         self.assertIsNone(page.next_cursor)
-        # Oldest-first: 1, 2, then 3.
         page = await self.store.search_page(user_id=1, limit=2,
                                             sort_descending=False)
         self.assertEqual([r.id for r in page.entries], [1, 2])
@@ -616,7 +591,6 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
             await self.store.search_page(user_id=1, cursor_id=2, limit=2)
         self.assertEqual(str(caught.exception),
                          "Cursor entry no longer exists; restart paging.")
-        # Another user's entry id is equally unusable.
         with self.assertRaises(StoreValidationError):
             await self.store.search_page(user_id=2, cursor_id=3, limit=2)
 
@@ -652,7 +626,6 @@ class TestJournalStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r.entry for r in page.entries], ["A", "older"])
         self.assertFalse(page.has_more)
         self.assertIsNone(page.next_cursor)
-        # Oldest-first: the same start keeps the tie and everything after.
         page = await self.store.search_page(user_id=1, start_ms=epoch,
                                             limit=2, sort_descending=False)
         self.assertEqual([r.entry for r in page.entries], ["A", "B"])
@@ -860,19 +833,15 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ID: 1", out)
         self.assertIn("ID: 3", out)
         self.assertNotIn("ID: 2\n", out)
-        # Order follows the request.
         self.assertLess(out.index("ID: 1"), out.index("ID: 3"))
         flipped = await journal_tool.journal_get(ctx, ids=[3, 1])
         self.assertLess(flipped.index("ID: 3"), flipped.index("ID: 1"))
-        # Partial miss still returns hits plus a missing note.
         partial = await journal_tool.journal_get(ctx, ids=[1, 999])
         self.assertIn("ID: 1", partial)
         self.assertIn("Journal entries not found: 999", partial)
-        # All missing.
         self.assertEqual(
             await journal_tool.journal_get(ctx, ids=[998, 999]),
             "Journal entries not found: 998, 999")
-        # Duplicates are deduplicated.
         dupes = await journal_tool.journal_get(ctx, ids=[1, 1])
         self.assertIn("ID: 1", dupes)
         self.assertNotIn("Found", dupes)
@@ -961,11 +930,9 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         record = await self.store.get_entry(
             user_id=1, entry_id=1)
         assert record is not None
-        # start after the entry includes it newest-first.
         inside = await journal_tool.journal_query(
             ctx, start="2030-01-01T00:00:00+10:30")
         self.assertIn("sydney entry", inside)
-        # start before the entry finds nothing newest-first.
         day = record.created[:10]
         outside = await journal_tool.journal_query(
             ctx, start=f"{day}T00:00:00+10:30")
@@ -1010,11 +977,9 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn("entry 2", trunc)
         self.assertIn("More journal entries exist.", trunc)
         self.assertIn("cursor=3", trunc)
-        # Full result has no hint.
         full = await journal_tool.journal_query(ctx)
         self.assertIn("Found 3 journal entries:", full)
         self.assertNotIn("More journal entries exist", full)
-        # Default newest-first page with a limit hints at older entries.
         first = await journal_tool.journal_query(ctx, limit=1)
         self.assertIn("entry 2", first)
         self.assertIn("More journal entries exist.", first)
@@ -1029,8 +994,6 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
         third = await journal_tool.journal_query(ctx, cursor=2, limit=1)
         self.assertIn("entry 0", third)
         self.assertNotIn("More journal entries exist", third)
-        # Oldest-first page hints at newer entries, and the hint resumes
-        # the other way.
         oldest = await journal_tool.journal_query(
             ctx, limit=1, sortDescending=False)
         self.assertIn("entry 0", oldest)
