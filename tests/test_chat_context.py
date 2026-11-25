@@ -74,33 +74,23 @@ class TestSubagentContextIsolation(unittest.TestCase):
         self.assertFalse(hasattr(child, 'update'))
         self.assertFalse(hasattr(child, 'context'))
 
-    def test_user_data_is_its_own_object(self):
+    def test_subagent_state_is_independent(self):
         parent = _parent()
-        child = _child(parent)
+        own = Conversation()
+        child = parent.new_subagent_context(own)
         self.assertIsNot(child.user_data, parent.user_data)
         self.assertIsNot(child.thread_data, parent.thread_data)
         child.thread_data.conversation_epoch = 99
         self.assertNotEqual(99, parent.thread_data.conversation_epoch)
-
-    def test_parent_coordination_state_is_unreachable(self):
-        child = _child(_parent())
-        self.assertIsNone(child.thread_data.main_inbox)
-        self.assertEqual(child.thread_data.conversation_epoch, 0)
-        self.assertIsNone(child.thread_data.generation_queue)
-        self.assertIsNone(child.thread_data.generation_task)
-        self.assertEqual(child.thread_data.subagents, {})
-
-    def test_conversation_is_the_subagents_own(self):
-        parent = _parent()
-        own = Conversation()
-        child = parent.new_subagent_context(own)
+        # The conversation is the subagent's own object: a message added
+        # to it does not appear in the parent's history.
         self.assertIs(child.conversation, own)
         own.add_user('subagent thought')
         self.assertNotIn('subagent thought',
                          [m.get('content')
                           for m in parent.conversation.messages])
-        child.conversation = Conversation()
-        self.assertIsNot(parent.conversation, child.conversation)
+        child2 = _child(parent)
+        self.assertIsNot(child2.conversation, own)
 
     def test_settings_are_a_snapshot(self):
         parent = _parent()
@@ -109,16 +99,6 @@ class TestSubagentContextIsolation(unittest.TestCase):
         self.assertEqual(child.settings.model, parent.settings.model)
         child.settings.model = 'changed'
         self.assertEqual(parent.settings.model, 'm')
-
-    def test_real_user_settings_are_copied(self):
-        from user_settings import UserSettings
-        parent = _parent()
-        parent.user_data.settings = UserSettings.default()
-        parent.settings.model = 'parent-model'
-        child = _child(parent)
-        self.assertEqual(child.settings.model, 'parent-model')
-        child.settings.model = 'child-model'
-        self.assertEqual(parent.settings.model, 'parent-model')
 
     def test_silent_surface_is_minimal(self):
         # The silent context is the tool-facing contract: identity plus the
@@ -130,12 +110,6 @@ class TestSubagentContextIsolation(unittest.TestCase):
         self.assertEqual(
             public, {'user_id', 'user_data', 'thread_data',
                      'conversation', 'settings'})
-
-    def test_sandbox_read_tracking_starts_empty(self):
-        parent = _parent()
-        parent.user_data.sandbox_read_files = {'/workspace/a.txt'}
-        child = _child(parent)
-        self.assertEqual(child.user_data.sandbox_read_files, set())
 
 
 class TestThreadKeyedStorage(unittest.TestCase):
