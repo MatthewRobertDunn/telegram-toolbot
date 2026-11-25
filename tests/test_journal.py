@@ -826,7 +826,7 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
     async def test_replace_tool(self):
         ctx = self._ctx()
         await journal_tool.journal_add(ctx, topic="Mood", entry="Felt bad.")
-        # One store-raised validation surfaced verbatim, one outcome the
+        # One store-raised validation surfaced verbatim, two outcomes the
         # tool translates itself; the full branch sweep is at store level.
         self.assertEqual(
             await journal_tool.journal_edit(
@@ -837,6 +837,12 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
             await journal_tool.journal_edit(
                 ctx, id=1, oldString="great", newString="okay"),
             "Text not found in journal entry 1")
+        # An id that exists for nobody but this user still gets this
+        # user's wording, not a raw store error.
+        self.assertEqual(
+            await journal_tool.journal_edit(
+                ctx, id=404, oldString="bad", newString="okay"),
+            "Journal entry 404 not found")
         self.assertEqual(
             await journal_tool.journal_edit(
                 ctx, id=1, oldString="bad", newString="okay"),
@@ -901,6 +907,11 @@ class TestJournalTools(unittest.IsolatedAsyncioTestCase):
             await journal_tool.journal_topic_edit(
                 ctx, id=1, oldTopic="Wrong", newTopic="Sleep"),
             "Topic does not match journal entry 1")
+        # An id that belongs to nobody still gets this user's wording.
+        self.assertEqual(
+            await journal_tool.journal_topic_edit(
+                ctx, id=404, oldTopic="Mood", newTopic="Sleep"),
+            "Journal entry 404 not found")
         self.assertEqual(
             await journal_tool.journal_topic_edit(
                 ctx, id=1, oldTopic="Mood", newTopic="Sleep"),

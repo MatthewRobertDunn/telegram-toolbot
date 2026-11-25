@@ -54,6 +54,12 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
         keys = await self.store.get_all_keys(3)
         self.assertEqual(keys, [])
 
+        # Empty key lists short-circuit without touching the DB.
+        self.assertEqual(await self.store.get_values(1, []), {})
+        await self.store.delete_values(1, [])
+        self.assertEqual(await self.store.get_all_keys(1),
+                         ['age', 'name'])
+
     async def test_delete(self):
         await self.store.set(1, 'k1', 'v1')
         await self.store.set(1, 'k2', 'v2')

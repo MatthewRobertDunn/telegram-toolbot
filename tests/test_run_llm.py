@@ -527,6 +527,15 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
             result = await run_llm_mod.run_llm(ctx)
         self.assertEqual(result, run_llm_mod.NO_RESPONSE_MESSAGE)
 
+    async def test_silent_sink_absorbs_the_draft_lifecycle(self):
+        # run_llm drives the sink identically whether or not drafts are
+        # possible, so the subagent sink must take every call as a no-op.
+        sink = run_llm_mod.NullDraftSink()
+        await sink.start()
+        sink.new_round()
+        await sink.update('delta')
+        await sink.flush(force=True)
+
 
 def _advance(clock: _FakeClock, sleeps: list):
     async def fake_sleep(delay):

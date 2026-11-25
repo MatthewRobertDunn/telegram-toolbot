@@ -337,6 +337,14 @@ class TestRegistryLifecycle(unittest.TestCase):
                          ['flaky_tool'])
         self.assertEqual(len(attempts), 2)
 
+    def test_unknown_role_is_rejected(self):
+        # A typo'd role is a caller error, not an empty surface.
+        registry = self._isolated()
+        with self.assertRaises(ValueError):
+            registry.tools_for('all')
+        with self.assertRaises(ValueError):
+            registry.tools_for('BOTH')
+
     def test_declaration_after_load_joins_the_surface(self):
         # A late declaration (a module imported after the first lookup)
         # invalidates the resolved index instead of being invisible.

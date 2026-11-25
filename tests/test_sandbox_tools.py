@@ -19,6 +19,7 @@ import toolbot_glob
 import toolbot_grep
 import toolbot_protocol
 import toolbot_read
+from handlers import upload_handler as upload_handler_mod
 from handlers import run_llm as run_llm_mod
 from conversation import Conversation
 from mock_context import mock_ctx
@@ -468,6 +469,164 @@ class TestGrepHelper(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertFalse(result['ok'])
             self.assertIn('directory', result['error'])
+
+
+_MEDIA_ATTRS = ('document', 'photo', 'audio', 'video', 'voice',
+                'video_note', 'animation', 'sticker')
+
+
+class TestUploadHandler(unittest.IsolatedAsyncioTestCase):
+    """The upload handler stores documents/photos in the sandbox and
+    queues a generation priming the model with the stored path."""
+
+    def _ctx(self, file_path='/workspace/uploads/f.bin', **media_attrs):
+        bot = _UploadBot(file_path)
+        ctx = mock_ctx(user_id=7, bot=bot)
+        ctx.message.message_id = 42
+        # A Telegram message always carries every media attribute, empty
+        # when there is no upload; _get_media dispatches on exactly those.
+        for attr in _MEDIA_ATTRS:
+            setattr(ctx.message, attr, None)
+        setattr(ctx.message, 'photo', ())
+        for attr, value in media_attrs.items():
+            setattr(ctx.message, attr, value)
+        return ctx, bot
+
+    @contextlib.contextmanager
+    def _env(self, store_return=('/workspace/uploads/pic.png', None)):
+        store = unittest.mock.AsyncMock(return_value=store_return)
+        submit = _FakeSubmit()
+        recorded = _FakeRecord()
+        with unittest.mock.patch.object(
+                upload_handler_mod, 'manager',
+                SimpleNamespace(store_file=store)):
+            with unittest.mock.patch.object(
+                    upload_handler_mod, 'submit_generation', submit):
+                with unittest.mock.patch.object(
+                        upload_handler_mod, 'record_upload', recorded):
+                    yield store, submit, recorded
+
+    async def test_document_upload_queues_a_generation(self):
+        doc = SimpleNamespace(file_id='f1', file_name='pic.png')
+        ctx, bot = self._ctx(document=doc)
+        with self._env() as (store, submit, recorded):
+            await upload_handler_mod.upload_handler(ctx)
+        self.assertIsNotNone(submit.captured)
+        store.assert_awaited_once()
+        self.assertEqual(store.await_args_list[0].args,
+                         (7, b'file-bytes', 'pic.png'))
+        self.assertEqual(len(submit.calls), 1)
+        self.assertEqual(
+            submit.captured['content'],
+            '[The user uploaded a file to their sandbox: '
+            '/workspace/uploads/pic.png (10 bytes). You can inspect it '
+            'with the read_image tool if it is relevant.]')
+        self.assertEqual(submit.captured['kwargs']['telegram_message_id'], 42)
+        self.assertEqual(recorded.calls, [(7, '/workspace/uploads/pic.png')])
+
+    async def test_caption_prefixes_the_notification(self):
+        doc = SimpleNamespace(file_id='f1', file_name='note.txt')
+        ctx, bot = self._ctx(document=doc)
+        ctx.message.caption = 'look at this'
+        with self._env(('/workspace/uploads/note.txt', None)) as (
+                store, submit, recorded):
+            await upload_handler_mod.upload_handler(ctx)
+        self.assertEqual(
+            submit.captured['content'],
+            'look at this\n\n[The user uploaded a file to their sandbox: '
+            '/workspace/uploads/note.txt (10 bytes). You can inspect it with '
+            'the read tool if it is relevant.]')
+
+    async def test_photo_without_a_name_gets_a_fallback_name(self):
+        # Telegram photos arrive without file_name; the handler derives
+        # photo_<epoch><ext> from the media kind and the download's path.
+        photo = PhotoSize(file_id='f2')
+        ctx, bot = self._ctx('/workspace/uploads/x.jpg', photo=[photo])
+        with self._env(('/workspace/uploads/photo_1.jpg', None)) as (
+                store, submit, recorded):
+            await upload_handler_mod.upload_handler(ctx)
+        store.assert_awaited_once()
+        name = store.await_args_list[0].args[2]
+        self.assertTrue(name.startswith('photo_'), name)
+        self.assertTrue(name.endswith('.jpg'), name)
+        self.assertEqual(bot.last_file_id, 'f2')
+
+    async def test_no_media_is_ignored(self):
+        ctx, bot = self._ctx()
+        with self._env() as (store, submit, recorded):
+            await upload_handler_mod.upload_handler(ctx)
+        store.assert_not_awaited()
+        self.assertEqual(submit.calls, [])
+        self.assertEqual(recorded.calls, [])
+        self.assertEqual(bot.sent, [])
+
+    async def test_download_failure_is_reported(self):
+        ctx, bot = self._ctx(document=SimpleNamespace(file_id='f1'))
+        bot.fail_download = True
+        with self._env() as (store, submit, recorded):
+            await upload_handler_mod.upload_handler(ctx)
+        store.assert_not_awaited()
+        self.assertEqual(submit.calls, [])
+        self.assertEqual(len(bot.sent), 1)
+        self.assertIn('Error processing file', bot.sent[0])
+
+    async def test_store_failure_is_reported(self):
+        ctx, bot = self._ctx(document=SimpleNamespace(file_id='f1'))
+        with self._env((None, 'disk full')) as (store, submit, recorded):
+            await upload_handler_mod.upload_handler(ctx)
+        self.assertEqual(submit.calls, [])
+        self.assertEqual(recorded.calls, [])
+        self.assertEqual(bot.sent, ['disk full'])
+
+
+class PhotoSize(SimpleNamespace):
+    """Minimal stand-in for telegram.PhotoSize (name drives the fallback)."""
+
+
+class _UploadBot:
+    """Fake bot: get_file returns a file stub with a configurable path."""
+
+    def __init__(self, file_path):
+        self.file_path = file_path
+        self.fail_download = False
+        self.last_file_id = None
+        self.sent = []
+
+    async def get_file(self, file_id):
+        self.last_file_id = file_id
+        return _UploadFile(self, file_id)
+
+    async def send_message(self, *args, **kwargs):
+        self.sent.append(args[0] if args else kwargs.get('text'))
+
+
+class _UploadFile:
+    def __init__(self, bot, file_id):
+        self._bot = bot
+        self.file_path = bot.file_path
+
+    async def download_as_bytearray(self):
+        if self._bot.fail_download:
+            raise RuntimeError('telegram is down')
+        return bytearray(b'file-bytes')
+
+
+class _FakeSubmit:
+    def __init__(self):
+        self.calls = []
+        self.captured: dict = {}
+
+    async def __call__(self, ctx, content, **kwargs):
+        self.calls.append((ctx, content))
+        self.captured = dict(ctx=ctx, content=content, kwargs=kwargs)
+
+
+class _FakeRecord:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, user_id, path):
+        self.calls.append((user_id, path))
 
 
 class TestUploadCache(unittest.TestCase):
