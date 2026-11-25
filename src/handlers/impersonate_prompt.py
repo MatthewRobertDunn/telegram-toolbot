@@ -1,12 +1,6 @@
-"""The impersonation prompt sent with a cloned conversation.
+"""The prompt that makes a cloned conversation write the user's next
+message."""
 
-Kept in its own module so conversation_handlers.py stays focused on the
-command plumbing.
-"""
-
-# Appended as the last user turn of the cloned conversation, whose system
-# head already carries the user profile and whose history shows how this
-# user talks. The model answers as the user, not as the assistant.
 IMPERSONATE_PROMPT = """<impersonation-task>
 The conversation above is between an assistant and a user. Do not answer as the assistant. Instead, write the user's next message, impersonating the user.
 

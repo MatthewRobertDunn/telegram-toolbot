@@ -159,8 +159,8 @@ class TestBoundaryRule(unittest.TestCase):
                     self.assertIn(marker, split.recent_text)
 
     def test_something_is_always_summarized(self):
-        # The old rule could land the boundary before the first entry:
-        # an empty summary request that still cost a model call.
+        # The boundary always leaves at least one entry to summarize: an
+        # empty summary request would still cost a model call.
         split = compaction.split_for_compaction(_big_conversation(),
                                                 keep_tokens=15_000)
         assert split is not None

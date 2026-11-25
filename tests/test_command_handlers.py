@@ -2,9 +2,8 @@
 
 ``commands.COMMANDS`` is the single source of truth for the Telegram menu,
 the ``CommandHandler`` registrations and the usage lines handlers render.
-These tests keep those three from drifting apart - historically the menu,
-the registrations and the in-handler usage f-strings were maintained by
-hand, and forgetting one was invisible.
+These tests keep those three from drifting apart: a command that lands in
+one place but not the others fails here.
 """
 
 import asyncio

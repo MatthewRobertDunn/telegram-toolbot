@@ -38,16 +38,12 @@ class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
         (top_p_command, "top_p", 0.95, "0.5", "-0.1", "Current top"),
     )
 
-    # -- start_restart_command -------------------------------------------
-
     async def test_start_restart(self):
         ctx = create_mock_context(user_id=_uid(), command_name="start")
         await start_restart_command(ctx)
         self.assertEqual(len(ctx.sent), 1)
         self.assertIn("Starting conversation", ctx.sent[0]["text"])
         self.assertEqual(ctx.conversation, [])
-
-    # -- model_command ---------------------------------------------------
 
     async def test_model_set_and_query(self):
         uid = _uid()
@@ -72,8 +68,6 @@ class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Current model", ctx.sent[0]["text"])
         self.assertIn(os.environ.get("LLM_MODEL", "minimaxai/minimax-m2.7"),
                       ctx.sent[0]["text"])
-
-    # -- subagent_model_command ------------------------------------------
 
     async def test_subagent_model_set(self):
         ctx = create_mock_context(
@@ -113,8 +107,6 @@ class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
             ctx_reset.settings.subagent_model,
             os.environ.get("SUBAGENT_MODEL") or "my-org/my-model")
 
-    # -- temperature_command / top_p_command -----------------------------
-
     async def test_numeric_setting_set_and_query(self):
         for command, name, _, value, _, needle in self.NUMERIC_SETTINGS:
             with self.subTest(setting=name):
@@ -143,8 +135,6 @@ class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
                     # The rejected value leaves the setting at its default.
                     self.assertAlmostEqual(
                         getattr(ctx.settings, name), default)
-
-    # -- the per-setting reset commands ----------------------------------
 
     async def test_setting_resets_restore_the_defaults(self):
         defaults = UserSettings.default()
@@ -181,8 +171,6 @@ class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(getattr(ctx_reset.settings, attr),
                                  getattr(defaults, attr))
 
-    # -- systemprompt_command --------------------------------------------
-
     async def test_systemprompt_set(self):
         ctx = create_mock_context(
             user_id=_uid(), command_text="You are a test bot.", command_name="systemprompt")
@@ -201,10 +189,7 @@ class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
         # Sends two messages: usage text + the preformatted prompt.
         self.assertEqual(len(ctx_query.sent), 2)
         self.assertIn("Current system prompt", ctx_query.sent[0]["text"])
-        # The second message is the preformatted prompt content
         self.assertEqual(ctx_query.sent[1]["text"], "<pre>Custom prompt</pre>")
-
-    # -- tool_output_command ---------------------------------------------
 
     async def test_tool_output_toggle(self):
         uid = _uid()
@@ -214,18 +199,14 @@ class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(ctx_off.sent), 1)
         self.assertIn("off", ctx_off.sent[0]["text"])
         self.assertFalse(ctx_off.settings.show_tool_output)
-        # ...and the second turns it back on.
         ctx_on = create_mock_context(user_id=uid, command_name="tool_output")
         await tool_output_command(ctx_on)
         self.assertEqual(len(ctx_on.sent), 1)
         self.assertIn("on", ctx_on.sent[0]["text"])
         self.assertTrue(ctx_on.settings.show_tool_output)
 
-    # -- settings_reset_command ------------------------------------------
-
     async def test_settings_reset(self):
         uid = _uid()
-        # Set multiple non-default values
         ctx_model = create_mock_context(
             user_id=uid, command_text="custom-model", command_name="model")
         await model_command(ctx_model)
@@ -235,18 +216,14 @@ class TestSettingsCommands(unittest.IsolatedAsyncioTestCase):
         ctx_top_p = create_mock_context(
             user_id=uid, command_text="0.4", command_name="top_p")
         await top_p_command(ctx_top_p)
-        # Reset all settings
         ctx_reset = create_mock_context(user_id=uid, command_name="settings_reset")
         await settings_reset_command(ctx_reset)
         self.assertEqual(len(ctx_reset.sent), 1)
         self.assertIn("reset", ctx_reset.sent[0]["text"])
-        # All values should be back to defaults
         self.assertEqual(ctx_reset.settings.model,
                          os.environ.get("LLM_MODEL", "minimaxai/minimax-m2.7"))
         self.assertAlmostEqual(ctx_reset.settings.temperature, 1.0)
         self.assertAlmostEqual(ctx_reset.settings.top_p, 0.95)
-
-    # -- user_profile_command --------------------------------------------
 
     async def test_user_profile_set_and_query(self):
         uid = _uid()

@@ -9,14 +9,12 @@ them.
 Wakeup protocol (always-enqueue): every notification puts its mail on the
 inbox and schedules a wakeup job no matter what the parent is doing.
 There is deliberately no "parent loop is active" flag to consult or
-release - the flag used to leak True on any wakeup path that exited
-early, silently silencing every later notification until a human typed.
-Redundant wakeups are acceptable instead: N notifications may queue N
+release. Redundant wakeups are acceptable: N notifications may queue N
 jobs, the first drains the whole inbox and the rest find it empty and
-no-op (no send, no persistence). Losing mail now requires dropping a
-wakeup job *and* never draining the inbox again; a /stop that drops
-queued items can always be followed by the next user turn, which drains
-whatever is still queued.
+no-op (no send, no persistence). Losing mail requires dropping a wakeup
+job *and* never draining the inbox again; a /stop that drops queued items
+can always be followed by the next user turn, which drains whatever is
+still queued.
 
 Cross-agent traffic is strongly typed: every inbox carries
 ``SubagentMessage`` (never raw strings) via ``SubagentInbox``, whose
@@ -42,11 +40,9 @@ class SubagentStatus(StrEnum):
     """The one status vocabulary for subagent records and inbox mail.
 
     Both ``SubagentRecord.status`` and ``SubagentMessage.state`` use it,
-    so a record can be funneled into a receipt without a state rename
-    (``"done"`` and ``"finished"`` used to disagree, and ``"done"`` was
-    not terminal). Being a ``StrEnum`` the members format and compare as
-    their lowercase values, so stored text and model-facing rendering
-    stay unchanged.
+    so a record can be funneled into a receipt without a state rename.
+    Being a ``StrEnum`` the members format and compare as their lowercase
+    values, matching stored text and model-facing rendering.
     """
 
     RUNNING = "running"
@@ -95,8 +91,8 @@ class SubagentInbox(asyncio.Queue[SubagentMessage]):
     """An inbox strongly typed to ``SubagentMessage``.
 
     ``put_nowait`` rejects anything else so unstructured strings can never
-    sneak back in; ``get_nowait`` therefore always returns the message
-    shape ``_drain_inbox`` formats.
+    sneak in; ``get_nowait`` therefore always returns the message shape
+    ``_drain_inbox`` formats.
     """
 
     def put_nowait(self, item: SubagentMessage) -> None:

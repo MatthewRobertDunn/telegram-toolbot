@@ -3,11 +3,8 @@ import tempfile
 import time
 import pake
 
-# Tasks are registered the the pake.Pake object
-# returned by pake's initialization call, using the task decorator.
 pk = pake.init()
 
-# Image name used by the sandbox image build tasks and default platforms.
 SANDBOX_IMAGE = "elpechos/toolbot-sandbox:latest"
 SANDBOX_PLATFORMS = "linux/amd64,linux/arm64"
 DEPLOY_HOST = "matty@derg.top"
@@ -83,8 +80,8 @@ def publish(ctx):
              f"chmod -R u+w {REMOTE_DIR}/src 2>/dev/null;"
              f" rm -rf {REMOTE_DIR}/src")
     # Ignore archived modes: bsdtar maps Windows attributes (e.g. OneDrive's
-    # read-only flag on dirs) into the tarball, which once left the server
-    # tree read-only and broke later deploys. Fresh dirs/files from umask.
+    # read-only flag on dirs) into the tarball, which can leave the server
+    # tree read-only and break later deploys. Fresh dirs/files from umask.
     ctx.call("ssh", DEPLOY_HOST,
              f"tar --no-same-permissions -C {REMOTE_DIR} -xf /tmp/tbot_src.tar")
     ctx.call("ssh", DEPLOY_HOST, "rm -f /tmp/tbot_src.tar")

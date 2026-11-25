@@ -14,8 +14,8 @@ KV_SCHEMA = '''
 
 class MemoryStore(AsyncSQLiteStore):
     def __init__(self, db_path: str | None = None):
-        # Table name "kv" is kept for backward compatibility with
-        # existing databases.
+        # "kv" is the table name existing on-disk databases already
+        # use; renaming it would strand their rows.
         super().__init__(db_path, "kv", KV_SCHEMA)
 
     async def get(self, user_id: int, key: str) -> str | None:
@@ -38,8 +38,6 @@ class MemoryStore(AsyncSQLiteStore):
         await db.execute(
             'DELETE FROM kv WHERE user_id = ? AND key = ?', (user_id, key))
         await db.commit()
-
-    # get_all_keys is inherited from AsyncSQLiteStore.
 
     async def get_values(self, user_id: int, keys: list[str]) -> dict[str, str | None]:
         if not keys:

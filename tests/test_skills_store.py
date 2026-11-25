@@ -215,8 +215,7 @@ class TestSandboxPathPrefix(unittest.TestCase):
                                  expected)
 
     def test_windows_separators_become_posix(self):
-        # On a Windows host os.sep is '\\'; sandbox paths must still be
-        # POSIX. Simulate by using a root containing backslashes.
+        # On Windows os.sep is '\\'; sandbox paths must be POSIX regardless.
         if os.sep != '\\':
             self.skipTest('Windows-only path shape')
         self.assertIn('/skills/s/SKILL.md', self._sandbox_paths('/skills'))

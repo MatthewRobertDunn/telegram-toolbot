@@ -36,7 +36,6 @@ def _response(body: bytes, content_type: str = 'application/json',
 
 @contextlib.contextmanager
 def _configured(**overrides):
-    """Patch the config settings the providers' credential checks read."""
     values = {**_CREDENTIALS, **overrides}
     with contextlib.ExitStack() as stack:
         for attr, value in values.items():
@@ -137,7 +136,6 @@ class TestSendToChat(unittest.IsolatedAsyncioTestCase):
         return result, send
 
     async def test_send_to_chat_branches(self):
-        # By default the image is sent to the chat...
         result, send = await self._run()
         send.assert_awaited_once()
         call = send.await_args
@@ -146,8 +144,7 @@ class TestSendToChat(unittest.IsolatedAsyncioTestCase):
         self.assertIn('sent to chat and stored', result)
         self.assertIn(self.STORED_PATH, result)
 
-        # ...and send_to_chat=False keeps it private instead. Either way
-        # the image is stored in the sandbox for further processing.
+        # ...and send_to_chat=False keeps it private instead.
         result, send = await self._run(send_to_chat=False)
         send.assert_not_awaited()
         self.assertIn(f'stored in the sandbox at {self.STORED_PATH}', result)
@@ -365,8 +362,7 @@ class TestProviderDispatch(unittest.IsolatedAsyncioTestCase):
 
 
 class TestProviderCredentials(unittest.IsolatedAsyncioTestCase):
-    # Every backend checks its config up front, not just the ones whose
-    # first implementations happened to.
+    # Every backend checks its config up front.
 
     async def test_missing_setting_is_reported(self):
         cases = [('nvidia-flux3', 'NVIDIA_API_KEY'),

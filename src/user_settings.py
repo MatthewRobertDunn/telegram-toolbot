@@ -165,5 +165,4 @@ class UserSettings:
 
     @classmethod
     def default(cls) -> UserSettings:
-        """Every setting unset: the module defaults above apply."""
         return cls(UserSettingsSerialized())

@@ -1,38 +1,27 @@
 """The single submission point for serialized per-thread work.
 
-Handlers never run generation themselves. They hand a job (usually a user
-turn handed to submit_generation) to the per-thread queue, where one
-dedicated worker task drains it. This keeps exactly one piece of work
-running per chat/thread - a message typed while a previous reply is still
-being generated queues up behind it instead of racing with it - and jobs
-can be any callable, so units of work beyond replies (compaction today,
-others tomorrow) can join the same serialization. All of that state (the
-queue, the worker claim, the tracked task) lives on the thread's
-``ThreadData``, so two threads of one user never share a serialization.
+Handlers never run generation themselves: they hand a job to the
+per-thread queue, where one dedicated worker task drains it. Exactly one
+piece of work runs per chat/thread - a message typed while a reply is
+still being generated queues behind it - and jobs are any callable, so
+compaction and inbox wakeups share the same serialization. Queue state
+lives on the thread's ``ThreadData``, so two threads never share it.
 
-Every queued job gets the same treatment, written once here instead of
-pasted per command: it runs under the typing indicator (a busy spinner in
-all but name), tracked in ``ctx.generation_task`` so /stop cancels the
-work rather than the worker waiting on it, and reports the stop through
-the item's ``stopped_message``. When the job ends - successfully, with a
-failure, or stopped - dangling trailing thinking (an aborted reply's,
-with no answer to belong to) is dropped from history and Telegram, and
-the conversation is persisted once.
+Every queued job runs under the typing indicator, is tracked in
+``ctx.generation_task`` so /stop cancels the work rather than the worker
+waiting on it, and reports the stop through ``stopped_message``. When the
+job ends - successfully, with a failure, or stopped - dangling trailing
+thinking is dropped and the conversation is persisted once.
 
 Queue items carry a job thunk and a done event: submitting waits for the
-item's turn, runs to completion, and the handler resumes after its work
-has gone out. A job is a zero-arg callable returning the awaitable, so
-the coroutine is created only when the worker dequeues the item - a
-dropped item (/stop) leaves nothing un-awaited behind.
+item's turn, and the coroutine is created only when the worker dequeues
+the item, so a dropped item leaves nothing un-awaited.
 
-The worker is per-thread and transient: it exits whenever the queue is
-empty and a new one is started on the next submission, so users who are
-never coming back don't leave a task parked forever.
+The worker is transient: it exits when the queue is empty and a new one
+starts on the next submission.
 
-Inbox wakeups are just another kind of job here. There is no
-"parent loop is active" flag any more: every delivery schedules one
-wakeup job (see ``tools.subagent``), the first drains the whole inbox and
-the rest no-op, so nothing can strand mail behind a flag stuck True.
+Inbox wakeups are just another job: every delivery schedules one, the
+first drains the whole inbox and the rest no-op.
 """
 
 import asyncio
@@ -55,19 +44,11 @@ logger = logging.getLogger(__name__)
 class WorkItem:
     """One queued unit of work.
 
-    ``job`` is a zero-arg callable returning the awaitable (a thunk): the
-    coroutine comes into existence only when the worker dequeues the item,
-    so an item dropped without running (a /stop drain) leaves nothing
-    un-awaited.
-
     ``stopped_message`` is what the item tells the user when /stop
-    cancelled it mid-run. It is None for jobs whose stop is visible in
-    the missing work itself (a reply generation: the reply just does not
-    come).
-
-    ``done`` is owned by the queue machinery and set once the item is
-    processed or released; ``error`` carries a failed job's exception out
-    to the submitter (submit_task re-raises it).
+    cancelled it mid-run; None for jobs whose stop is visible in the
+    missing work itself (a reply generation). ``done`` is set once the
+    item is processed or released; ``error`` carries a failed job's
+    exception to the submitter.
     """
 
     ctx: ChatUpdateContext
@@ -77,12 +58,7 @@ class WorkItem:
     error: BaseException | None = None
 
     def abandon(self) -> None:
-        """Release this item without running it and wake the submitter.
-
-        A queued item never built its coroutine (``job`` is a thunk), so
-        there is nothing to close - releasing it is simply waking whoever
-        is waiting on ``done``.
-        """
+        """Release this item without running it and wake the submitter."""
         self.done.set()
 
 
@@ -102,17 +78,11 @@ async def submit_task(ctx: ChatUpdateContext,
     """Enqueue a unit of work and wait for it to finish.
 
     Returns once the job ran, re-raising a failure the job ended with so
-    callers see it instead of the worker swallowing it silently (a
-    dropped or cancelled item simply returns).
+    callers see it instead of the worker swallowing it silently.
 
     ``stopped_message`` is posted to the chat when /stop cancels the job
-    mid-run. Everything else a queued job needs - the typing indicator,
-    /stop supervision, the dangling-thinking cleanup, persistence - is
-    the queue's job, not the caller's.
-
-    ``job`` must be a zero-arg callable returning the awaitable: a
-    coroutine built eagerly at the call site would exist even for an item
-    that is later dropped without ever running.
+    mid-run. Everything else a queued job needs (typing indicator, /stop
+    supervision, cleanup, persistence) is the queue's job.
     """
     item = WorkItem(ctx=ctx, job=job, stopped_message=stopped_message)
     generation_queue(ctx).put_nowait(item)
@@ -140,8 +110,6 @@ def submit_generation(ctx, content: str | None = None,
     for another chat doesn't end up in the wrong history at the wrong
     time.
     """
-    # Thunk: the reply's coroutine is built by the worker on dequeue, so
-    # a /stop that drops this item leaves nothing un-awaited.
     return submit_task(
         ctx, lambda: generate_response(
             ctx, content=content,
@@ -151,17 +119,13 @@ def submit_generation(ctx, content: str | None = None,
 async def generate_response(ctx: ChatUpdateContext, content: str | None = None,
                             telegram_message_id: int | None = None) -> None:
     """One unit of work: append the user turn (if given) and carry a full
-    generation+reply cycle.
-
-    The supervision around it - the typing indicator, the tracking /stop
-    acts on, the cleanup of an aborted reply's thinking - belongs to the
-    queue item that runs this, not to the generation itself.
+    generation+reply cycle. The supervision around it belongs to the queue
+    item that runs it.
 
     One run_llm call per turn: it drains the inbox at the top of every
-    iteration, so mail present when the reply starts is answered by this
-    turn. Mail that arrives after that last drain has its own queued
-    wakeup (always-enqueue), which is why no further looping is needed
-    here.
+    iteration, so mail present when the reply starts is answered here.
+    Later mail has its own queued wakeup, which is why no further looping
+    is needed.
     """
     if content is not None:
         ctx.conversation.add_user(
@@ -216,14 +180,11 @@ async def _supervise(item: WorkItem) -> None:
 async def _drop_dangling_thinking(ctx: ChatUpdateContext) -> None:
     """Delete thinking left behind by an aborted reply.
 
-    Thinking already appended for a reply that never arrived has no
-    answer to belong to, so it goes: both the history entry and its
-    Telegram post. Leaving it would strand a dangling block a later
-    /regenerate would miss. A finished reply has its answer after the
-    thinking, so this is a no-op for every run that got that far.
+    Thinking already appended for a reply that never arrived has no answer
+    to belong to, so the history entry and its Telegram post go. A finished
+    reply has its answer after the thinking, so this is a no-op there.
     """
     if ctx.thread_data.conversation is None:
-        # A bare context (nothing loaded) has no history to clean.
         return
     for thinking in ctx.conversation.pop_trailing_thinking():
         for message_id in thinking.telegram_message_ids:
@@ -252,16 +213,12 @@ async def _run_item(item: WorkItem) -> None:
             item.error = e
             logger.error('Queued work failed', exc_info=True)
         await _drop_dangling_thinking(item.ctx)
-        # Single persistence point: every dequeued job is persisted once,
-        # right here - replies, /undo, /regenerate, /retry, /impersonate,
-        # /compact, and parent wakeups alike. A wakeup that finds an
-        # empty inbox still triggers this save (a harmless rewrite of an
-        # unchanged conversation): the pre-enqueue check makes that race
-        # rare, and a per-job persist opt-out would special-case one job
-        # type for no correctness gain. Only when the thread actually has
-        # a conversation: a bare context (none loaded) has nothing to
-        # persist and reading ctx.conversation would trip its assert.
-        # Never let a DB failure kill the worker loop.
+        # Single persistence point: every dequeued job is persisted here -
+        # replies, /undo, /regenerate, /retry, /impersonate, /compact and
+        # parent wakeups alike. A wakeup with an empty inbox still rewrites
+        # the unchanged conversation, which is harmless. Only when the
+        # thread has a conversation: a bare context would trip
+        # ctx.conversation's assert. Never let a DB failure kill the loop.
         conversation = item.ctx.thread_data.conversation
         if conversation is not None:
             try:
@@ -280,11 +237,10 @@ async def _generation_worker(submitter: ChatUpdateContext) -> None:
 
     Transient: exits as soon as the queue runs dry, so an idle thread
     doesn't keep a task parked forever; the next submit respawns one.
-    Every exit - clean drain, worker cancellation - drops the claim and
-    releases anything still queued, so a submitter never waits on a dead
-    worker and no dropped job leaks an un-awaited coroutine. Dropping is
-    safe for inbox mail too: an undrained message stays in the inbox and
-    the next turn (user message or wakeup) drains it.
+    Every exit drops the claim and releases anything still queued, so a
+    submitter never waits on a dead worker. Dropping is safe for inbox
+    mail too: an undrained message stays in the inbox and the next turn
+    (user message or wakeup) drains it.
     """
     queue = generation_queue(submitter)
     try:
@@ -305,9 +261,8 @@ async def _generation_worker(submitter: ChatUpdateContext) -> None:
         me = asyncio.current_task()
         if me is not None and submitter.generation_worker is me:
             submitter.generation_worker = None
-        # Whatever killed the loop, nothing else will drain the queue
-        # now: release the leftovers so their submitters wake instead of
-        # hanging, and so no legacy coroutine dies un-awaited.
+        # Nothing else will drain the queue now: release the leftovers so
+        # their submitters wake instead of hanging.
         while True:
             try:
                 leftover = queue.get_nowait()

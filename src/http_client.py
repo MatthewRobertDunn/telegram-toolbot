@@ -67,30 +67,24 @@ class HttpStatusError(Exception):
 
 @dataclass(frozen=True)
 class Response:
-    """A buffered HTTP response: status, headers, and the full body."""
-
     status: int
     headers: Mapping[str, str]
     content: bytes
     url: str
 
     def header(self, name: str, default: str = "") -> str:
-        """Case-insensitive header lookup."""
         for key, value in self.headers.items():
             if key.lower() == name.lower():
                 return value
         return default
 
     def text(self) -> str:
-        """The body decoded as UTF-8 (every backend here is UTF-8/ASCII)."""
         return self.content.decode("utf-8", errors="replace")
 
     def json(self) -> Any:
-        """The body parsed as JSON."""
         return json.loads(self.content)
 
     def raise_for_status(self) -> None:
-        """Raise :class:`HttpStatusError` unless the status is 2xx."""
         if not 200 <= self.status < 300:
             raise HttpStatusError(self.status, self.url, self.text())
 
@@ -118,7 +112,6 @@ def session() -> aiohttp.ClientSession:
 
 
 async def aclose() -> None:
-    """Close the shared session (graceful shutdown; tests use it too)."""
     global _session, _session_loop
     if _session is not None and not _session.closed:
         await _session.close()
@@ -153,12 +146,10 @@ async def request(method: str, url: str, *,
 
 
 async def get(url: str, **kwargs: Any) -> Response:
-    """``request("GET", ...)``."""
     return await request("GET", url, **kwargs)
 
 
 async def post(url: str, **kwargs: Any) -> Response:
-    """``request("POST", ...)``."""
     return await request("POST", url, **kwargs)
 
 

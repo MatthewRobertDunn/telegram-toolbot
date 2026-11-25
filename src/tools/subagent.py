@@ -43,13 +43,10 @@ SUBAGENT_SYSTEM_PROMPT = (
 )
 
 MAX_SUBAGENTS = 8
-# Finished records kept for subagent_list history; older ones are pruned.
 MAX_RECORDS = 32
 
-# The subagent whose tool loop is currently running (for
-# subagent_send_to_parent). The record also carries the parent context, so
-# a subagent's mail and wakeups always go through the interactive parent,
-# never through its own silent context.
+# The record of the subagent currently running its tool loop; its mail and
+# wakeups always go through the interactive parent in ``record.parent``.
 _current_subagent: contextvars.ContextVar["SubagentRecord | None"] = (
     contextvars.ContextVar('current_subagent', default=None))
 
@@ -59,9 +56,6 @@ class SubagentRecord:
     id: str
     description: str
     conversation: Conversation
-    # The interactive context that spawned this subagent. Notifications and
-    # wakeups run against it; the subagent's own silent context deliberately
-    # has no access to the parent's inbox or generation queue.
     parent: ChatUpdateContext
     inbox: SubagentInbox = field(default_factory=SubagentInbox)
     task: asyncio.Task | None = None
@@ -72,7 +66,6 @@ class SubagentRecord:
     ended_at: float | None = None
 
     def finish(self, status: SubagentStatus) -> None:
-        """Mark the record terminal, stamping the end time once."""
         self.status = status
         if self.ended_at is None:
             self.ended_at = time.monotonic()
@@ -80,11 +73,9 @@ class SubagentRecord:
     def mark_notified(self) -> bool:
         """Claim this record's single parent notification.
 
-        Several paths can race to report one record (the stop tool, the
-        cancelled-task fallback, the finished/failed tail, a /start
-        reset). The first caller wins and notifies; later callers lose
-        and stay silent, instead of every path relying on call order to
-        be first. Returns whether the caller won.
+        Several paths can race to report one record; the first caller wins and
+        notifies, later callers lose and stay silent. Returns whether the caller
+        won.
         """
         if self.notified:
             return False
@@ -93,13 +84,11 @@ class SubagentRecord:
 
     @property
     def elapsed(self) -> float:
-        """Seconds from start until end (or now, while running)."""
         end = self.ended_at if self.ended_at is not None else time.monotonic()
         return max(0.0, end - self.started_at)
 
 
 def format_duration(seconds: float) -> str:
-    """Compact human duration: 45s, 1m23s, 2h04m."""
     total = max(0, int(seconds))
     if total < 60:
         return f"{total}s"
@@ -117,10 +106,8 @@ def get_subagents(ctx: ChatUpdateContext) -> dict[str, SubagentRecord]:
 def cancel_all_subagents(ctx: ChatUpdateContext) -> None:
     """Cancel every tracked subagent (e.g. on /start reset).
 
-    Suppresses their stop notifications: the conversation is being wiped,
-    so there is no parent left to notify. Stale inbox mail is dropped, so
-    any wakeup already queued no-ops on the empty inbox (and /start bumps
-    the epoch, so even a wakeup scheduled before the reset skips).
+    Stop notifications are suppressed (no parent is left to notify) and stale
+    inbox mail is dropped, so already-queued wakeups no-op on the empty inbox.
     """
     for record in ctx.thread_data.subagents.values():
         record.mark_notified()
@@ -139,16 +126,10 @@ def _running_count(ctx: ChatUpdateContext) -> int:
 def ensure_parent_wakeup(ctx: ChatUpdateContext) -> asyncio.Task:
     """Queue a wakeup job for a delivery, whatever the parent is doing.
 
-    Deliberately unconditional: there is no "is a parent loop running?"
-    flag to consult, because such a flag leaks True on every path that
-    exits without draining (stale epoch, a racing finisher, a dropped
-    job) and then silences all later notifications. Redundant wakeups are
-    cheap instead - the first drains the whole inbox, the rest find it
-    empty and return without sending or touching the conversation.
-
-    Returns the scheduled task; it is not tracked, because nothing needs
-    to cancel it (see cancel_all_subagents) and the inbox/epoch checks
-    make a stale one harmless.
+    Deliberately unconditional: an "is a parent loop running?" flag leaks True
+    on exit paths that never drain and then silences all later notifications.
+    Redundant wakeups are cheap: the first drains the inbox, the rest find it
+    empty and return.
     """
     return asyncio.create_task(
         _wakeup_parent(ctx, conversation_epoch(ctx)))
@@ -171,15 +152,11 @@ async def _wakeup_parent(ctx: ChatUpdateContext, epoch: int) -> None:
     from handlers.generation_queue import generate_response, submit_task
 
     def mail_pending() -> bool:
-        # An epoch mismatch means /start reset the conversation meanwhile:
-        # the mail this wakeup was scheduled for is gone with it.
         return (conversation_epoch(ctx) == epoch
                 and not get_main_inbox(ctx).empty())
 
-    # Cheap no-op first: with nothing to deliver there is nothing to
-    # enqueue, so a redundant wakeup costs no job, no generation and no
-    # persistence. Checked again inside the job below, because the mail
-    # can be drained by whoever runs between here and that job's turn.
+    # Cheap no-op first: with nothing to deliver no job is enqueued. Re-checked
+    # inside the job, because the mail can be drained in between.
     if not mail_pending():
         return
 
@@ -211,10 +188,8 @@ async def _run_subagent(parent: ChatUpdateContext, record: SubagentRecord,
         )
     except asyncio.CancelledError:
         record.finish(SubagentStatus.STOPPED)
-        # A task cancelled before its first run never enters the body, so
-        # subagent_stop (which runs in the parent loop) owns the stop
-        # notice; this is only a fallback for a mid-run cancel. The inbox
-        # receipt is the single user-visible path (see _drain_inbox).
+        # A task cancelled before its first run never runs this cleanup, so
+        # subagent_stop owns the stop notice; this is only a mid-run fallback.
         if record.mark_notified():
             try:
                 await _notify_parent(
@@ -288,7 +263,6 @@ async def _run_subagent(parent: ChatUpdateContext, record: SubagentRecord,
     })
 async def subagent_start(ctx: ChatUpdateContext, description: str,
                          prompt: str, model: str | None = None) -> str:
-    """Start a background subagent and return its id immediately."""
     description = description.strip()
     if not description:
         return "Error: description must be non-empty."
@@ -359,11 +333,9 @@ async def subagent_stop(ctx: ChatUpdateContext, id: str) -> str:
         return f"Error: unknown subagent {id}."
     if record.status is not SubagentStatus.RUNNING:
         return f"Subagent {id} already {record.status}."
-    # Own the stop notice here: a task cancelled before its first run
-    # never executes its own cleanup, so relying on it would lose the
-    # Telegram notification. No parent-inbox notice: the tool result below
-    # already informs the parent loop that called us. mark_notified makes
-    # the claim explicit - the cancelled-task fallback must not double up.
+    # Own the stop notice: a task cancelled before its first run never runs its
+    # cleanup. No inbox notice, since the tool result already tells the parent
+    # loop; mark_notified keeps the fallback from doubling up.
     record.finish(SubagentStatus.STOPPED)
     record.mark_notified()
     if record.task is not None and not record.task.done():

@@ -17,9 +17,6 @@ from dataclasses import dataclass
 from typing import Any
 
 
-# Typed loosely on purpose: handlers take the per-update context, but
-# naming that type here would drag the handler modules (and their
-# imports) back into this dependency-free module.
 CommandCallback = Callable[[Any], Awaitable[object]]
 
 

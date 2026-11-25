@@ -3,8 +3,6 @@
 ``purge_stale_thread_rows`` runs once at service startup (from
 ``chatbot.post_init``, after the schemas are created) and deletes the
 threaded settings/conversation rows nothing has touched for a week.
-It returns the number of rows deleted, so the caller can log it per
-process start.
 """
 
 import logging

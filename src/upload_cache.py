@@ -41,5 +41,4 @@ def record_upload(user_id: int, path: str) -> None:
 
 
 def was_recently_uploaded(user_id: int, path: str) -> bool:
-    """True if the file at `path` was recently uploaded by `user_id`."""
     return (user_id, _key(path)) in _recent_uploads

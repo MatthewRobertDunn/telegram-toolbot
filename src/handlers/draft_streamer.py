@@ -47,15 +47,14 @@ class NullDraftSink:
 class DraftStreamer:
     """Streams partial model output as Telegram live drafts.
 
-    Live drafts (Bot API counterparts of sendMessageTextDraftAction) are
-    only rendered in private chats; the final sendRichMessage that the
-    caller sends afterwards replaces the draft. The rich draft is attempted
-    first; if a partial markdown snippet can't be parsed it falls back to a
-    plain draft, and disables itself entirely if the server won't accept
-    drafts in this chat (e.g. pre-Bot-API-10.1 server).
+    Live drafts (Bot API counterparts of sendMessageTextDraftAction) render
+    only in private chats; the caller's final sendRichMessage replaces them.
+    A rich draft whose partial markdown can't be parsed falls back to a
+    plain draft; if the server rejects drafts in this chat, streaming
+    disables itself.
 
     When drafts are unavailable every call is a silent no-op, so callers
-    never need to check `enabled` themselves; just feed output through.
+    never need to check `enabled` themselves.
     """
 
     def __init__(self, ctx: ChatUpdateContext, enabled: bool = True):
@@ -75,7 +74,7 @@ class DraftStreamer:
         )
 
     async def start(self) -> None:
-        """Send the initial empty draft (shows a "Thinking." placeholder)."""
+        """Show the "Thinking..." placeholder draft."""
         self.new_round()
         if self.enabled:
             await self._send_draft(THINKING_DRAFT)

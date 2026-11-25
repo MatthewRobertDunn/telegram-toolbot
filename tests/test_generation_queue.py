@@ -155,8 +155,8 @@ class TestGenerateResponse(unittest.TestCase):
         async def after():
             order.append('ran')
 
-        # The worker keeps going; the submitter of the failed job is the
-        # one who sees the error now.
+        # The worker keeps going; the submitter of the failed job sees
+        # the error.
         with self.assertRaises(RuntimeError):
             asyncio.run(gq.submit_task(ctx, boom))
         asyncio.run(gq.submit_task(ctx, after))
@@ -345,8 +345,6 @@ class TestMessagingReturnShapes(unittest.IsolatedAsyncioTestCase):
         return bot
 
     async def test_posting_helpers_return_message_ids(self):
-        # Each helper returns the posted message id(s) so the caller can
-        # link them to the conversation turn (/undo, /retry).
         cases: list[tuple[str, tuple[Any, ...], list[int]]] = [
             ('send_preformatted_message', ('hello',), [7]),
             ('send_image', (b'png',), [11]),
@@ -362,7 +360,7 @@ class TestMessagingReturnShapes(unittest.IsolatedAsyncioTestCase):
 class TestSplitAtLinebreak(unittest.TestCase):
 
     def test_degenerate_limit_makes_progress(self):
-        # limit <= 0 used to spin forever; it now returns the text whole.
+        # A limit <= 0 cannot make progress, so the text returns whole.
         self.assertEqual(_split_at_linebreak('abc', 0), ['abc'])
         self.assertEqual(_split_at_linebreak('abc', -5), ['abc'])
 
@@ -429,7 +427,7 @@ class TestStopLeavesInboxConsistent(unittest.IsolatedAsyncioTestCase):
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await task
-        # Not lost: still queued for the next turn.
+        # Not lost: the message stays queued for the next turn.
         self.assertFalse(inbox.empty())
         self.assertEqual([m for m in ctx.conversation.messages
                           if m['role'] == 'user'], [])

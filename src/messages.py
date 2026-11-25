@@ -37,18 +37,14 @@ class ConversationMessageType(enum.Enum):
 
 
 def custom_of(message: dict) -> dict:
-    """The message's custom-metadata dict, or {} when absent."""
     return message.get(CUSTOM) or {}
 
 
 def message_type_of(message: dict) -> ConversationMessageType | None:
     """What produced the message (see ConversationMessageType), or None
-    when untagged. Works for plain dicts and ConversationMessage alike.
-
-    An unknown persisted tag (a hand-edited or older history) reads as
-    None - the tag is not coerced to a known type - so comparisons like
-    "is this the impersonation turn?" fail safe the way the old string
-    comparison did, instead of failing to load the history."""
+    when untagged. An unknown persisted tag (hand-edited or older
+    history) reads as None instead of being coerced, so type comparisons
+    fail safe."""
     raw = custom_of(message).get('message_type')
     if not raw:
         return None
@@ -73,15 +69,11 @@ def set_message_type(message: dict,
 
 
 def telegram_ids_of(message: dict) -> list:
-    """The Telegram message ids linked to the message, or []."""
     return custom_of(message).get('telegram_message_ids') or []
 
 
 def add_telegram_ids(message: dict,
                      message_ids: int | list[int] | None) -> None:
-    """Link Telegram messages to this message: a single id or a list of
-    them (reply chunks, tool call announcements). Nothing is linked for
-    no ids; everything is stored as a list."""
     if not message_ids:
         return
     if isinstance(message_ids, int):
@@ -94,23 +86,16 @@ def is_thinking(message: dict) -> bool:
     """Whether the message is a kept thinking block: tagged THINKING in
     its custom metadata. Tag-only on purpose (fail-closed): anything so
     tagged is display-only and never sent to the endpoint, whatever role
-    it carries. Works for plain dicts and ConversationMessage alike.
-
-    An unknown message_type value is treated as not-thinking: it can
-    never be display-only, so it must reach the endpoint like any
-    ordinary message. The unknown tag is not coerced to a known type -
-    message_type_of reports it as None."""
+    it carries. An unknown tag is not thinking, so the message reaches
+    the endpoint like any ordinary message."""
     return message_type_of(message) is ConversationMessageType.THINKING
 
 
 def tool_calls_of(message: dict) -> list:
-    """The message's tool calls ([] for every other message)."""
     return message.get('tool_calls') or []
 
 
 def tool_call_ids(message: dict) -> set:
-    """Every tool call id the message references: the ids in an assistant
-    message's tool_calls, or a tool result's tool_call_id."""
     if message.get('role') == 'tool':
         return {message.get('tool_call_id')} - {None}
     return {(call or {}).get('id')
@@ -131,9 +116,6 @@ def iter_parts(message: dict):
 
 
 def iter_content_text(message: dict):
-    """Yield the message's text pieces: a string content yields itself;
-    a multimodal content yields each text part's text (image parts carry
-    no text and yield nothing)."""
     content = message.get('content')
     if isinstance(content, str):
         yield content
@@ -144,12 +126,9 @@ def iter_content_text(message: dict):
 
 
 def text_of(message: dict) -> str:
-    """The message's text: its string content, or the text parts joined
-    with newlines. Empty for image-only messages."""
     return '\n'.join(iter_content_text(message))
 
 
 def has_image(message: dict) -> bool:
-    """Whether a multimodal content carries an inline image part."""
     return any(part.get('type') == 'image_url'
                for part in iter_parts(message))
