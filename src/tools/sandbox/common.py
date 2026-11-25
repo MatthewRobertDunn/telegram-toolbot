@@ -14,12 +14,6 @@ HELPER_DIR = "/opt/toolbot"
 BASH_OUTPUT_LIMIT = 6000
 MAX_ERROR_CHARS = 500
 
-# The helpers in sandbox_image emit protocol version 1
-# (toolbot_protocol.py's PROTOCOL_VERSION); a missing version field is
-# read as version 1 (helpers from before the protocol existed), and
-# versions up to MAX_HELPER_PROTOCOL_VERSION are accepted - both keep a
-# code-only `pake publish` working against an older sandbox image. Only a
-# helper newer than this code is rejected, with a clear message.
 MAX_HELPER_PROTOCOL_VERSION = 2
 
 
@@ -56,8 +50,7 @@ def format_command_result(result: Mapping[str, Any]) -> str:
     """Render a manager.exec() result as model-visible text.
 
     The one formatter for the command-running tools (bash, python), so
-    both present the same shape: an optional timeout notice, the return
-    code, then capped stdout and stderr sections.
+    both present the same shape.
     """
     sections = []
     if result.get("timeout"):
@@ -100,9 +93,8 @@ async def _run_helper(user_id: int, helper: str, args: list[str],
     if response is not None and not isinstance(response, dict):
         return {"ok": False, "error": f"{helper} response is not an object."}
     if isinstance(response, dict):
-        # A missing version field means a helper from before the protocol
-        # existed: treat it as version 1, so a code-only deploy keeps
-        # working against an older sandbox image.
+        # Missing v: helper predates the protocol; defaulting to 1 keeps
+        # a code-only deploy working against an older image.
         version = response.get("v", 1)
         if (not isinstance(version, int) or isinstance(version, bool)
                 or version < 1):
