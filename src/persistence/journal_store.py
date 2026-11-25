@@ -4,13 +4,9 @@ Strongly typed persistence layer: methods take and return dataclasses and
 plain values, never pre-formatted strings. LLM-facing formatting lives in
 tools/journal_tool.py.
 
-Extends sqlite_store.AsyncSQLiteStore (connection, PRAGMA and schema
-lifecycle): the schema is created once at startup (chatbot.post_init) via
-``async with create_journal_store() as store: await store.create_schema()``,
-and operations ensure it themselves, so ad-hoc and test use works without
-a startup step. Validation failures raise ``StoreValidationError``, a
-ValueError subclass whose message is the user/model-facing text the tool
-layer surfaces verbatim.
+The schema is created at startup (chatbot.post_init) via
+``async with create_journal_store() as store: await store.create_schema()``;
+operations also ensure it themselves (see ``AsyncSQLiteStore``).
 
 Every operation is scoped to a single ``user_id`` supplied by the caller (the
 authenticated application context). There is no way to operate on another
@@ -64,11 +60,8 @@ class SearchPage:
     # in the requested sort direction.
     has_more: bool
     # Resume point for the next page when has_more is true (None
-    # otherwise): the edge entry's id. The paging comparison resolves
-    # that row's timestamp and uses the full (created_epoch_ms, id)
-    # position, so the id is exact across same-millisecond ties. Pass it
-    # back to search_page as cursor_id, or to the journal_query tool as
-    # its cursor.
+    # otherwise): the edge entry's id, exact across same-millisecond
+    # ties. Pass it back as search_page's cursor_id.
     next_cursor: int | None = None
 
 
@@ -127,7 +120,6 @@ def _validate_topic(topic: object, empty_message: str) -> str:
 
 
 class JournalStore(AsyncSQLiteStore):
-    # Typed rows for the dataclass mapping below.
     row_factory = aiosqlite.Row
 
     def __init__(self, db_path: str | None = None) -> None:
@@ -270,7 +262,7 @@ class JournalStore(AsyncSQLiteStore):
         # One guarded UPDATE: the topic match rides in the WHERE clause,
         # so check-and-set is a single atomic statement instead of a
         # read-modify-write. Topics are stored lowercased and matched
-        # case-insensitively, as before.
+        # case-insensitively.
         cursor = await db.execute(
             "UPDATE journal_entries SET topic = ? "
             "WHERE id = ? AND user_id = ? AND topic = ? COLLATE NOCASE",
@@ -407,20 +399,12 @@ class JournalStore(AsyncSQLiteStore):
                           ) -> SearchPage:
         """Return one page of matches plus paging hints.
 
-        has_more is true when further matching entries exist beyond the
-        returned page in the requested sort direction, detected by
-        fetching one row beyond ``limit`` rather than re-running the
-        filtered query. ``next_cursor`` is the resume point for that
-        next page - the edge entry's id, None when there is nothing to
-        resume. The id is an exact resume point: its timestamp is read
-        back from the row it names and the comparison uses the full
-        (created_epoch_ms, id) position the ORDER BY uses, so entries
-        sharing a millisecond page without loss in either direction; an
-        id whose row no longer exists (deleted, or not visible to this
-        user) raises StoreValidationError. ``start_ms`` instead
-        positions the first page by timestamp, inclusively (at or
-        before it newest-first, at or after it oldest-first); later
-        pages resume from the cursor id, which needs no timestamp.
+        ``cursor_id`` resumes from a previous page's ``next_cursor`` and is
+        exact across same-millisecond ties; ``start_ms`` instead positions
+        the first page by timestamp, inclusively (at or before it
+        newest-first, at or after it oldest-first). A cursor id whose row
+        no longer exists (deleted, or not visible to this user) raises
+        StoreValidationError.
         """
         self._validate_limit(limit)
         after = None

@@ -3,11 +3,7 @@
 ``AsyncSQLiteStore`` owns the connection and schema lifecycle every
 store shares: opening the database lazily, applying one PRAGMA policy,
 creating the schema at most once per (database path, table) for the
-process, and closing. Each table
-gets its own subclass with methods shaped for that table
-(``memory_store.MemoryStore``, ``settings_store.SettingsStore``,
-``journal_store.JournalStore``), so no caller deals with columns its
-table does not have.
+process, and closing.
 
 The database path is resolved when the connection opens (see
 ``db_path``), not at import time: pointing every store at a scratch
@@ -106,9 +102,8 @@ class AsyncSQLiteStore:
         self.table_name = table_name
         self._schema_sql = schema_sql
         self._conn: aiosqlite.Connection | None = None
-        # Flipped by create_schema so the script - journal's runs to
-        # eight statements across tables, indexes, FTS5 and triggers -
-        # is not re-executed on every operation.
+        # Flipped by create_schema so the DDL script is not
+        # re-executed on every operation.
         self._schema_ready = False
 
     @property
@@ -148,17 +143,11 @@ class AsyncSQLiteStore:
     async def create_schema(self) -> None:
         """Create tables, indexes and triggers (idempotent).
 
-        The schema may be a single statement or a multi-statement
-        script. It is applied at most once per (database path, table)
-        for the process: the explicit startup call populates the shared
-        readiness just like the first operation does, and later
-        per-operation stores adopt it without re-running the DDL.
-        In-memory databases are exempt - every connection to one is a
-        different, empty database, so they always run the script. The
-        memo is only valid while the file at the path is the one the
-        schema was applied to; a file deleted and recreated at the same
-        path mid-process needs an explicit ``_reset_schema_cache()``
-        (there is no automatic invalidation).
+        The schema may be a single statement or a multi-statement script.
+        It is applied at most once per (database path, table) for the
+        process; in-memory databases always run the script (see
+        ``_is_memory_path``). A database file deleted and recreated at the
+        same path mid-process needs an explicit ``_reset_schema_cache()``.
         """
         if self._schema_already_applied():
             # Memo hit: adopt the shared readiness so later operations
