@@ -21,10 +21,9 @@ from mock_context import mock_ctx
 # them all so no test depends on the real environment.
 _CREDENTIALS = dict(
     NVIDIA_API_KEY='nvidia-key',
-    AI_HORDE_KEY='horde-key',
-    AI_HORDE_API_URL='https://horde.test/api/v2',
     CLOUDFLARE_ACCOUNT_ID='acct',
-    CLOUDFLARE_API_TOKEN='tok')
+    CLOUDFLARE_API_TOKEN='tok',
+    OPENROUTER_API_KEY='or-key')
 
 
 def _response(body: bytes, content_type: str = 'application/json',
@@ -257,8 +256,8 @@ class TestProviderParam(unittest.IsolatedAsyncioTestCase):
                         if t.name == 'generate_image')
             self.assertIn('provider', tool.properties)
             self.assertEqual(tool.properties['provider']['enum'],
-                             ['nvidia-flux3', 'nvidia-flux2', 'horde',
-                              'cloudflare'])
+                             ['nvidia-flux3', 'nvidia-flux2', 'phoenix',
+                              'recraft'])
 
     def test_default_provider_is_a_known_provider(self):
         self.assertIn(image_gen.DEFAULT_PROVIDER, image_gen.IMAGE_PROVIDERS)
@@ -287,8 +286,8 @@ class TestProviderParam(unittest.IsolatedAsyncioTestCase):
                 with unittest.mock.patch.object(image_gen.manager,
                                                'store_file', fake_store):
                     await image_gen.generate_and_send_image(
-                        mock_ctx(), 'a cat', provider='horde')
-        self.assertEqual(seen.get('provider'), 'horde')
+                        mock_ctx(), 'a cat', provider='phoenix')
+        self.assertEqual(seen.get('provider'), 'phoenix')
 
 
 class TestProviderDispatch(unittest.IsolatedAsyncioTestCase):
@@ -348,23 +347,23 @@ class TestProviderDispatch(unittest.IsolatedAsyncioTestCase):
                 'nvidia-flux2')
         self.assertIn('content filter', str(ctx.exception))
 
-    async def test_cloudflare_defaults_to_25_steps(self):
+    async def test_phoenix_defaults_to_25_steps(self):
         # Phoenix takes the step count as num_steps; without a JSON content
         # type the raw body bytes are the image.
         image = b'\xff\xd8\xffdata'
         data, post = await self._post(
-            _response(image, 'image/jpeg'), 'cloudflare')
+            _response(image, 'image/jpeg'), 'phoenix')
         self.assertEqual(data, image)
         self.assertEqual(post.call_args.kwargs['json_body'],
                          {'prompt': 'a cat', 'width': 1024, 'height': 1024,
                           'num_steps': 25})
 
-    async def test_cloudflare_json_base64_shape(self):
+    async def test_phoenix_json_base64_shape(self):
         # Other Workers AI models answer with {"result": {"image": ...}}.
         image = b'\xff\xd8\xffdata'
         body = ('{"result": {"image": "%s"}}'
                 % base64.b64encode(image).decode()).encode()
-        data, _ = await self._post(_response(body), 'cloudflare')
+        data, _ = await self._post(_response(body), 'phoenix')
         self.assertEqual(data, image)
 
     async def test_steps_out_of_range_is_rejected(self):
@@ -387,9 +386,9 @@ class TestProviderCredentials(unittest.IsolatedAsyncioTestCase):
     async def test_missing_setting_is_reported(self):
         cases = [('nvidia-flux3', 'NVIDIA_API_KEY'),
                  ('nvidia-flux2', 'NVIDIA_API_KEY'),
-                 ('horde', 'AI_HORDE_KEY'),
-                 ('cloudflare', 'CLOUDFLARE_ACCOUNT_ID'),
-                 ('cloudflare', 'CLOUDFLARE_API_TOKEN')]
+                 ('phoenix', 'CLOUDFLARE_ACCOUNT_ID'),
+                 ('phoenix', 'CLOUDFLARE_API_TOKEN'),
+                 ('recraft', 'OPENROUTER_API_KEY')]
         for provider, attr in cases:
             with _configured(**{attr: ''}):
                 with self.assertRaises(RuntimeError) as ctx:
@@ -397,80 +396,127 @@ class TestProviderCredentials(unittest.IsolatedAsyncioTestCase):
                                                    provider=provider)
             self.assertIn(attr, str(ctx.exception))
 
-class TestHordeProvider(unittest.IsolatedAsyncioTestCase):
-    # Submit + poll + fetch: every wait is an await, so the shared event
-    # loop is never blocked while a generation is queued.
+class TestOpenRouterProvider(unittest.IsolatedAsyncioTestCase):
+    # The OpenRouter images endpoint takes an aspect ratio rather than a
+    # resolution, accepts n=1-6, and answers with inline base64 images.
 
-    IMAGE = b'RIFF\x00\x00\x00\x00WEBPdata'
+    IMAGE = b'\x89PNG\r\n\x1a\nor'
+    URL = 'https://openrouter.ai/api/v1/images'
 
-    async def _render(self, *, checks: tuple[dict, ...] = ({'finished': 1},),
-                      generations: list | None = None,
-                      extra_gets: tuple = ()) -> tuple[
-            bytes, unittest.mock.AsyncMock, unittest.mock.AsyncMock]:
-        if generations is None:
-            generations = [{'img': 'data:image/webp;base64,'
-                            + base64.b64encode(self.IMAGE).decode()}]
-        get_responses = [_response(json.dumps(c).encode())
-                         for c in checks]
-        get_responses.append(
-            _response(json.dumps({'generations': generations}).encode()))
-        get_responses.extend(extra_gets)
+    def _body(self, images: list) -> bytes:
+        return json.dumps({'data': images}).encode()
+
+    async def _render(self, images: list | None = None) -> tuple[
+            bytes, unittest.mock.AsyncMock]:
+        if images is None:
+            images = [{'b64_json': base64.b64encode(self.IMAGE).decode()}]
         post = unittest.mock.AsyncMock(
-            return_value=_response(b'{"id": "req-1"}'))
-        get = unittest.mock.AsyncMock(side_effect=get_responses)
-        with _configured(), \
-             unittest.mock.patch.object(http_client, 'post', post), \
-             unittest.mock.patch.object(http_client, 'get', get):
-            data = await image_gen.generate_image('a cat', provider='horde')
-        return data, post, get
-
-    async def test_submit_payload_and_awaited_polling(self):
-        # Not finished on the first check: the poll interval is awaited
-        # (shortened here) rather than spun on a blocking request.
-        with unittest.mock.patch.object(image_gen, 'HORDE_POLL_INTERVAL', 0):
-            data, post, get = await self._render(
-                checks=({'finished': 0}, {'finished': 1}))
-        self.assertEqual(data, self.IMAGE)
-        self.assertEqual(post.call_args.args[0],
-                         _CREDENTIALS['AI_HORDE_API_URL'] + '/generate/async')
-        payload = post.call_args.kwargs['json_body']
-        self.assertEqual(payload['params']['steps'], 25)
-        self.assertEqual(payload['params']['n'], 1)
-        self.assertEqual(payload['nsfw'], False)
-        # Three GETs: two checks plus the status fetch.
-        self.assertEqual(get.await_count, 3)
-
-    async def test_image_served_from_a_url_is_downloaded(self):
-        image_get = _response(self.IMAGE, 'image/webp')
-        data, post, get = await self._render(
-            generations=[{'img': 'https://r2.test/img.webp'}],
-            extra_gets=(image_get,))
-        self.assertEqual(data, self.IMAGE)
-        assert get.await_args is not None
-        self.assertEqual(get.await_args.args[0], 'https://r2.test/img.webp')
-
-    async def test_faulted_generation_raises(self):
-        with self.assertRaises(RuntimeError):
-            await self._render(checks=({'finished': 0, 'faulted': True},))
-
-    async def test_no_generations_raises(self):
-        with self.assertRaises(RuntimeError):
-            await self._render(generations=[])
-
-    async def test_malformed_data_uri_is_reported(self):
-        # 'data:' without a comma would previously raise a bare IndexError.
-        with self.assertRaises(RuntimeError) as ctx:
-            await self._render(generations=[{'img': 'data:image/webp'}])
-        self.assertIn('malformed', str(ctx.exception))
-
-    async def test_http_error_from_the_endpoint_carries_the_body(self):
-        post = unittest.mock.AsyncMock(
-            return_value=_response(b'{"message": "not enough kudos"}',
-                                        status=429))
+            return_value=_response(self._body(images)))
         with _configured(), \
              unittest.mock.patch.object(http_client, 'post', post):
-            with self.assertRaises(http_client.HttpStatusError):
-                await image_gen.generate_image('a cat', provider='horde')
+            data = await image_gen.generate_image('a cat',
+                                                  provider='recraft')
+        return data, post
+
+    async def test_payload_and_default_aspect_ratio(self):
+        # n is fixed at 6 (the tool only keeps the first image) and the
+        # default aspect ratio is 'auto'.
+        data, post = await self._render()
+        self.assertEqual(data, self.IMAGE)
+        self.assertEqual(post.call_args.args[0], self.URL)
+        payload = post.call_args.kwargs['json_body']
+        self.assertEqual(
+            payload,
+            {'model': 'recraft/recraft-v4.1-flash-v2:free',
+             'prompt': 'a cat', 'response_format': 'b64_json',
+             'aspect_ratio': 'auto', 'n': 6})
+
+    async def test_explicit_aspect_ratio_is_sent(self):
+        _, post = await self._render_post(aspect_ratio='16:9')
+        self.assertEqual(post.call_args.kwargs['json_body']['aspect_ratio'],
+                         '16:9')
+
+    async def _render_post(self, **kwargs) -> tuple[
+            bytes, unittest.mock.AsyncMock]:
+        image = self.IMAGE
+        post = unittest.mock.AsyncMock(return_value=_response(
+            self._body([{'b64_json': base64.b64encode(image).decode()}])))
+        with _configured(), \
+             unittest.mock.patch.object(http_client, 'post', post):
+            data = await image_gen.generate_image(
+                'a cat', provider='recraft', **kwargs)
+        return data, post
+
+    async def test_first_of_several_images_is_kept(self):
+        other = b'\x89PNG\r\n\x1a\nsecond'
+        data, _ = await self._render(
+            images=[{'b64_json': base64.b64encode(self.IMAGE).decode()},
+                    {'b64_json': base64.b64encode(other).decode()}])
+        self.assertEqual(data, self.IMAGE)
+
+    async def test_no_images_raises(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            await self._render(images=[])
+        self.assertIn('no images', str(ctx.exception))
+
+    async def test_missing_b64_raises(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            await self._render(images=[{}])
+        self.assertIn('no b64_json image data', str(ctx.exception))
+
+    async def test_resolution_is_not_a_parameter(self):
+        # The tool result reports the mismatch instead of silently ignoring
+        # the resolution; no request is made.
+        result = await image_gen.generate_and_send_image(
+            mock_ctx(), 'a cat', provider='recraft', resolution='1024x1024')
+        assert isinstance(result, str)
+        self.assertIn("does not support the 'resolution' parameter", result)
+        self.assertIn('aspect_ratio', result)
+
+    async def test_invalid_aspect_ratio_is_reported(self):
+        result = await image_gen.generate_and_send_image(
+            mock_ctx(), 'a cat', provider='recraft', aspect_ratio='21:9')
+        assert isinstance(result, str)
+        self.assertIn("Invalid aspect_ratio '21:9'", result)
+
+    async def test_valid_aspect_ratio_reaches_the_render(self):
+        seen = {}
+
+        async def fake_generate(prompt, width=1024, height=1024,
+                                steps=None, provider='unset',
+                                aspect_ratio=None):
+            seen['aspect_ratio'] = aspect_ratio
+            return b'\x89PNG\r\n\x1a\n'
+
+        async def fake_store(user_id, data, name):
+            return '/workspace/uploads/generated_1.png', None
+
+        with unittest.mock.patch.object(image_gen, 'generate_image',
+                                        fake_generate):
+            with unittest.mock.patch.object(Messaging, 'send_image',
+                                            unittest.mock.AsyncMock()):
+                with unittest.mock.patch.object(image_gen.manager,
+                                                'store_file', fake_store):
+                    await image_gen.generate_and_send_image(
+                        mock_ctx(), 'a cat', provider='recraft',
+                        aspect_ratio='9:16')
+        self.assertEqual(seen.get('aspect_ratio'), '9:16')
+
+    async def test_no_resolution_still_works_for_every_provider(self):
+        # resolution is now optional everywhere: the resolution-driven
+        # backends still default to 1024x1024.
+        image = b'\x89PNG\r\n\x1a\n'
+        body = ('{"artifacts": [%s]}' % json.dumps(
+            {'base64': base64.b64encode(image).decode(),
+             'finishReason': 'SUCCESS'})).encode()
+        post = unittest.mock.AsyncMock(return_value=_response(body))
+        with _configured(), \
+             unittest.mock.patch.object(http_client, 'post', post):
+            data = await image_gen.generate_image('a cat')
+        self.assertEqual(data, image)
+        self.assertEqual(post.call_args.kwargs['json_body'],
+                         {'prompt': 'a cat', 'width': 1024, 'height': 1024,
+                          'steps': 50})
 
 
 class TestGenerationDeadline(unittest.IsolatedAsyncioTestCase):

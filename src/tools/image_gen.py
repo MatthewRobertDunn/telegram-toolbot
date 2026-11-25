@@ -40,20 +40,25 @@ IMAGE_GENERATION_DEADLINE = 300.0
 # Image backends selectable via the tools' ``provider`` parameter.
 PROVIDER_NVIDIA_FLUX3 = "nvidia-flux3"
 PROVIDER_NVIDIA_FLUX2 = "nvidia-flux2"
-PROVIDER_HORDE = "horde"
-PROVIDER_CLOUDFLARE = "cloudflare"
+PROVIDER_PHOENIX = "phoenix"
+PROVIDER_RECRAFT = "recraft"
 DEFAULT_PROVIDER = PROVIDER_NVIDIA_FLUX3
 
 # Per-request budgets for the backends' individual calls; every one is also
 # covered by IMAGE_GENERATION_DEADLINE.
 NVIDIA_REQUEST_TIMEOUT = 180.0
-HORDE_REQUEST_TIMEOUT = 30.0
-HORDE_IMAGE_URL_TIMEOUT = 60.0
 CLOUDFLARE_REQUEST_TIMEOUT = 120.0
+OPENROUTER_REQUEST_TIMEOUT = 120.0
 
-# AI Horde async polling behaviour.
-HORDE_POLL_INTERVAL = 3.0
-HORDE_CLIENT_AGENT = "telegram-toolbot/1.0"
+# OpenRouter's images endpoint only accepts these aspect ratios ("auto" lets
+# the model pick one). It takes no width/height, so a resolution is rejected
+# for this provider rather than silently ignored.
+VALID_ASPECT_RATIOS = ("1:1", "2:1", "1:2", "3:2", "2:3", "4:3", "3:4",
+                       "5:4", "4:5", "16:9", "9:16", "auto")
+
+# OpenRouter's images endpoint accepts n in 1-6. The tool delivers a single
+# image, so it always asks for the maximum and keeps the first result.
+OPENROUTER_N = 6
 
 
 def parse_resolution(resolution: str) -> tuple[int, int]:
@@ -102,8 +107,10 @@ class _Provider:
     default_steps: int
     steps_range: tuple[int, int]
     # Renders one image; returns the raw bytes in whatever container the
-    # backend produces (PNG, JPEG or WEBP).
-    render: Callable[[str, int, int, int], Awaitable[bytes]]
+    # backend produces (PNG, JPEG or WEBP). Width/height/steps are positional
+    # for the backends that take them; ``aspect_ratio`` is a keyword arg for
+    # the OpenRouter backend, which ignores the positional ones.
+    render: Callable[..., Awaitable[bytes]]
 
 
 async def _render_nvidia(url: str, prompt: str, width: int, height: int,
@@ -142,7 +149,7 @@ def _nvidia_provider(name: str, url_attr: str, default_steps: int) -> _Provider:
     """
 
     async def render(prompt: str, width: int, height: int,
-                     steps: int) -> bytes:
+                     steps: int, aspect_ratio: str | None = None) -> bytes:
         return await _render_nvidia(getattr(config, url_attr), prompt,
                                     width, height, steps)
 
@@ -154,81 +161,8 @@ def _nvidia_provider(name: str, url_attr: str, default_steps: int) -> _Provider:
         render=render)
 
 
-async def _render_horde(prompt: str, width: int, height: int,
-                        steps: int) -> bytes:
-    """Render via the AI Horde crowdsourced backend (async submit + poll).
-
-    Defaults to 25 steps: larger requests need the account to already hold
-    the kudos upfront (HTTP 403 ``KudosUpfront`` otherwise). Every wait is
-    an ``await``, so polling shares the loop with everything else; the
-    overall render is bounded by IMAGE_GENERATION_DEADLINE.
-    """
-    base_url = config.AI_HORDE_API_URL.rstrip("/")
-    headers = {
-        "apikey": config.AI_HORDE_KEY,
-        "Client-Agent": HORDE_CLIENT_AGENT,
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "prompt": prompt,
-        "params": {
-            "width": width,
-            "height": height,
-            "steps": steps,
-            "cfg_scale": 7,
-            "sampler_name": "k_euler",
-            "n": 1,
-        },
-        "nsfw": False,
-        "models": [],
-        "r2": False,
-    }
-    response = await http_client.post(f"{base_url}/generate/async",
-                                      headers=headers, json_body=payload,
-                                      timeout=HORDE_REQUEST_TIMEOUT)
-    response.raise_for_status()
-    request_id = response.json()["id"]
-
-    while True:
-        status_resp = await http_client.get(
-            f"{base_url}/generate/check/{request_id}",
-            headers=headers, timeout=HORDE_REQUEST_TIMEOUT)
-        status_resp.raise_for_status()
-        status = status_resp.json()
-        if status.get("finished", 0) >= 1:
-            break
-        if status.get("faulted"):
-            raise RuntimeError("AI Horde reported a generation fault.")
-        await asyncio.sleep(HORDE_POLL_INTERVAL)
-
-    result_resp = await http_client.get(
-        f"{base_url}/generate/status/{request_id}",
-        headers=headers, timeout=HORDE_REQUEST_TIMEOUT)
-    result_resp.raise_for_status()
-    generations = result_resp.json().get("generations", [])
-    if not generations:
-        raise RuntimeError("AI Horde returned no images.")
-    image = generations[0]["img"]
-    if image.startswith(("http://", "https://")):
-        image_resp = await http_client.get(
-            image, timeout=HORDE_IMAGE_URL_TIMEOUT)
-        image_resp.raise_for_status()
-        return image_resp.content
-    if image.startswith("data:"):
-        # A data URI without a comma separator is malformed; report that
-        # instead of raising a bare IndexError.
-        _, sep, encoded = image.partition(",")
-        if not sep:
-            raise RuntimeError(
-                "AI Horde returned a malformed image data URI.")
-        image = encoded
-    # Decoding here both strips the base64 wrapper and proves the payload
-    # really is image data before it reaches the shared store path.
-    return base64.b64decode(image)
-
-
 async def _render_cloudflare(prompt: str, width: int, height: int,
-                             steps: int) -> bytes:
+                             steps: int, aspect_ratio: str | None = None) -> bytes:
     """Render via Cloudflare Workers AI (default: Leonardo Phoenix 1.0).
 
     Phoenix returns raw JPEG bytes (``image/jpeg``); other Workers AI image
@@ -261,24 +195,62 @@ async def _render_cloudflare(prompt: str, width: int, height: int,
     return response.content
 
 
+async def _render_openrouter(prompt: str, width: int = 1024, height: int = 1024,
+                             steps: int = 1,
+                             aspect_ratio: str | None = None) -> bytes:
+    """Render via the OpenRouter images API.
+
+    Only ``aspect_ratio`` reaches the endpoint; width, height and steps are
+    ignored, and ``generate_image`` rejects a ``resolution`` for this
+    provider before it gets here. The response is requested as inline base64
+    and the first of the generated images is kept.
+    """
+    aspect_ratio = aspect_ratio or "auto"
+    headers = {
+        "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": config.OPENROUTER_IMAGE_MODEL,
+        "prompt": prompt,
+        "response_format": "b64_json",
+        "aspect_ratio": aspect_ratio,
+        "n": OPENROUTER_N,
+    }
+    response = await http_client.post(
+        "https://openrouter.ai/api/v1/images",
+        headers=headers, json_body=payload,
+        timeout=OPENROUTER_REQUEST_TIMEOUT)
+    response.raise_for_status()
+    images = response.json().get("data", [])
+    if not images:
+        raise RuntimeError("OpenRouter returned no images.")
+    first = images[0]
+    if not first.get("b64_json"):
+        raise RuntimeError("OpenRouter returned no b64_json image data.")
+    return base64.b64decode(first["b64_json"])
+
+
 PROVIDERS: dict[str, _Provider] = {
     PROVIDER_NVIDIA_FLUX3: _nvidia_provider(
         PROVIDER_NVIDIA_FLUX3, "IMAGE_GEN_URL", default_steps=50),
     PROVIDER_NVIDIA_FLUX2: _nvidia_provider(
         PROVIDER_NVIDIA_FLUX2, "NVIDIA_FLUX2_GEN_URL", default_steps=4),
-    PROVIDER_HORDE: _Provider(
-        name=PROVIDER_HORDE,
-        requires=(("AI_HORDE_KEY", "AI Horde API key"),),
-        default_steps=25,
-        steps_range=(1, 50),
-        render=_render_horde),
-    PROVIDER_CLOUDFLARE: _Provider(
-        name=PROVIDER_CLOUDFLARE,
+    PROVIDER_PHOENIX: _Provider(
+        name=PROVIDER_PHOENIX,
         requires=(("CLOUDFLARE_ACCOUNT_ID", "Cloudflare account ID"),
                   ("CLOUDFLARE_API_TOKEN", "Cloudflare API token")),
         default_steps=25,
         steps_range=(1, 50),
         render=_render_cloudflare),
+    PROVIDER_RECRAFT: _Provider(
+        name=PROVIDER_RECRAFT,
+        requires=(("OPENROUTER_API_KEY", "OpenRouter API key"),),
+        # OpenRouter takes no step count; the single accepted value is a
+        # no-op default (the tool schema never exposes steps anyway).
+        default_steps=1,
+        steps_range=(1, 1),
+        render=_render_openrouter),
 }
 # Backends in schema/enum order (the tool schemas and tests rely on it).
 IMAGE_PROVIDERS = tuple(PROVIDERS)
@@ -286,14 +258,16 @@ IMAGE_PROVIDERS = tuple(PROVIDERS)
 
 async def generate_image(prompt: str, width: int = 1024, height: int = 1024,
                          steps: int | None = None,
-                         provider: str = DEFAULT_PROVIDER) -> bytes:
+                         provider: str = DEFAULT_PROVIDER,
+                         aspect_ratio: str | None = None) -> bytes:
     """Render an image with the selected backend, returning the raw bytes.
 
-    ``steps`` defaults per backend (25 for Cloudflare Phoenix and AI Horde,
-    where larger requests need upfront kudos, 50 for NVIDIA FLUX.3-Klein, 4
-    for NVIDIA FLUX.2-Klein) and is validated against the backend's
-    accepted range. The whole generation — submit, polling and any image
-    download — is bounded by IMAGE_GENERATION_DEADLINE seconds.
+    ``steps`` defaults per backend (25 for Phoenix on Cloudflare, 50 for
+    NVIDIA FLUX.3-Klein, 4 for NVIDIA FLUX.2-Klein) and is validated against
+    the backend's accepted range. Recraft (OpenRouter) takes no step count,
+    so its range is a single accepted value and any other value is rejected.
+    The whole generation — request and any image download — is bounded by
+    IMAGE_GENERATION_DEADLINE seconds.
     """
     try:
         spec = PROVIDERS[provider]
@@ -312,7 +286,8 @@ async def generate_image(prompt: str, width: int = 1024, height: int = 1024,
             f"must be {low}-{high}")
     try:
         async with asyncio.timeout(IMAGE_GENERATION_DEADLINE):
-            return await spec.render(prompt, width, height, resolved_steps)
+            return await spec.render(prompt, width, height, resolved_steps,
+                                     aspect_ratio=aspect_ratio)
     except TimeoutError:
         raise RuntimeError(
             "image generation timed out after "
@@ -326,14 +301,12 @@ class GeneratedImage:
     data: bytes
     # None when storing it in the sandbox failed.
     path: str | None
-    # Sniffed from the bytes: NVIDIA returns PNG, Cloudflare JPEG,
-    # AI Horde WEBP.
+    # Sniffed from the bytes rather than assumed.
     mime: str
 
 
 def _sniff_format(data: bytes) -> tuple[str, str]:
-    """Guess (extension, mime) from magic bytes; Cloudflare is JPEG,
-    NVIDIA PNG, Horde WEBP.
+    """Guess (extension, mime) from magic bytes.
 
     Unknown containers are an error rather than a guessed PNG: a mislabeled
     image would be undeliverable (sendPhoto only takes PNG/JPEG) and
@@ -366,24 +339,42 @@ def _error_text(e: BaseException) -> str:
 
 
 async def _generate_image(ctx: AgentContext, prompt: str,
-                          resolution: str,
-                          provider: str = DEFAULT_PROVIDER) -> GeneratedImage | str:
+                          resolution: str | None,
+                          provider: str = DEFAULT_PROVIDER,
+                          aspect_ratio: str | None = None) -> GeneratedImage | str:
     """Shared business logic: render the image and store it in the sandbox.
 
     Returns the bytes plus their sandbox path, or an error string fit for
     the model. Sending the image to the chat is the caller's job.
+
+    ``resolution`` and ``aspect_ratio`` are both optional because the
+    backends disagree on which they accept: OpenRouter only takes an
+    aspect ratio, while the others only take a resolution. Passing the wrong
+    one is reported to the model instead of being silently dropped.
     """
     if provider not in PROVIDERS:
         return (f"Unknown image provider '{provider}'. "
                 f"Supported providers: {', '.join(IMAGE_PROVIDERS)}")
+    if provider == PROVIDER_RECRAFT:
+        if resolution is not None:
+            return ("OpenRouter does not support the 'resolution' "
+                    "parameter; use 'aspect_ratio' instead.")
+        resolved_aspect = aspect_ratio or "auto"
+        if resolved_aspect not in VALID_ASPECT_RATIOS:
+            return (f"Invalid aspect_ratio '{resolved_aspect}'. "
+                    f"Must be one of: {', '.join(VALID_ASPECT_RATIOS)}.")
+        image_kwargs: dict = {'provider': provider,
+                              'aspect_ratio': resolved_aspect}
+    else:
+        try:
+            width, height = parse_resolution(resolution or DEFAULT_RESOLUTION)
+        except ValueError as e:
+            logger.warning("Invalid image resolution requested: %s", e)
+            return str(e)
+        image_kwargs = {'width': width, 'height': height,
+                        'provider': provider}
     try:
-        width, height = parse_resolution(resolution)
-    except ValueError as e:
-        logger.warning("Invalid image resolution requested: %s", e)
-        return str(e)
-    try:
-        data = await generate_image(prompt, width=width, height=height,
-                                    provider=provider)
+        data = await generate_image(prompt, **image_kwargs)
         ext, mime = _sniff_format(data)
         path, error = await manager.store_file(
             ctx.user_id, data, f"generated_{int(time.time())}.{ext}")
@@ -420,7 +411,15 @@ _RESOLUTION_PARAM = {
     "type": "string",
     "description": ("Image size as WIDTHxHEIGHT, e.g. '1024x1024'. "
                     f"Each dimension must be a multiple of {DIM_STEP} "
-                    f"between {MIN_DIM} and {MAX_DIM}."),
+                    f"between {MIN_DIM} and {MAX_DIM}. Ignored by the "
+                    "'recraft' provider, which uses aspect_ratio."),
+}
+
+_ASPECT_RATIO_PARAM = {
+    "type": "string",
+    "description": ("Aspect ratio for the image: '1:1', '2:1', '1:2', '3:2', "
+                    "'2:3', '4:3', '3:4', '5:4', '4:5', '16:9', '9:16' or "
+                    "'auto'. Only used by the 'recraft' provider."),
 }
 
 _ADD_TO_CONTEXT_PARAM = {
@@ -434,8 +433,9 @@ _PROVIDER_PARAM = {
     "type": "string",
     "enum": list(IMAGE_PROVIDERS),
     "description": ("Image backend: 'nvidia-flux3' (default), "
-                    "'nvidia-flux2' (fast few-step), 'cloudflare' (Leonardo "
-                    "Phoenix 1.0) or 'horde' (crowdsourced)."),
+                    "'nvidia-flux2' (fast few-step), 'phoenix' (Leonardo "
+                    "Phoenix 1.0 via Cloudflare) or 'recraft' (OpenRouter "
+                    "images API)."),
 }
 
 
@@ -447,14 +447,15 @@ _PROVIDER_PARAM = {
                  "add_to_context to true to view it yourself (needs vision). "
                  "Content filtering is by word list."
                  "You may need to avoid sexual, polistical, religious words."
-                 "Set provider to 'nvidia-flux2', 'cloudflare' or 'horde' "
-                 "to override the default 'nvidia-flux3'."),
+                 "Set provider to 'nvidia-flux2', 'phoenix' or "
+                 "'recraft' to override the default 'nvidia-flux3'."),
     parameters={
         "prompt": {
             "type": "string",
             "description": "Text description of image to generate",
         },
         "resolution": _RESOLUTION_PARAM,
+        "aspect_ratio": _ASPECT_RATIO_PARAM,
         "provider": _PROVIDER_PARAM,
         "send_to_chat": {
             "type": "boolean",
@@ -465,11 +466,13 @@ _PROVIDER_PARAM = {
     })
 async def generate_and_send_image(
         ctx: ChatUpdateContext, prompt: str,
-        resolution: str = DEFAULT_RESOLUTION,
+        resolution: str | None = None,
         provider: str = DEFAULT_PROVIDER,
         send_to_chat: bool = True,
-        add_to_context: bool = False) -> str | ToolCallResult:
-    result = await _generate_image(ctx, prompt, resolution, provider)
+        add_to_context: bool = False,
+        aspect_ratio: str | None = None) -> str | ToolCallResult:
+    result = await _generate_image(ctx, prompt, resolution, provider,
+                                   aspect_ratio=aspect_ratio)
     if isinstance(result, str):
         return result
     if send_to_chat:
@@ -477,7 +480,7 @@ async def generate_and_send_image(
             await ctx.messaging.send_image(result.data)
         else:
             # sendPhoto only reliably takes PNG/JPEG; anything else the
-            # backend returns (e.g. Horde's WEBP) goes as a document.
+            # backend returns (e.g. WEBP) goes as a document.
             if result.path is not None:
                 filename = os.path.basename(result.path)
             else:
@@ -494,24 +497,26 @@ async def generate_and_send_image(
                  "/workspace/uploads for sandbox processing. Never shown to "
                  "the user: report its path to the parent assistant to share. "
                  "Set add_to_context to true to view it yourself (needs "
-                 "vision). Set provider to 'nvidia-flux2', "
-                 "'cloudflare' or 'horde' to override the default "
-                 "'nvidia-flux3'."),
+                 "vision). Set provider to 'nvidia-flux2', 'phoenix' or "
+                 "'recraft' to override the default 'nvidia-flux3'."),
     parameters={
         "prompt": {
             "type": "string",
             "description": "Text description of image to generate",
         },
         "resolution": _RESOLUTION_PARAM,
+        "aspect_ratio": _ASPECT_RATIO_PARAM,
         "provider": _PROVIDER_PARAM,
         "add_to_context": _ADD_TO_CONTEXT_PARAM,
     })
 async def generate_image_subagent(
         ctx: AgentContext, prompt: str,
-        resolution: str = DEFAULT_RESOLUTION,
+        resolution: str | None = None,
         provider: str = DEFAULT_PROVIDER,
-        add_to_context: bool = False) -> str | ToolCallResult:
-    result = await _generate_image(ctx, prompt, resolution, provider)
+        add_to_context: bool = False,
+        aspect_ratio: str | None = None) -> str | ToolCallResult:
+    result = await _generate_image(ctx, prompt, resolution, provider,
+                                   aspect_ratio=aspect_ratio)
     if isinstance(result, str):
         return result
     return _as_result(_describe(result, prompt, sent=False),

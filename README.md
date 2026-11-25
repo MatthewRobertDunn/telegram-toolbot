@@ -132,11 +132,11 @@ If you don't need the sandbox, you can disable its tools by removing the `tools.
 | `NVIDIA_API_KEY` | *(falls back to `OPENAI_API_KEY`)* | Key for NVIDIA Flux image generation |
 | `IMAGE_GEN_URL` | `https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux-3-image-klein` | Endpoint for the default `nvidia-flux3` image provider |
 | `NVIDIA_FLUX2_GEN_URL` | `https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b` | NVIDIA FLUX.2-Klein endpoint (`provider: "nvidia-flux2"`) |
-| `AI_HORDE_KEY` | *(none — `horde` provider disabled)* | Key for AI Horde image generation (`provider: "horde"`); the `AI_HOARD_KEY` spelling is accepted as an alias. Anonymous key `0000000000` works with limits |
-| `AI_HORDE_API_URL` | `https://aihorde.net/api/v2` | AI Horde API endpoint |
-| `CLOUDFLARE_ACCOUNT_ID` | *(none — `cloudflare` provider disabled)* | Cloudflare account ID for Workers AI image generation (`provider: "cloudflare"`) |
-| `CLOUDFLARE_API_TOKEN` | *(none — `cloudflare` provider disabled)* | Cloudflare API token for Workers AI image generation |
-| `CLOUDFLARE_IMAGE_MODEL` | `@cf/leonardo/phoenix-1.0` | Workers AI image model for the `cloudflare` provider |
+| `OPENROUTER_API_KEY` | *(none — `recraft` provider disabled)* | Key for OpenRouter image generation (`provider: "recraft"`) |
+| `OPENROUTER_IMAGE_MODEL` | `recraft/recraft-v4.1-flash-v2:free` | Image model for the `recraft` provider |
+| `CLOUDFLARE_ACCOUNT_ID` | *(none — `phoenix` provider disabled)* | Cloudflare account ID for Workers AI image generation (`provider: "phoenix"`) |
+| `CLOUDFLARE_API_TOKEN` | *(none — `phoenix` provider disabled)* | Cloudflare API token for Workers AI image generation |
+| `CLOUDFLARE_IMAGE_MODEL` | `@cf/leonardo/phoenix-1.0` | Workers AI image model for the `phoenix` provider |
 | `SANDBOX_IMAGE` | `elpechos/toolbot-sandbox:latest` | Docker image used for sandboxes |
 | `SANDBOX_IDLE_STOP_TIMEOUT` | `3600` | Seconds of inactivity before a sandbox is stopped (its files are kept and it is restarted on the next access) |
 | `SANDBOX_IDLE_DESTROY_TIMEOUT` | `86400` | Seconds since the last access before a sandbox is removed (loses all changes) |
@@ -247,7 +247,7 @@ The bot uses OpenAI-compatible function calling. These tools are available to th
 | `glob` | Find sandbox files by glob pattern, sorted by modification time |
 | `read_image` | Read an image from the sandbox and attach it for the model to see (needs vision); skips re-sending files the user just uploaded |
 | `send_file` | Send a file from the sandbox to the user as a Telegram document |
-| `generate_image` | Generate an image (default `provider: "nvidia-flux3"`; also `"nvidia-flux2"`, `"cloudflare"`, `"horde"`) |
+| `generate_image` | Generate an image (default `provider: "nvidia-flux3"`; also `"nvidia-flux2"`, `"phoenix"`, `"recraft"`) |
 | `memory_list` / `memory_get` / `memory_set` / `memory_delete` | The agent's persistent per-user memory |
 | `journal_add` / `journal_get` / `journal_edit` / `journal_delete` / `journal_topic_edit` / `journal_query` / `journal_list_topics` | The agent's persistent per-user journal of longer-term notes, searched by text and topic |
 | `subagent_start` | Spawn a subagent in a fresh conversation to work on a task (with the same tools and sandbox) and report back. Takes an optional `model` to run that subagent on a different model than the default |

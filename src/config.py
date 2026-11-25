@@ -83,14 +83,14 @@ if not os.environ.get("NVIDIA_API_KEY") and NVIDIA_API_KEY:
         "NVIDIA_API_KEY is not set; falling back to OPENAI_API_KEY for "
         "NVIDIA-hosted image generation. Set NVIDIA_API_KEY if those "
         "keys differ.")
-# AI Horde image generation backend. Accepts the documented AI_HORDE_KEY as
-# well as the AI_HOARD_KEY spelling already present in some .env files.
-AI_HORDE_KEY = os.environ.get("AI_HORDE_KEY", os.environ.get("AI_HOARD_KEY", ""))
-AI_HORDE_API_URL = os.environ.get("AI_HORDE_API_URL", "https://aihorde.net/api/v2")
 CLOUDFLARE_ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
 CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "")
 CLOUDFLARE_IMAGE_MODEL = os.environ.get(
     "CLOUDFLARE_IMAGE_MODEL", "@cf/leonardo/phoenix-1.0")
+# OpenRouter image generation backend (provider "openrouter").
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_IMAGE_MODEL = os.environ.get(
+    "OPENROUTER_IMAGE_MODEL", "recraft/recraft-v4.1-flash-v2:free")
 LLM_MODEL = os.environ.get("LLM_MODEL", "auto:smart")
 # Optional operator override for the model used by the `subagent` tool.
 # Unset means use the user's current model (their /model setting).
