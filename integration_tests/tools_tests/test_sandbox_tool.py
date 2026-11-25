@@ -80,7 +80,6 @@ class TestSandboxToolsIntegration(unittest.IsolatedAsyncioTestCase):
         result = await search.grep(ctx, "needle")
         self.assertIn("Found 2 matches", result)
         self.assertIn("the needle is here", result)
-        # The include filter restricts the search to matching names.
         result = await search.grep(ctx, "needle", include="*.txt")
         self.assertIn("Found 1 matches", result)
         self.assertIn("a.txt", result)
