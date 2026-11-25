@@ -1,10 +1,5 @@
-"""Image generation tool: render images via pluggable backends.
-
-Each backend is described by a :class:`_Provider` record in ``PROVIDERS``:
-it owns its credentials, defaults, step validation, request format and
-response parsing, and returns raw image bytes. All network I/O goes through
-the shared async client in :mod:`http_client`, so a generation never blocks
-the event loop, and every generation is bounded by an overall deadline.
+"""Image generation tool: backend renderers in ``PROVIDERS`` return raw image
+bytes through the shared async client, under one overall deadline.
 """
 
 import asyncio
@@ -29,30 +24,21 @@ MIN_DIM = 512
 MAX_DIM = 1568
 DIM_STEP = 16
 DEFAULT_RESOLUTION = "1024x1024"
-# Cap on the endpoint error body echoed back to the model as the tool result.
 MAX_ERROR_CHARS = 2000
 
-# Overall deadline for one image generation (submit, polling and any image
-# download together), so no single generation can run unbounded. It
-# dominates the per-request budgets below.
+# Overall deadline for one generation: the request plus any image download.
 IMAGE_GENERATION_DEADLINE = 300.0
 
-# Image backends selectable via the tools' ``provider`` parameter.
 PROVIDER_NVIDIA_FLUX3 = "nvidia-flux3"
 PROVIDER_NVIDIA_FLUX2 = "nvidia-flux2"
 PROVIDER_PHOENIX = "phoenix"
 PROVIDER_RECRAFT = "recraft"
 DEFAULT_PROVIDER = PROVIDER_NVIDIA_FLUX3
 
-# Per-request budgets for the backends' individual calls; every one is also
-# covered by IMAGE_GENERATION_DEADLINE.
 NVIDIA_REQUEST_TIMEOUT = 180.0
 CLOUDFLARE_REQUEST_TIMEOUT = 120.0
 OPENROUTER_REQUEST_TIMEOUT = 120.0
 
-# OpenRouter's images endpoint only accepts these aspect ratios ("auto" lets
-# the model pick one). It takes no width/height, so a resolution is rejected
-# for this provider rather than silently ignored.
 VALID_ASPECT_RATIOS = ("1:1", "2:1", "1:2", "3:2", "2:3", "4:3", "3:4",
                        "5:4", "4:5", "16:9", "9:16", "auto")
 
@@ -62,7 +48,6 @@ OPENROUTER_N = 6
 
 
 def parse_resolution(resolution: str) -> tuple[int, int]:
-    """Parse a 'WIDTHxHEIGHT' string into validated dimensions."""
     parts = re.split(r"[x×*]", resolution.strip().lower().replace(" ", ""))
     if len(parts) != 2:
         raise ValueError(
@@ -84,32 +69,14 @@ def parse_resolution(resolution: str) -> tuple[int, int]:
     return width, height
 
 
-# ---------------------------------------------------------------------------
-# Provider layer
-#
-# Every backend renders a validated request to raw image bytes; its URL,
-# headers, payload and response parsing live in its render function, so
-# ``generate_image`` only resolves the provider, applies the shared
-# validation and routes.
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class _Provider:
-    """One image backend's contract with :func:`generate_image`."""
-
     name: str
-    # (config attribute, human-readable name) pairs that must be set to use
-    # this backend; all of them are checked, so a backend never
-    # half-configures.
     requires: tuple[tuple[str, str], ...]
-    # Default and accepted (inclusive) range for the step count.
     default_steps: int
     steps_range: tuple[int, int]
-    # Renders one image; returns the raw bytes in whatever container the
-    # backend produces (PNG, JPEG or WEBP). Width/height/steps are positional
-    # for the backends that take them; ``aspect_ratio`` is a keyword arg for
-    # the OpenRouter backend, which ignores the positional ones.
+    # Renders one image to raw bytes. Width, height and steps are positional;
+    # ``aspect_ratio`` is a keyword used only by the OpenRouter backend.
     render: Callable[..., Awaitable[bytes]]
 
 
@@ -117,10 +84,9 @@ async def _render_nvidia(url: str, prompt: str, width: int, height: int,
                          steps: int) -> bytes:
     """Render via an NVIDIA FLUX NIM endpoint.
 
-    FLUX.3-Klein and FLUX.2-Klein expose the identical JSON contract and
-    differ only in URL and default step count, so one renderer serves both.
-    The endpoints reject a ``seed`` field (HTTP 422 ``extra_forbidden``),
-    so none is ever sent.
+    FLUX.3-Klein and FLUX.2-Klein share one JSON contract, so one renderer
+    serves both. The endpoints reject a ``seed`` field (HTTP 422
+    ``extra_forbidden``), so none is sent.
     """
     headers = {
         "Authorization": f"Bearer {config.NVIDIA_API_KEY}",
@@ -163,11 +129,10 @@ def _nvidia_provider(name: str, url_attr: str, default_steps: int) -> _Provider:
 
 async def _render_cloudflare(prompt: str, width: int, height: int,
                              steps: int, aspect_ratio: str | None = None) -> bytes:
-    """Render via Cloudflare Workers AI (default: Leonardo Phoenix 1.0).
+    """Render via Cloudflare Workers AI.
 
-    Phoenix returns raw JPEG bytes (``image/jpeg``); other Workers AI image
-    models return ``{"result": {"image": "<base64>"}}``. Both shapes are
-    accepted and normalised to raw bytes.
+    Phoenix returns raw JPEG; other Workers AI image models return
+    ``{"result": {"image": "<base64>"}}``. Both are normalised to raw bytes.
     """
     url = (f"https://api.cloudflare.com/client/v4/accounts/"
            f"{config.CLOUDFLARE_ACCOUNT_ID}/ai/run/"
@@ -201,9 +166,7 @@ async def _render_openrouter(prompt: str, width: int = 1024, height: int = 1024,
     """Render via the OpenRouter images API.
 
     Only ``aspect_ratio`` reaches the endpoint; width, height and steps are
-    ignored, and ``generate_image`` rejects a ``resolution`` for this
-    provider before it gets here. The response is requested as inline base64
-    and the first of the generated images is kept.
+    ignored, so ``generate_image`` rejects a ``resolution`` here.
     """
     aspect_ratio = aspect_ratio or "auto"
     headers = {
@@ -246,8 +209,6 @@ PROVIDERS: dict[str, _Provider] = {
     PROVIDER_RECRAFT: _Provider(
         name=PROVIDER_RECRAFT,
         requires=(("OPENROUTER_API_KEY", "OpenRouter API key"),),
-        # OpenRouter takes no step count; the single accepted value is a
-        # no-op default (the tool schema never exposes steps anyway).
         default_steps=1,
         steps_range=(1, 1),
         render=_render_openrouter),
@@ -262,11 +223,9 @@ async def generate_image(prompt: str, width: int = 1024, height: int = 1024,
                          aspect_ratio: str | None = None) -> bytes:
     """Render an image with the selected backend, returning the raw bytes.
 
-    ``steps`` defaults per backend (25 for Phoenix on Cloudflare, 50 for
-    NVIDIA FLUX.3-Klein, 4 for NVIDIA FLUX.2-Klein) and is validated against
-    the backend's accepted range. Recraft (OpenRouter) takes no step count,
-    so its range is a single accepted value and any other value is rejected.
-    The whole generation — request and any image download — is bounded by
+    ``steps`` defaults per backend and is validated against the backend's
+    accepted range; Recraft takes no step count, so any value but its single
+    accepted one is rejected. The whole generation is bounded by
     IMAGE_GENERATION_DEADLINE seconds.
     """
     try:
@@ -296,21 +255,16 @@ async def generate_image(prompt: str, width: int = 1024, height: int = 1024,
 
 @dataclass
 class GeneratedImage:
-    """A rendered image and where it landed in the sandbox."""
-    # Raw image bytes (PNG, JPEG or WEBP; see _sniff_format).
     data: bytes
-    # None when storing it in the sandbox failed.
     path: str | None
-    # Sniffed from the bytes rather than assumed.
     mime: str
 
 
 def _sniff_format(data: bytes) -> tuple[str, str]:
     """Guess (extension, mime) from magic bytes.
 
-    Unknown containers are an error rather than a guessed PNG: a mislabeled
-    image would be undeliverable (sendPhoto only takes PNG/JPEG) and
-    unopenable in the sandbox under the wrong extension.
+    Unknown containers error rather than default to PNG: a mislabeled image
+    is unopenable in the sandbox under the wrong extension.
     """
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "png", "image/png"
@@ -324,12 +278,10 @@ def _sniff_format(data: bytes) -> tuple[str, str]:
 
 
 def _error_text(e: BaseException) -> str:
-    """The single truncating formatter for every generation failure.
+    """Format a generation failure for the model, capped at MAX_ERROR_CHARS.
 
-    The endpoint's own error body (e.g. a content-policy rejection or a bad
-    parameter) is the useful part for the model, so it is passed back;
-    everything is capped at MAX_ERROR_CHARS so a chatty endpoint cannot
-    flood the model's context.
+    The endpoint's own error body (a content-policy rejection, a bad
+    parameter) is the useful part, so it is passed back.
     """
     if isinstance(e, http_client.HttpStatusError):
         detail = e.body.strip() or f"HTTP {e.status} from {e.url}"
@@ -342,15 +294,12 @@ async def _generate_image(ctx: AgentContext, prompt: str,
                           resolution: str | None,
                           provider: str = DEFAULT_PROVIDER,
                           aspect_ratio: str | None = None) -> GeneratedImage | str:
-    """Shared business logic: render the image and store it in the sandbox.
+    """Render the image and store it in the sandbox.
 
     Returns the bytes plus their sandbox path, or an error string fit for
-    the model. Sending the image to the chat is the caller's job.
-
-    ``resolution`` and ``aspect_ratio`` are both optional because the
-    backends disagree on which they accept: OpenRouter only takes an
-    aspect ratio, while the others only take a resolution. Passing the wrong
-    one is reported to the model instead of being silently dropped.
+    the model; sending it to chat is the caller's job. ``resolution`` and
+    ``aspect_ratio`` are both optional because the backends disagree on which
+    they accept, and passing the wrong one is reported to the model.
     """
     if provider not in PROVIDERS:
         return (f"Unknown image provider '{provider}'. "
@@ -389,7 +338,6 @@ async def _generate_image(ctx: AgentContext, prompt: str,
 
 
 def _describe(image: GeneratedImage, prompt: str, sent: bool) -> str:
-    """The tool result the model reads, worded for what actually happened."""
     if image.path is None:
         delivered = "sent to chat" if sent else "generated"
         return f"Image {delivered} (prompt: {prompt})"

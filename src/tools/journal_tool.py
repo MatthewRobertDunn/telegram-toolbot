@@ -1,9 +1,4 @@
-"""Journal tools: persistent per-user journal for health, mood and notes.
-
-All tools operate on the authenticated user's journal automatically.
-Creation timestamps use the timezone
-set with /timezone (UTC when never set).
-"""
+"""Journal tools: persistent per-user journal for health, mood and notes."""
 import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -116,7 +111,6 @@ async def journal_get(ctx: AgentContext, ids: list[int]) -> str:
         return "Error: ids cannot be empty."
     if len(ids) > 50:
         return "Error: Too many ids (maximum 50)."
-    # Deduplicate while preserving request order.
     entry_ids = list(dict.fromkeys(ids))
     try:
         async with create_journal_store() as store:
@@ -308,11 +302,8 @@ async def journal_query(ctx: AgentContext,
                         topic: str | None = None,
                         sortDescending: bool | None = None,
                         limit: int | None = None) -> str:
-    # cursor is the previous page's next_cursor - an entry id, resolved
-    # inside the store to its (created_epoch_ms, id) position - while
-    # start is a datetime positioning the first page inclusively. One
-    # meaning each: a page resuming from a cursor needs no timestamp,
-    # and a page positioned by start has no cursor yet.
+    # cursor resumes paging from an entry id; start positions the first page by
+    # timestamp; each page uses exactly one of them.
     if cursor is not None and start:
         return ("Error: Provide either cursor or start, not both: cursor "
                 "resumes paging from an entry id, start positions the "
@@ -349,8 +340,6 @@ async def journal_query(ctx: AgentContext,
     noun = "entry" if len(records) == 1 else "entries"
     out = (f"Found {len(records)} journal {noun}:\n\n"
            + "\n\n".join(_format_entry(r) for r in records))
-    # next_cursor is the page edge the store already computed; no
-    # recomputation here.
     if page.has_more and page.next_cursor is not None:
         out += (f"\n\nMore journal entries exist. To see more, call "
                 f"journal_query with cursor={page.next_cursor}.")
