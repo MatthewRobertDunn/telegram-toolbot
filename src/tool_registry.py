@@ -29,12 +29,9 @@ need different behaviour under one name: ``read_image`` posts to the chat for
 the parent and stays silent for a subagent. The model sees one tool; which
 implementation runs depends on who asked.
 
-The declarations live in a :class:`ToolRegistry` rather than module globals:
-a second declaration of the same name for the same audience raises at
-declaration time (so ``importlib.reload`` of a tool module fails loudly
-instead of doubling the surface), and the lazy-load hook only marks the
-registry loaded once importing the tool modules has succeeded. The module
-level functions below delegate to the default ``registry`` instance.
+The declarations live in a :class:`ToolRegistry` rather than module globals;
+the module level functions below delegate to the default ``registry``
+instance.
 """
 
 import inspect
@@ -98,11 +95,8 @@ class Tool:
 def _default_loader(registry: "ToolRegistry") -> Callable[[], None]:
     """Build the lazy loader that imports the tool modules into *registry*.
 
-    The loader is bound to the instance that asked for it: a fresh
-    ToolRegistry must fill itself, not the module-global one. The binding
-    is passed through to tool_registration.load_tools, which points
-    tool_registry.registry at the target while the modules import (their
-    decorators call the module-level agent_tool).
+    Bound to the instance that asked for it: a fresh ToolRegistry must
+    fill itself, not the module-global one.
     """
     def load() -> None:
         from tool_registration import load_tools
@@ -206,12 +200,7 @@ class ToolRegistry:
     # -- loading ----------------------------------------------------------
 
     def ensure_loaded(self) -> None:
-        """Run the loader once, on the first lookup that needs it.
-
-        ``_loaded`` is set only after the loader succeeds: a failed or
-        partial load leaves it False so the next lookup retries instead of
-        serving whatever the half-finished load managed to declare.
-        """
+        """Run the loader once, on the first lookup that needs it."""
         if self._loaded or self._loading:
             return
         # A loader that raises must leave nothing behind: its partial

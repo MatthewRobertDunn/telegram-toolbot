@@ -1,25 +1,13 @@
 """Registry of opencode.ai-compatible skills.
 
 Scans the skills source directory (``config.SKILLS_DIR``) for skill
-definitions and exposes them as a list of ``SkillInfo`` entries with
-``name``, ``description`` and ``sandbox_path`` attributes.
-
-``sandbox_path`` is the skill file's path as seen inside the sandbox,
-where the skills directory is mounted read-only at
-``config.SANDBOX_SKILLS_DIR`` (e.g.
+definitions and exposes them as ``SkillInfo`` entries. ``sandbox_path`` is
+the skill file's path as seen inside the sandbox, where the skills
+directory is mounted read-only at ``config.SANDBOX_SKILLS_DIR`` (e.g.
 ``/skills/acceptance-and-commitment/SKILL.md``).
 
-Supported forms, mirroring opencode.ai discovery:
-
-* ``<id>/SKILL.md`` (nesting in grouping directories allowed,
-  e.g. ``teams/release/SKILL.md`` has the ID ``release``)
-* ``<id>.md`` directly at the source root
-
 The file path determines the skill ID; the frontmatter ``name`` is only
-a display label. Hidden files/directories and ``node_modules`` are
-skipped, and directories more than five levels below the source root
-are not descended into. A directory that yields a skill is not
-searched further, so its reference material is not offered as skills.
+a display label.
 """
 
 import logging
@@ -37,13 +25,6 @@ _SKIPPED_DIRS = frozenset({"node_modules"})
 
 @dataclass(frozen=True)
 class SkillInfo:
-    """A single discovered skill definition.
-
-    ``sandbox_path`` is the skill file's absolute path inside the
-    sandbox (POSIX separators), e.g.
-    ``/skills/acceptance-and-commitment/SKILL.md``.
-    """
-
     name: str
     description: str
     sandbox_path: str
@@ -59,8 +40,7 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
     Only the simple ``key: value`` subset used by skill frontmatter
     (``name``, ``description``, ...) is supported. Lines that are
     neither ``key: value`` pairs nor indented continuations are
-    reported via a warning and skipped, never fatal. Missing or absent
-    frontmatter yields an empty map.
+    reported via a warning and skipped, never fatal.
     """
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
@@ -71,7 +51,6 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
         if line.strip() == "---":
             break
         if line[:1] in (" ", "\t") and current is not None:
-            # Indented continuation of a folded/plain multi-line value.
             fields[current] += " " + line.strip()
             continue
         key, sep, value = line.partition(":")
@@ -92,22 +71,16 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
 def _iter_skill_files(root: str):
     """Yield ``(skill_id, file_path)`` for each skill under root.
 
-    Two forms are recognised:
+    Two forms are recognised: ``<id>.md`` directly at the root (``SKILL.md``
+    at the root is not a skill), and ``**/SKILL.md``. A directory containing
+    ``SKILL.md`` is one skill: its subtree is not searched further, so
+    reference material next to the entry file is never offered as skills.
+    Hidden files/directories and ``node_modules`` are skipped, and the walk
+    depth is capped by ``_MAX_DEPTH`` (6, with the root at level 0).
 
-    * ``<id>.md`` directly at the root (flat form; ``SKILL.md`` at the
-      root is not a skill — an entry file must live inside a directory).
-    * ``**/SKILL.md`` (directory form). A directory containing
-      ``SKILL.md`` is one skill: its subtree is not searched further,
-      so reference material next to the entry file is never offered as
-      skills. The walk does not descend into directories more than
-      five levels below the root (``_MAX_DEPTH``).
-
-    Hidden files/directories and ``node_modules`` are skipped here, so
-    everything yielded is already visible. Later duplicates of an ID
-    are yielded too; the caller keeps the last one so deeper
-    definitions override earlier ones.
+    Later duplicates of an ID are yielded too; the caller keeps the last
+    one so deeper definitions override earlier ones.
     """
-    # Flat form: <id>.md directly at the source root.
     try:
         entries = sorted(os.listdir(root))
     except OSError as e:
@@ -121,7 +94,6 @@ def _iter_skill_files(root: str):
         full = os.path.join(root, entry)
         if os.path.isfile(full):
             yield os.path.splitext(entry)[0], full
-    # Directory form: **/SKILL.md, one skill per directory.
     for current, dirs, files in os.walk(root):
         depth = os.path.relpath(current, root).split(os.sep)
         level = 0 if depth == ["."] else len(depth)
@@ -172,7 +144,6 @@ def load_skills(skills_dir: str | None = None) -> list[SkillInfo]:
 
 
 def get_skill(name: str) -> SkillInfo | None:
-    """Return the registry entry with this skill ID, if any."""
     for skill in SKILLS:
         if skill.name == name:
             return skill
@@ -180,9 +151,5 @@ def get_skill(name: str) -> SkillInfo | None:
 
 
 def get_active_skills() -> list[SkillInfo]:
-    """Return the skills currently enabled for agents.
-
-    All discovered skills are active for now; per-skill toggling can
-    filter this list later without changing callers.
-    """
+    """Return the skills currently enabled for agents."""
     return list(SKILLS)
