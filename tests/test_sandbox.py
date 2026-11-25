@@ -182,9 +182,6 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.fake.run_calls()), 1)
         self.assertEqual(sandbox.container_name, 'toolbot-sandbox-1')
         self.assertIs(sandbox, again)
-        # The run carries the uid label (used to recover leftovers), the
-        # configured resource limits, the reaping init process, and the
-        # keep-alive command.
         run = self.fake.run_calls()[0]
         self.assertIn('toolbot.sandbox=1', run)
         self.assertIn('--init', run)
@@ -192,7 +189,6 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertIn(config.SANDBOX_IMAGE, run)
         self.assertEqual(run[-2:], ['sleep', 'infinity'])
 
-        # A second user gets a distinct container, not the same sandbox.
         second = await self._ensure(2)
         self.assertEqual(second.container_name, 'toolbot-sandbox-2')
         self.assertEqual(len(self.fake.run_calls()), 2)
@@ -352,8 +348,6 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         # pass; one past that is removed and untracked; an already-stopped
         # sandbox is not stopped twice.
         cases = [
-            # (label, pre_stop, idle_offset, expected_stopped,
-            #  expected_destroyed, container_state, tracked)
             ('under stop timeout', False,
              config.SANDBOX_IDLE_STOP_TIMEOUT - 1, [], [], 'true', True),
             ('past stop timeout', False,
@@ -503,7 +497,6 @@ class TestSandboxManager(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.manager.destroy(1))
         self.assertEqual(holder.sandbox_read_files, {'/workspace/a.txt'})
 
-        # A later successful removal clears them.
         self.fake.fail_rm = False
         self.assertTrue(await self.manager.destroy(1))
         self.assertEqual(holder.sandbox_read_files, set())
