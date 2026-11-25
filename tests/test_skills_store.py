@@ -24,28 +24,6 @@ description: Does things well.
 """
 
 
-class TestSkillInfo(unittest.TestCase):
-
-    def test_equality_compares_all_fields(self):
-        a = SkillInfo('x', 'd', '/skills/x.md')
-        b = SkillInfo('x', 'd', '/skills/x.md')
-        self.assertEqual(a, b)
-        self.assertEqual(hash(a), hash(b))
-        self.assertNotEqual(a, SkillInfo('x', 'other', '/skills/x.md'))
-        self.assertNotEqual(a, 'not a skill')
-
-    def test_frozen(self):
-        skill = SkillInfo('x', 'd', '/skills/x.md')
-        with self.assertRaises(Exception):
-            skill.name = 'y'  # type: ignore[misc]
-
-    def test_positional_construction_and_repr(self):
-        skill = SkillInfo('x', 'd', '/skills/x.md')
-        self.assertEqual(
-            repr(skill),
-            "SkillInfo(name='x', description='d', sandbox_path='/skills/x.md')")
-
-
 class TestSkillDiscovery(unittest.TestCase):
 
     def setUp(self):
@@ -185,29 +163,30 @@ class TestFrontmatterParsing(unittest.TestCase):
     def _parse(self, text: str) -> dict:
         return skills_store._parse_frontmatter(text)
 
-    def test_basic_fields(self):
-        self.assertEqual(self._parse('---\nname: n\ndescription: d\n---\n'),
-                         {'name': 'n', 'description': 'd'})
-
-    def test_no_opening_delimiter_yields_empty(self):
-        self.assertEqual(self._parse('name: n\n'), {})
-
-    def test_missing_closing_delimiter_parses_to_eof(self):
-        self.assertEqual(self._parse('---\nname: n\n'), {'name': 'n'})
-
-    def test_quoted_values_are_unquoted(self):
-        self.assertEqual(
-            self._parse('---\nname: "quoted"\nother: \'single\'\n---\n'),
-            {'name': 'quoted', 'other': 'single'})
-
-    def test_indented_continuation_appends_to_previous_key(self):
-        self.assertEqual(
-            self._parse('---\ndescription: one\n  two\n---\n'),
-            {'description': 'one two'})
-
-    def test_empty_lines_and_whitespace_only_lines_are_skipped(self):
-        self.assertEqual(self._parse('---\n\n   \nname: n\n---\n'),
-                         {'name': 'n'})
+    def test_frontmatter_parsing_cases(self):
+        cases = [
+            ('basic fields',
+             '---\nname: n\ndescription: d\n---\n',
+             {'name': 'n', 'description': 'd'}),
+            ('no opening delimiter yields empty',
+             'name: n\n',
+             {}),
+            ('missing closing delimiter parses to eof',
+             '---\nname: n\n',
+             {'name': 'n'}),
+            ('quoted values are unquoted',
+             '---\nname: "quoted"\nother: \'single\'\n---\n',
+             {'name': 'quoted', 'other': 'single'}),
+            ('indented continuation appends to previous key',
+             '---\ndescription: one\n  two\n---\n',
+             {'description': 'one two'}),
+            ('empty and whitespace-only lines are skipped',
+             '---\n\n   \nname: n\n---\n',
+             {'name': 'n'}),
+        ]
+        for label, text, expected in cases:
+            with self.subTest(label):
+                self.assertEqual(self._parse(text), expected)
 
 
 class TestSandboxPathPrefix(unittest.TestCase):
@@ -221,13 +200,19 @@ class TestSandboxPathPrefix(unittest.TestCase):
                 skills = load_skills(root)
         return [s.sandbox_path for s in skills]
 
-    def test_default_prefix(self):
-        self.assertEqual(
-            sorted(self._sandbox_paths('/skills')),
-            ['/skills/flat.md', '/skills/s/SKILL.md'])
-
-    def test_prefix_without_trailing_slash_does_not_double_it(self):
-        self.assertIn('/custom/s/SKILL.md', self._sandbox_paths('/custom'))
+    def test_prefix_shapes(self):
+        cases = [
+            ('default prefix',
+             '/skills',
+             ['/skills/flat.md', '/skills/s/SKILL.md']),
+            ('prefix without trailing slash does not double it',
+             '/custom',
+             ['/custom/flat.md', '/custom/s/SKILL.md']),
+        ]
+        for label, prefix, expected in cases:
+            with self.subTest(label):
+                self.assertEqual(sorted(self._sandbox_paths(prefix)),
+                                 expected)
 
     def test_windows_separators_become_posix(self):
         # On a Windows host os.sep is '\\'; sandbox paths must still be

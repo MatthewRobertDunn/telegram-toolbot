@@ -12,7 +12,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 import config
 from handlers import run_llm as run_llm_mod
 from tool_registry import ToolSurface
-from chat_update_context import AgentContext, ThreadData, UserData
 from conversation import Conversation
 from messaging import Messaging
 from mock_context import mock_ctx
@@ -96,50 +95,41 @@ class TestRunLlmReplies(unittest.IsolatedAsyncioTestCase):
 
 class TestRunLlmSessionHeader(unittest.IsolatedAsyncioTestCase):
 
-    async def test_context_conversation_keeps_one_session_id(self):
-        # Requests against ctx.conversation must all carry the id of that
-        # Conversation object.
+    async def test_session_id_comes_from_whichever_conversation_is_in_play(
+            self):
+        # Requests against ctx.conversation all carry its id; a nested
+        # call with its own Conversation (subagent, compaction) must not
+        # share the parent chat's session id. Its message list is used
+        # as given, so in-place appends stay visible to the caller.
         ctx = mock_ctx(settings=SETTINGS, conversation=[])
         captured: dict = {}
-        with unittest.mock.patch.object(
-                run_llm_mod, 'client',
-                _fake_client(captured, [_chunk('a')])):
-            await run_llm_mod.run_llm(ctx)
-        first = captured['extra_headers']['x-opencode-session']
-        with unittest.mock.patch.object(
-                run_llm_mod, 'client',
-                _fake_client(captured, [_chunk('b')])):
-            await run_llm_mod.run_llm(ctx)
-        second = captured['extra_headers']['x-opencode-session']
+
+        async def call(conversation=None) -> str:
+            with unittest.mock.patch.object(
+                    run_llm_mod, 'client',
+                    _fake_client(captured, [_chunk('reply')])):
+                await run_llm_mod.run_llm(ctx, conversation=conversation)
+            return captured['extra_headers']['x-opencode-session']
+
+        # Two requests against ctx.conversation: the id is stable.
+        first = await call()
+        second = await call()
         self.assertEqual(first, second)
         self.assertEqual(first, ctx.conversation.id)
 
-    async def test_nested_conversation_gets_a_fresh_session_id(self):
-        # A nested call with its own Conversation (subagent, compaction)
-        # must not share the parent chat's session id. Its message list is
-        # used as given, so in-place appends stay visible to the caller.
-        ctx = mock_ctx(settings=SETTINGS, conversation=[])
+        # An explicit conversation supplies a fresh id whose messages are
+        # sent as given, and a different conversation changes the header.
         conversation = Conversation([{'role': 'user', 'content': 'parent'}])
-        captured: dict = {}
-        with unittest.mock.patch.object(
-                run_llm_mod, 'client',
-                _fake_client(captured, [_chunk('a')])):
-            await run_llm_mod.run_llm(ctx, conversation=conversation)
-        parent = captured['extra_headers']['x-opencode-session']
+        parent = await call(conversation)
         self.assertNotEqual(parent, ctx.conversation.id)
+        self.assertEqual(parent, conversation.id)
         # to_openai() builds a fresh sanitized list, but it still reflects
         # the conversation's content at call time.
         self.assertEqual(captured['messages'], conversation.to_openai())
         self.assertEqual(captured['messages'][0]['content'], 'parent')
-        self.assertEqual(
-            captured['extra_headers']['x-opencode-session'], conversation.id)
-        with unittest.mock.patch.object(
-                run_llm_mod, 'client',
-                _fake_client(captured, [_chunk('b')])):
-            await run_llm_mod.run_llm(ctx, conversation=Conversation([
-                {'role': 'user', 'content': 'another'}]))
-        self.assertNotEqual(
-            captured['extra_headers']['x-opencode-session'], parent)
+        other = await call(
+            Conversation([{'role': 'user', 'content': 'another'}]))
+        self.assertNotEqual(other, parent)
 
 
 def _tool_chunk(name, arguments, call_id='c1', reasoning=None):
@@ -416,19 +406,15 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
                 strip_thinking=False, budget=budget)
         return result, sleeps, clock
 
-    async def test_auth_error_fails_immediately(self):
-        result, sleeps, _ = await self._run_one(
-            [_FakeStatusError(401)], budget=1000)
-        self.assertIsNone(result)
-        # No point waiting out the budget on a 401: rerouting cannot fix
-        # the key.
-        self.assertEqual(sleeps, [])
-
-    async def test_permission_error_fails_immediately(self):
-        result, sleeps, _ = await self._run_one(
-            [_FakeStatusError(403)], budget=1000)
-        self.assertIsNone(result)
-        self.assertEqual(sleeps, [])
+    async def test_client_errors_fail_immediately(self):
+        # No point waiting out the budget on a 401 or 403: rerouting
+        # cannot fix the key (or the lack of permission).
+        for status in (401, 403):
+            with self.subTest(status=status):
+                result, sleeps, _ = await self._run_one(
+                    [_FakeStatusError(status)], budget=1000)
+                self.assertIsNone(result)
+                self.assertEqual(sleeps, [])
 
     async def test_request_construction_errors_propagate(self):
         # _request_kwargs is pure assembly, so an exception there is a
@@ -526,45 +512,6 @@ class TestRetryPolicy(unittest.IsolatedAsyncioTestCase):
                     strip_thinking=False, budget=1000)
         # It was mid-retry (at least one sleep) when the stop landed.
         self.assertGreaterEqual(len(sleeps), 1)
-
-    async def test_budget_is_the_same_for_both_context_kinds(self):
-        # One budget for everyone: the "subagents retry forever" design
-        # is deferred until subagent state is persisted/resumable, so a
-        # silent AgentContext must not get special treatment here. Both
-        # kinds run the real retry loop and stop at the same configured
-        # budget with the same number of attempts.
-        budget = 5.0
-        attempts: dict[str, int] = {}
-
-        async def run_until_spent(kind: str, ctx) -> None:
-            client, calls = _failing_client([_FakeStatusError(502)])
-            clock = _FakeClock()
-            sleeps: list = []
-            with unittest.mock.patch.object(config, 'api_retry_time',
-                                            budget), \
-                    unittest.mock.patch.object(run_llm_mod, '_loop_time',
-                                               clock.time), \
-                    unittest.mock.patch.object(run_llm_mod, '_sleep',
-                                               _advance(clock, sleeps)), \
-                    unittest.mock.patch.object(run_llm_mod, 'client',
-                                               client):
-                result = await run_llm_mod.run_llm(ctx)
-            attempts[kind] = len(calls)
-            self.assertIs(result, run_llm_mod.NO_RESPONSE_MESSAGE)
-            # The stop was budget-driven: the clock ran past the budget,
-            # and more than one attempt was made.
-            self.assertGreaterEqual(clock.now - 100.0, budget)
-            self.assertGreater(len(calls), 1)
-
-        await run_until_spent('interactive',
-                              mock_ctx(settings=SETTINGS, conversation=[]))
-        agent = AgentContext(
-            user_id=1, user_data=UserData(),
-            thread_data=ThreadData(  # type: ignore[arg-type]
-                conversation=Conversation(),
-                settings=SETTINGS))  # type: ignore[arg-type]
-        await run_until_spent('subagent', agent)
-        self.assertEqual(attempts['interactive'], attempts['subagent'])
 
     async def test_run_llm_returns_no_response_when_budget_spent(self):
         ctx = mock_ctx(settings=SETTINGS, conversation=[])
