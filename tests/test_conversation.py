@@ -153,9 +153,9 @@ class TestMessageType(unittest.TestCase):
                          [{'role': 'user', 'content': 'hi'}])
 
     def test_unknown_persisted_tag_is_not_a_known_type(self):
-        # A hand-edited or older history can carry a tag value the enum
-        # no longer knows. It reads as None - not coerced to a known type
-        # - so nothing fails on load and no comparison misfires.
+        # A hand-edited or older persisted history can carry a tag value
+        # outside the current enum. It reads as None - not coerced to a
+        # known type - so nothing fails on load and no comparison misfires.
         message = ConversationMessage({
             'role': 'user', 'content': 'hi',
             CUSTOM: {'message_type': 'defunct-kind'}})

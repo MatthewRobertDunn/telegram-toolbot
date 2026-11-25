@@ -58,7 +58,7 @@ class ConfigEnvTest(unittest.TestCase):
         self.assertEqual(config.API_RETRY_TIME, 42)
         self.assertEqual(config.API_RETRY_MAX_DELAY, 30)
         self.assertEqual(config.SANDBOX_PIDS_LIMIT, 64)
-        # The legacy lowercase names stay in step.
+        # The lowercase alias names stay in step.
         self.assertEqual(config.temperature, 0.5)
         self.assertEqual(config.top_p, 0.4)
         self.assertEqual(config.api_retry_time, 42)
