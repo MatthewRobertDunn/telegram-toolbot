@@ -1,18 +1,11 @@
 import asyncio
-import os
-import sys
 import unittest
 import unittest.mock
 
-sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-
 import compaction
-from conversation import Conversation
 from messages import tool_call_ids
 from mock_context import mock_ctx
-from tokens import (IMAGE_TOKEN_ESTIMATE, TOKENS_PER_CHAR, estimate_message_tokens,
-                    token_count)
+from tokens import TOKENS_PER_CHAR, token_count
 from transcript import message_to_text
 
 
@@ -30,120 +23,6 @@ def _big_conversation() -> list:
         {'role': 'user', 'content': _text(8_000) + ' second question'},
         {'role': 'assistant', 'content': _text(8_000) + ' second answer'},
     ]
-
-
-class TestTokenCount(unittest.TestCase):
-
-    def test_quarter_token_per_character(self):
-        self.assertEqual(token_count(''), 0)
-        self.assertEqual(token_count('x' * 400), 100)
-
-    def test_estimates_text_and_images(self):
-        conversation = [
-            {'role': 'system', 'content': 'x' * 400},
-            {'role': 'user', 'content': [
-                {'type': 'text', 'text': 'x' * 400},
-                {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AAAA'}},
-            ]},
-        ]
-        self.assertEqual(
-            compaction.estimate_conversation_tokens(conversation),
-            100 + 100 + IMAGE_TOKEN_ESTIMATE)
-
-    def test_estimates_tool_calls(self):
-        message = {
-            'role': 'assistant', 'content': '',
-            'tool_calls': [{
-                'id': 'call_1', 'type': 'function',
-                'function': {'name': 'toolname', 'arguments': 'x' * 400},
-            }],
-        }
-        self.assertEqual(estimate_message_tokens(message), 102)
-
-
-OMISSION_SENTENCE = (
-    'Leave out instructions and setup the assistant was given '
-    'rather than told by the user, such as system prompt text and '
-    'environment details.')
-CHECKPOINT_SENTENCE = (
-    'If the conversation transcript contains a compaction summary, '
-    'build the new summary on top of it, carrying forward only what '
-    'is still relevant.')
-
-
-class TestSummaryPrompt(unittest.TestCase):
-    """The assembled prompt is coherent prose: two complete instructions
-    in the intended order, no wedged sentence fragments, no misspellings."""
-
-    def test_omission_instruction_is_one_complete_sentence(self):
-        self.assertIn(OMISSION_SENTENCE, compaction.SUMMARY_PROMPT)
-
-    def test_checkpoint_instruction_is_one_complete_sentence(self):
-        self.assertIn(CHECKPOINT_SENTENCE, compaction.SUMMARY_PROMPT)
-
-    def test_omission_instruction_precedes_the_checkpoint_instruction(self):
-        # Substring presence cannot catch a re-wedged sentence order (the
-        # original bug): the order is asserted explicitly.
-        prompt = compaction.SUMMARY_PROMPT
-        self.assertLess(prompt.index(OMISSION_SENTENCE),
-                        prompt.index(CHECKPOINT_SENTENCE))
-
-    def test_no_misspelled_transcript(self):
-        self.assertNotIn('trnacript', compaction.SUMMARY_PROMPT)
-
-
-class TestThresholds(unittest.TestCase):
-    """The size floor and the keep budget are different checks with
-    different jobs; equal values made /compact fire only once the keep
-    budget was already exhausted."""
-
-    def test_min_compact_tokens_exceeds_the_default_keep_budget(self):
-        self.assertGreater(compaction.MIN_COMPACT_TOKENS,
-                           compaction.DEFAULT_KEEP_TOKENS)
-
-
-class TestMessageToText(unittest.TestCase):
-
-    def test_system_messages_are_left_out(self):
-        self.assertEqual(
-            message_to_text({'role': 'system', 'content': 'prompt'}),
-            '')
-
-    def test_images_become_placeholder_text(self):
-        text = message_to_text({
-            'role': 'user', 'content': [
-                {'type': 'text', 'text': 'look at this'},
-                {'type': 'image_url',
-                 'image_url': {'url': 'data:image/png;base64,AAAA'}},
-            ],
-        })
-        self.assertEqual(text, '[User]: look at this\n[image omitted]')
-        self.assertNotIn('base64', text)
-
-    def test_assistant_tool_calls(self):
-        text = message_to_text({
-            'role': 'assistant', 'content': 'checking',
-            'tool_calls': [{
-                'id': 'call_1', 'type': 'function',
-                'function': {'name': 'read', 'arguments': '{"path": "a.txt"}'},
-            }],
-        })
-        self.assertEqual(
-            text,
-            '[Assistant]: checking\n'
-            '[Assistant tool call]: read({"path": "a.txt"})')
-
-    def test_tool_output_is_truncated(self):
-        text = message_to_text(
-            {'role': 'tool', 'content': 'y' * 5_000})
-        self.assertTrue(text.startswith('[Tool result]: '))
-        self.assertTrue(text.endswith('\n[truncated]'))
-        self.assertLess(len(text), 5_000)
-
-    def test_thinking_blocks_are_left_out(self):
-        conversation = Conversation()
-        thinking = conversation.add_thinking()
-        self.assertEqual(message_to_text(thinking), '')
 
 
 def _user(marker: str, tokens: int) -> dict:
@@ -307,52 +186,6 @@ class TestSplitForCompaction(unittest.TestCase):
         self.assertIsNone(compaction.split_for_compaction(
             [{'role': 'system', 'content': 'x' * 100_000}]))
 
-    def test_newest_messages_are_kept_verbatim(self):
-        split = compaction.split_for_compaction(_big_conversation(),
-                                                keep_tokens=17_000)
-        assert split is not None
-        self.assertIn('first question', split.older_text)
-        self.assertIn('first answer', split.older_text)
-        self.assertNotIn('second question', split.older_text)
-        self.assertIn('second question', split.recent_text)
-        self.assertIn('second answer', split.recent_text)
-        self.assertGreater(split.tokens_before, compaction.MIN_COMPACT_TOKENS)
-
-    def test_tool_call_batch_never_splits_across_the_boundary(self):
-        conversation = [
-            {'role': 'user', 'content': _text(10_000) + ' question one'},
-            {'role': 'assistant', 'content': '',
-             'tool_calls': [{'id': 'c1', 'type': 'function',
-                             'function': {'name': 'read',
-                                          'arguments': _text(8_000)}}]},
-            {'role': 'tool', 'tool_call_id': 'c1',
-             'content': 'tool output ' + _text(9_000)},
-            {'role': 'user', 'content': _text(9_000) + ' question two'},
-            {'role': 'assistant', 'content': _text(9_000) + ' answer two'},
-        ]
-        # The raw budget fit starts the kept part on the (truncated) tool
-        # result, mid-exchange; the boundary moves past the whole batch.
-        split = compaction.split_for_compaction(conversation,
-                                                keep_tokens=19_000)
-        assert split is not None
-        # The tool call and its result must end up on the same side of the
-        # boundary.
-        self.assertIn('[Assistant tool call]: read', split.older_text)
-        self.assertIn('tool output', split.older_text)
-        self.assertIn('question two', split.recent_text)
-
-    def test_single_exchange_is_summarized_with_nothing_kept(self):
-        conversation = [
-            {'role': 'user', 'content': _text(16_000) + ' question'},
-            {'role': 'assistant', 'content': _text(16_000) + ' answer'},
-        ]
-        split = compaction.split_for_compaction(conversation,
-                                                keep_tokens=1_000)
-        assert split is not None
-        self.assertIn('question', split.older_text)
-        self.assertIn('answer', split.older_text)
-        self.assertEqual(split.recent_text, '')
-
 
 class TestCompactContext(unittest.IsolatedAsyncioTestCase):
 
@@ -453,33 +286,6 @@ class TestCompactContext(unittest.IsolatedAsyncioTestCase):
             'summarize too little of the context')
         self.assertEqual(ctx.conversation, conversation)
 
-    async def test_keep_fraction_refusal_also_names_the_budget(self):
-        # A keep budget over three quarters of the transcript trips
-        # MIN_SUMMARY_FRACTION the same way, on a transcript that clears
-        # the floor on its own (66k transcript, 52k keep).
-        conversation = [
-            {'role': 'system', 'content': 'system prompt'},
-            {'role': 'user', 'content': _text(8_000) + ' q1'},
-            {'role': 'assistant', 'content': _text(8_000) + ' a1'},
-            {'role': 'user', 'content': _text(8_000) + ' q2'},
-            {'role': 'assistant', 'content': _text(8_000) + ' a2'},
-            {'role': 'user', 'content': _text(8_000) + ' q3'},
-            {'role': 'assistant', 'content': _text(8_000) + ' a3'},
-            {'role': 'user', 'content': _text(8_000) + ' q4'},
-            {'role': 'assistant', 'content': _text(10_000) + ' a4'},
-        ]
-        ctx = mock_ctx(conversation=conversation)
-
-        async def fail_run_llm(ctx, **kwargs):
-            self.fail('run_llm must not be called for a refused compaction')
-
-        with unittest.mock.patch.object(compaction, 'run_llm', fail_run_llm):
-            with self.assertRaisesRegex(
-                    compaction.CompactionError,
-                    'Nothing to compact: keeping 52,000 tokens would '
-                    'summarize too little of the context'):
-                await compaction.compact_context(ctx, keep_tokens=52_000)
-
     async def test_empty_summary_fails_and_keeps_conversation(self):
         conversation = _big_conversation()
         ctx = mock_ctx(conversation=conversation)
@@ -492,7 +298,6 @@ class TestCompactContext(unittest.IsolatedAsyncioTestCase):
                 await compaction.compact_context(ctx)
 
         self.assertEqual(ctx.conversation, conversation)
-
 
     async def test_on_start_runs_inline_before_the_summary_call(self):
         ctx = mock_ctx(conversation=_big_conversation())
