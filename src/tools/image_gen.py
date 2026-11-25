@@ -359,8 +359,8 @@ _RESOLUTION_PARAM = {
     "type": "string",
     "description": ("Image size as WIDTHxHEIGHT, e.g. '1024x1024'. "
                     f"Each dimension must be a multiple of {DIM_STEP} "
-                    f"between {MIN_DIM} and {MAX_DIM}. Ignored by the "
-                    "'recraft' provider, which uses aspect_ratio."),
+                    f"between {MIN_DIM} and {MAX_DIM}. Not accepted by "
+                    "'recraft', which uses aspect_ratio instead."),
 }
 
 _ASPECT_RATIO_PARAM = {
@@ -393,8 +393,8 @@ _PROVIDER_PARAM = {
                  "chat and stored in /workspace/uploads for sandbox "
                  "processing. Set send_to_chat to false to keep it private, "
                  "add_to_context to true to view it yourself (needs vision). "
-                 "Content filtering is by word list."
-                 "You may need to avoid sexual, polistical, religious words."
+                 "Content filtering is by word list; avoid sexual, political, "
+                 "religious words."
                  "Set provider to 'nvidia-flux2', 'phoenix' or "
                  "'recraft' to override the default 'nvidia-flux3'."),
     parameters={

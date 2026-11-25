@@ -351,7 +351,7 @@ async def subagent_stop(ctx: ChatUpdateContext, id: str) -> str:
 @agent_tool(
     description=(
         "Message a running subagent mid-run (delivered as parent message). "
-        "Use to redirect, answer questions, or assign next task when idle."),
+        "Use to redirect or answer questions."),
     parameters={
         "id": {
             "type": "string",
