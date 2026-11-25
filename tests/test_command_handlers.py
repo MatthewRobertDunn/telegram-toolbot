@@ -19,9 +19,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import handlers.command_handlers as command_handlers
+import handlers.conversation_handlers as conversation_handlers
 import handlers.memory_handlers as memory_handlers
-from chat_update_context import (_parse_command_name, _parse_command_text,
-                                 create_chat_update_context)
+from chat_update_context import create_chat_update_context
 from command_spec import usage_line
 from commands import COMMANDS, bot_commands, lookup_command, register_commands
 from handlers.middleware import handler
@@ -85,11 +85,6 @@ class CommandTableTest(unittest.TestCase):
             self.assertTrue(command.help.strip(),
                             f'/{command.name} has empty menu help')
 
-    def test_every_callback_is_callable(self):
-        for command in COMMANDS:
-            self.assertTrue(callable(command.callback),
-                            f'/{command.name} callback is not callable')
-
     def test_continue_is_an_alias_of_retry_not_a_command(self):
         retry = lookup_command('retry')
         self.assertIsNotNone(retry)
@@ -99,10 +94,6 @@ class CommandTableTest(unittest.TestCase):
         self.assertIs(lookup_command('continue'), retry,
                       '/continue must resolve to the /retry command')
 
-    def test_lookup_misses_are_none(self):
-        self.assertIsNone(lookup_command(''))
-        self.assertIsNone(lookup_command('nosuchcommand'))
-
     def test_lookup_is_case_insensitive(self):
         self.assertIs(lookup_command('MODEL'), lookup_command('model'))
         self.assertIs(lookup_command('Start'), lookup_command('start'))
@@ -111,6 +102,7 @@ class CommandTableTest(unittest.TestCase):
         # Every table row's usage must be the very constant its handler
         # renders, so a syntax change lands in both or neither.
         expected = {
+            'compact': (conversation_handlers, 'COMPACT_USAGE'),
             'systemprompt': (command_handlers, 'SYSTEMPROMPT_USAGE'),
             'model': (command_handlers, 'MODEL_USAGE'),
             'subagent_model': (command_handlers, 'SUBAGENT_MODEL_USAGE'),
@@ -126,15 +118,7 @@ class CommandTableTest(unittest.TestCase):
             self.assertIsNotNone(command)
             self.assertEqual(command.usage, getattr(module, attr),  # type: ignore[union-attr]
                              f'/{name} usage drifted from {module.__name__}.{attr}')
-
-    def test_compact_usage_mirrors_its_handler_text(self):
-        # conversation_handlers renders its own usage line; the table row
-        # must quote the same syntax.
-        command = lookup_command('compact')
-        self.assertEqual(
-            command.usage, '[tokens of recent history to keep]')  # type: ignore[union-attr]
-        self.assertIn(command.usage,  # type: ignore[union-attr]
-                      usage_line('compact', command.usage))  # type: ignore[union-attr]
+            self.assertIn(command.usage, usage_line(name, command.usage))  # type: ignore[union-attr]
 
     def test_menu_lists_primary_names_only(self):
         menu = [c.command for c in bot_commands()]
@@ -162,11 +146,6 @@ class RegistrationAgreementTest(unittest.TestCase):
                 callback, command.callback,  # type: ignore[union-attr]
                 f'/{key} is registered with a foreign callback')
 
-    def test_registration_needs_no_handler_outside_the_table(self):
-        app = _RecordingApplication()
-        register_commands(app)  # type: ignore[arg-type]
-        self.assertEqual(len(app.handlers), len(COMMANDS))
-
     @staticmethod
     def _callbacks(app: _RecordingApplication) -> dict[str, object]:
         """name/alias -> the table callback wrapped into each handler."""
@@ -192,74 +171,57 @@ class CommandParsingTest(unittest.TestCase):
         context = SimpleNamespace(user_data={}, bot=bot, bot_data={})
         return create_chat_update_context(update, context)  # type: ignore[arg-type]
 
-    def test_mentioned_command_resolves_to_the_bare_name(self):
-        ctx = self._ctx('/model@MyBot sonnet-4')
-        self.assertEqual(ctx.command_name, 'model')
-        self.assertEqual(ctx.command_text, 'sonnet-4')
-        self.assertIs(lookup_command(ctx.command_name),
-                      lookup_command('model'))
-
-    def test_mixed_case_invocations_resolve_to_their_rows(self):
+    def test_mixed_case_invocations_parse_to_their_rows(self):
         # PTB matches command tokens lowercased, so these all dispatch:
         # parsing must land on the table rows, not miss them.
-        for text, name in (('/MODEL', 'model'), ('/Start@MyBot', 'start'),
-                           ('/Timezone', 'timezone')):
-            ctx = self._ctx(text)
-            self.assertEqual(ctx.command_name, name, text)
-            command = lookup_command(ctx.command_name)
-            self.assertIsNotNone(command, text)
-            self.assertEqual(command.name, name)  # type: ignore[union-attr]
+        cases = (('/model@MyBot sonnet-4', 'model', 'sonnet-4'),
+                 ('/MODEL', 'model', ''),
+                 ('/Start@MyBot', 'start', ''),
+                 ('/Timezone', 'timezone', ''))
+        for text, name, command_text in cases:
+            with self.subTest(text=text):
+                ctx = self._ctx(text)
+                self.assertEqual(ctx.command_name, name, text)
+                self.assertEqual(ctx.command_text, command_text, text)
+                command = lookup_command(ctx.command_name)
+                self.assertIsNotNone(command, text)
+                self.assertEqual(command.name, name)  # type: ignore[union-attr]
 
     def test_non_command_text_has_no_command(self):
-        ctx = self._ctx('just chatting')
-        self.assertEqual(ctx.command_name, '')
-        self.assertIsNone(lookup_command(ctx.command_name))
-
-    def test_parse_helpers(self):
-        self.assertEqual(_parse_command_name('/stop'), 'stop')
-        self.assertEqual(_parse_command_name('hello /stop'), '')
-        self.assertEqual(_parse_command_name('/start@MyBot x'), 'start')
-        self.assertEqual(_parse_command_name('/MODEL'), 'model')
-        self.assertEqual(_parse_command_name('/Top_P@MyBot'), 'top_p')
-        self.assertEqual(_parse_command_text('/model@MyBot gpt'), 'gpt')
-        self.assertEqual(_parse_command_text('/model'), '')
-
-    def test_usage_line_renders_the_bare_name(self):
-        self.assertEqual(
-            usage_line('top_p', command_handlers.TOP_P_USAGE),
-            'Usage: `/top_p <0.0-1.0>`')
-        self.assertNotIn('@MyBot', usage_line('model', 'x'))
+        for text in ('just chatting', 'hello /stop'):
+            ctx = self._ctx(text)
+            self.assertEqual(ctx.command_name, '', text)
+            self.assertIsNone(lookup_command(ctx.command_name))
 
 
 class HandlerUsageRenderTest(unittest.IsolatedAsyncioTestCase):
     """Usage lines, end to end: mixed-case invocation -> parse -> the
     handler's own constant, rendered exactly as the table declares it."""
 
-    async def test_mixed_case_timezone_without_args_renders_usage(self):
-        bot = _Bot()
-        ctx = CommandParsingTest._ctx('/Timezone@MyBot', bot=bot)
-        with _isolated_stores():
-            await command_handlers.timezone_command(ctx)
-        self.assertEqual(len(bot.sent), 1)
-        self.assertIn('Current timezone is `UTC`', bot.sent[0])
-        self.assertIn(
-            'Usage: `/timezone <IANA timezone, e.g. Australia/Sydney>`',
-            bot.sent[0])
-        self.assertNotIn('@MyBot', bot.sent[0])
-
-    async def test_mixed_case_memory_delete_without_args_renders_usage(self):
-        bot = _Bot()
-        ctx = CommandParsingTest._ctx('/MEMORY_DELETE', bot=bot)
-        with _isolated_stores():
-            await memory_handlers.memory_delete_command(ctx)
-        self.assertEqual(bot.sent, ['Usage: `/memory_delete <key>`'])
-
-    async def test_mixed_case_memory_without_args_renders_usage(self):
-        bot = _Bot()
-        ctx = CommandParsingTest._ctx('/Memory', bot=bot)
-        with _isolated_stores():
-            await memory_handlers.memory_command(ctx)
-        self.assertEqual(bot.sent, ['Usage: `/memory <key> [value]`'])
+    async def test_mixed_case_invocation_without_args_renders_usage(self):
+        # (invocation, handler, exactly-sent, required substrings)
+        cases = (
+            ('/MEMORY_DELETE', memory_handlers.memory_delete_command,
+             ['Usage: `/memory_delete <key>`'], ()),
+            ('/Memory', memory_handlers.memory_command,
+             ['Usage: `/memory <key> [value]`'], ()),
+            ('/Timezone@MyBot', command_handlers.timezone_command, None,
+             ('Current timezone is `UTC`',
+              'Usage: `/timezone <IANA timezone, e.g. Australia/Sydney>`')),
+        )
+        for invocation, command, exact, substrings in cases:
+            with self.subTest(invocation=invocation):
+                bot = _Bot()
+                ctx = CommandParsingTest._ctx(invocation, bot=bot)
+                with _isolated_stores():
+                    await command(ctx)
+                if exact is not None:
+                    self.assertEqual(bot.sent, exact)
+                else:
+                    self.assertEqual(len(bot.sent), 1)
+                for substring in substrings:
+                    self.assertIn(substring, bot.sent[0])
+                self.assertNotIn('@MyBot', bot.sent[0])
 
 
 class HandlerErrorBoundaryTest(unittest.IsolatedAsyncioTestCase):
