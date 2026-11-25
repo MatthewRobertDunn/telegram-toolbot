@@ -136,8 +136,7 @@ class SettingsDecoratorTest(_TempDbTest):
 
     async def test_change_scopes_to_the_current_category(self):
         """Threaded changes update the thread row only; unthreaded
-        ('all' category) changes update the shared template instead,
-        saving exactly once."""
+        ('all' category) changes upsert the shared template once."""
         template = UserSettings.default()
         template.model = 'base'
         await save_settings(1, None, template)
@@ -194,8 +193,6 @@ class SettingsAliasingFlagTest(_TempDbTest):
     """
 
     async def test_aliasing_follows_the_thread_category(self):
-        """Unthreaded chats share the template object; threaded chats
-        own a deep copy. ``settings_is_template`` pins which one."""
         template = UserSettings.default()
         template.model = 'template-model'
         await save_settings(1, None, template)
