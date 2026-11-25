@@ -1,8 +1,8 @@
 """Small asyncio primitives shared across the bot.
 
-The first resident is the atomic transaction helper: a post-then-record
-sequence that must not be torn in half by cancellation. Telegram accepts
-a message and returns its id only after a network round trip, so a bare
+The atomic transaction helper is a post-then-record sequence that must
+not be torn in half by cancellation. Telegram accepts a message and
+returns its id only after a network round trip, so a bare
 ``send_message`` followed by a synchronous history commit has a window in
 which the post is visible but its id (and the history row) was never
 recorded. Wrapping both steps makes cancellation wait for the commit to

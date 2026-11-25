@@ -34,9 +34,8 @@ DEFAULT_KEEP_TOKENS = 15_000
 # Contexts whose transcript is smaller than this are left alone: a
 # summary costs a model call, and below about twice the keep budget the
 # compaction cannot even halve the context. Deliberately distinct from
-# DEFAULT_KEEP_TOKENS - while the two were equal, the size check and the
-# keep-budget check were the same check, and /compact could only ever
-# fire with the budget already exhausted.
+# DEFAULT_KEEP_TOKENS so the size check and the keep-budget check stay
+# independent.
 MIN_COMPACT_TOKENS = 2 * DEFAULT_KEEP_TOKENS
 # The summarized part must be at least this fraction of the transcript,
 # else compaction is refused: summarizing a sliver of the context cannot
@@ -138,11 +137,7 @@ def choose_boundary(entries: list[_Entry], *, keep_tokens: int,
 
     Rules, in order:
     - The kept suffix never exceeds the keep budget: the boundary is the
-      oldest position whose suffix still fits. (The previous rule snapped
-      the boundary backwards to an earlier user message - keeping more
-      than the budget - or forwards to the last user message - keeping
-      almost nothing - and could even land before the first entry,
-      summarizing nothing at all while still paying for a summary call.)
+      oldest position whose suffix still fits.
     - A tool call and its results are never separated across the
       boundary: one that would split a pair moves forward past the whole
       batch.
@@ -151,8 +146,6 @@ def choose_boundary(entries: list[_Entry], *, keep_tokens: int,
       MIN_SUMMARY_FRACTION of the transcript, else None: compacting a
       trivial remainder is a model call that saves nothing.
     """
-    # The oldest boundary whose kept suffix fits the budget: walk from
-    # the newest entry backwards while the suffix keeps fitting.
     suffix = 0
     boundary = len(entries)
     for position in range(len(entries) - 1, -1, -1):
@@ -173,7 +166,6 @@ def choose_boundary(entries: list[_Entry], *, keep_tokens: int,
             or older_ids & tool_call_ids(entries[boundary].message)):
         older_ids |= tool_call_ids(entries[boundary].message)
         boundary += 1
-    # Refuse a trivial summary.
     summarized = transcript_tokens - sum(
         entry.tokens for entry in entries[boundary:])
     if summarized < MIN_SUMMARY_FRACTION * transcript_tokens:
@@ -239,9 +231,8 @@ async def compact_context(
     newest `keep_tokens` of messages verbatim.
 
     Runs inline - whoever awaits it owns the task. The /compact handler
-    enqueues it onto the per-user work queue like any other unit of work,
-    so it never overlaps a running generation; the queue slot means it
-    cannot be busy and no CompactionBusyError exists anymore.
+    enqueues it onto the per-thread work queue like any other unit of
+    work, so it never overlaps a running generation and cannot be busy.
 
     Raises CompactionError when there is nothing to compact - the context
     is too small, or the keep budget would summarize too little - or the
@@ -259,7 +250,7 @@ async def _run_compaction(
         ctx: ChatUpdateContext,
         split: CompactionSplit,
         on_start: Callable[[], Awaitable[None]] | None) -> CompactionResult:
-    """The summarizing call and the checkpoint rebuild; runs as its own task."""
+    """The summarizing call and the checkpoint rebuild."""
     if on_start is not None:
         await on_start()
 
