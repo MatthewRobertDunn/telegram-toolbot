@@ -2,8 +2,8 @@ FROM python:3.13-slim
 
 # The bash tool advertises git and npm (tools/sandbox/shell.py). They and
 # the other apt packages install at whatever the pinned base image's Debian
-# release (currently trixie) ships, so apt revisions track that release's
-# security updates instead of freezing on stale ones.
+# release ships, so apt revisions track that release's security updates
+# instead of freezing on stale ones.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates file ffmpeg git npm ripgrep wget && \

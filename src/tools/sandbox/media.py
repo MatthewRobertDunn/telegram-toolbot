@@ -1,8 +1,9 @@
 """Images and file delivery.
 
-The parent agent and its subagents get the same tool name from this module;
-only the implementation differs. A subagent has no messaging handle, so its
-variant reads or generates and reports the path for the parent to share.
+The parent agent and its subagents get the same tool name from this
+module; only the implementation differs. A subagent has no messaging
+handle, so its read_image variant attaches the image and reports the
+path for the parent to share.
 """
 
 import base64
@@ -47,7 +48,6 @@ _SEND_TO_CHAT_PARAM = {
 
 @dataclass
 class LoadedImage:
-    """An image read out of the sandbox."""
     data: bytes
     mime: str
     path: str
@@ -55,10 +55,8 @@ class LoadedImage:
 
 async def _load_image(ctx: AgentContext,
                       filePath: str) -> LoadedImage | str:
-    """Shared business logic: read an image out of the sandbox.
-
-    Returns the bytes plus their resolved path, or an error string fit for
-    the model. Showing the image to the user is the caller's job.
+    """Read an image out of the sandbox, or return an error string fit
+    for the model; showing it to the user is the caller's job.
     """
     path = _resolve_path(filePath)
     mime = IMAGE_MIME_TYPES.get(posixpath.splitext(path)[1].lower())
@@ -111,9 +109,8 @@ async def read_image(ctx: ChatUpdateContext, filePath: str,
     if isinstance(loaded, str):
         return loaded
 
-    # send_to_chat lets the model decide whether the image is sent to the chat.
-    # A recently uploaded file is already visible in the chat window from the
-    # user's own send, so displaying it again would be redundant.
+    # A recently uploaded file is already visible in the chat window from
+    # the user's own send, so displaying it again would be redundant.
     recently_uploaded = was_recently_uploaded(ctx.user_id, loaded.path)
     shown = send_to_chat and not recently_uploaded
     if shown:

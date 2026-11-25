@@ -8,9 +8,7 @@ and exits 0 only on success.
 
 The version lets the bot-side runner (tools/sandbox/common.py) reject a
 response newer than it understands with a clear error instead of
-misparsing it. Helpers from before the version field existed answer
-without one; the runner treats those as version 1, so a code-only deploy
-keeps working against an older image.
+misparsing it.
 """
 
 import json

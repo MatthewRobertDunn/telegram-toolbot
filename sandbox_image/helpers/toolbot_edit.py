@@ -1,8 +1,7 @@
 """Edit tool backend for the toolbot sandbox.
 
-Performs exact string replacement in a file, ported from opencode's edit
-tool replacer chain (exact, line-trimmed, block-anchor, whitespace-
-normalized, indentation-flexible). Reads a JSON payload from stdin:
+Performs exact string replacement in a file, falling back through a
+replacer chain for near matches. Reads a JSON payload from stdin:
 {"path": ..., "old_string": ..., "new_string": ..., "replace_all": ...}.
 Prints the shared helper protocol (see toolbot_protocol.py).
 """
