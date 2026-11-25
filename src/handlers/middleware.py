@@ -12,13 +12,13 @@ logger = logging.getLogger(__name__)
 
 
 def handler(func):
-    """Authorize, then run a command behind an error boundary.
+    """Authorize, initialise state, then run the command behind an error
+    boundary.
 
-    The allowlist check and the state initialisation (``init_conversation``)
-    keep their order and stay outside the boundary, exactly as before; the
-    boundary wraps only the command itself, so a crash inside a handler is
-    logged and answered with a terse message instead of vanishing into
-    PTB's update loop (where the user would simply see nothing happen).
+    The allowlist check and ``init_conversation`` stay outside the boundary,
+    which wraps only the command: a crash in a handler is logged and
+    answered with a terse message instead of vanishing into PTB's update
+    loop, where the user would simply see nothing happen.
     """
 
     @functools.wraps(func)
@@ -56,11 +56,8 @@ def handler(func):
 def settings(func):
     """Persist the user's settings after the command changed them.
 
-    Where the write lands follows the thread/template aliasing (see
-    ``ThreadData.settings_is_template``): an unthreaded chat shares the
-    template object with its thread, so one save - through the shared
-    object - updates both; a threaded chat owns a deep copy, so only its
-    own row is written and other threads keep their values.
+    ``ThreadData.settings_is_template`` decides where the write lands; see
+    init_conversation.
     """
 
     @functools.wraps(func)
@@ -73,10 +70,7 @@ def settings(func):
             ctx.thread_data.settings_is_template = True
             await save_settings(ctx.user_id, None, ctx.settings)
         else:
-            # Threaded chat: persist only this thread's copy. Only
-            # changes made in the unthreaded/'all' category (thread id
-            # None) are saved to the template, so other threads and
-            # future threads keep their own values.
+            # Threaded chat: persist only this thread's own copy.
             await save_settings(
                 ctx.user_id, ctx.message_thread_id, ctx.settings)
         return result

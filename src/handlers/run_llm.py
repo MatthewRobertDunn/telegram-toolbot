@@ -29,19 +29,16 @@ client = AsyncOpenAI(api_key=config.OPENAI_KEY,
 NO_RESPONSE_MESSAGE = "Problem getting response from model."
 NO_CONTENT_MESSAGE = "Model response had no content."
 
-# Retry backoff keeps the long-standing 1.2x growth, but one sleep is
-# capped (config.api_retry_max_delay / API_RETRY_MAX_DELAY) so a single
-# backoff cannot swallow hours of the retry budget.
+# Backoff grows 1.2x per attempt; one sleep is capped
+# (config.api_retry_max_delay) so a single backoff cannot swallow hours of
+# the retry budget.
 RETRY_BACKOFF_GROWTH = 1.2
 
-# Completion retry budget. DO NOT "fix" this into a short fail-fast
-# policy: requests normally go to an LLM router that reroutes a failing
-# request to another model, so nearly every failure is transient, and the
-# budget is intentionally huge (config.api_retry_time, 10 h by default).
-# Every context kind gets the same budget: a per-subagent "retry forever"
-# rule is a known deferred design - it only makes sense together with
-# persisted/resumable subagent state, which does not exist yet, so do not
-# add a special case here until that lands.
+# Completion retry budget. Do not turn this into a short fail-fast policy:
+# requests normally go to an LLM router that reroutes a failing request to
+# another model, so nearly every failure is transient and the budget is
+# intentionally huge (config.api_retry_time). Every context kind gets the
+# same budget; no per-context or per-call override.
 
 
 def _loop_time() -> float:
@@ -60,27 +57,15 @@ def _retry_max_delay() -> float:
 
 
 def _retry_budget() -> float:
-    """Wall-clock retry budget in seconds for every context kind.
-
-    One budget, deliberately long (config.api_retry_time): see the
-    router-failover rationale at the top of this module. There is
-    deliberately no per-context-kind or per-call override.
-    """
+    """Wall-clock retry budget in seconds, shared by every context kind."""
     return float(config.api_retry_time)
 
 
 def _non_retryable(error: Exception) -> bool:
-    """Whether waiting cannot fix this error: give up immediately.
-
-    Only authentication/permission failures (401/403): they fail for
-    every model the router could reroute to, so retrying just burns the
-    serialized worker's slot. Everything else is presumed transient per
-    the rationale above - timeouts, connection errors, 429, 5xx, 400-class
-    responses the router may route to another model, and even TypeError/
-    ValueError arriving from the SDK or the stream handling (a mid-stream
-    parsing hiccup is transient; failing it with zero retries would turn
-    a router blip into a dropped reply).
-    """
+    """Whether waiting cannot fix this error: only 401/403, which fail for
+    every model the router could reroute to. Everything else (timeouts,
+    connection errors, 429, 5xx, router-remapped 400s, even TypeError or
+    ValueError from the SDK or stream handling) is presumed transient."""
     status = getattr(error, 'status_code', None)
     return isinstance(status, int) and status in (401, 403)
 
@@ -115,11 +100,9 @@ async def execute_tool_call(ctx: AgentContext, tool_call,
 def _receipt_summary(message: SubagentMessage) -> str:
     """Telegram receipt summary for one drained inbox message.
 
-    Names the sender and, for terminal states, how it ended. Interim
-    progress ("running") needs no suffix: the summary alone says the
-    sender is still alive. Parent-originated notes (role-confusion
-    fallback) get a "Parent note" summary instead of a subagent one.
-    The body is the full report, passed separately to send_collapsible.
+    Parent-originated notes (role-confusion fallback) get a "Parent note"
+    summary. For subagents, interim progress ("running") needs no suffix:
+    the summary alone says the sender is still alive.
     """
     if message.id == PARENT_ID:
         return "Parent note"
@@ -138,15 +121,12 @@ async def _drain_inbox(conversation: Conversation,
 
     Called at the top of every agent loop iteration - the only injection
     point, so an injected message can never split an assistant tool_calls
-    message from its tool results. Returns the number of messages drained.
-
-    Display text is built here from the structured fields (never threaded
-    through as pre-rendered strings). When ``chat`` is given (the parent
-    loop only) and show_tool_output is on, each message is also posted to
-    Telegram as a collapsible rich-text receipt (see _receipt_summary),
-    with its message ids linked to the injected turn - so /undo deletes
-    the post along with the turn. Subagent loops pass no chat and stay
-    silent: their inbox traffic is not user-chat material.
+    message from its tool results. Returns the number drained. Display text
+    is built here from the structured fields. With ``chat`` (the parent
+    loop only) and show_tool_output on, each message is also posted as a
+    collapsible receipt whose ids are linked to the injected turn, so
+    /undo deletes the post with the turn. Subagent loops pass no chat and
+    stay silent.
     """
     if inbox is None:
         return 0
@@ -179,10 +159,9 @@ async def _drain_inbox(conversation: Conversation,
 async def _maybe_post_thinking(conversation: Conversation,
                                chat: ChatUpdateContext,
                                reasoning: str | None) -> None:
-    """Post one thinking block as a collapsible and record its Telegram
-    ids in history. No-op when there is no reasoning to keep. Only the
-    ids are kept - the reasoning text itself is display-only and never
-    stored or sent back."""
+    """Post one thinking block as a collapsible and record its Telegram ids
+    in history. Only the ids are kept: the reasoning text itself is
+    display-only and never stored or sent back."""
     if not reasoning:
         return
     message_ids = await chat.messaging.send_collapsible("Thinking", reasoning)
@@ -191,14 +170,12 @@ async def _maybe_post_thinking(conversation: Conversation,
 
 @dataclass(frozen=True)
 class RunConfig:
-    """Everything one run_llm call can vary, with today's defaults.
+    """Everything one run_llm call can vary.
 
-    run_llm's public keyword arguments map onto this one-for-one (they
-    stay the call signature for compatibility); the phases below take
-    the config object instead of an eight-parameter breadcrumb trail.
-    ``conversation`` is resolved before construction: it is the history
-    this run operates on - the caller's argument, or ctx.conversation -
-    so the phases never see a None to second-guess.
+    run_llm's keyword arguments map onto this one-for-one; the phases take
+    the config object instead. ``conversation`` is resolved before
+    construction (the caller's argument, or ctx.conversation), so the
+    phases never see a None.
     """
 
     # No default: the resolved history is not optional, and every
@@ -212,7 +189,6 @@ class RunConfig:
 
     @property
     def offer_tools(self) -> bool:
-        """Whether tools were offered this run."""
         return self.tools is not None
 
 
@@ -221,9 +197,7 @@ class _Capabilities:
     """What one run may do to the user-visible chat, computed once.
 
     Only an interactive (ChatUpdateContext) context can touch the chat;
-    everything here degrades to a no-op for a subagent's silent context,
-    replacing the isinstance/identity checks previously scattered through
-    the loop:
+    for a subagent's silent context everything here degrades to a no-op:
 
     streamer - the live draft sink (NullDraftSink when silent or drafts
         are disabled for this call).
@@ -241,7 +215,6 @@ class _Capabilities:
 
 
 def _capabilities(ctx: AgentContext, cfg: RunConfig) -> _Capabilities:
-    """The one computed view of this run's chat-facing capabilities."""
     # Only an interactive context can stream drafts or announce tool calls.
     chat = ctx if isinstance(ctx, ChatUpdateContext) else None
     streamer: DraftSink = (DraftStreamer(chat)
@@ -261,9 +234,8 @@ def _capabilities(ctx: AgentContext, cfg: RunConfig) -> _Capabilities:
 
 
 def _request_kwargs(cfg: RunConfig, settings: UserSettings) -> dict:
-    """The chat.completions.create kwargs for one round. Pure assembly
-    from cfg and the history: an exception here is a bug, not a retry
-    condition, so the retry loop does not catch it."""
+    """The chat.completions.create kwargs for one round, assembled from
+    cfg and the history."""
     create_kwargs: dict = dict(
         model=cfg.model if cfg.model is not None else settings.model,
         messages=cfg.conversation.to_openai(),
@@ -289,19 +261,12 @@ async def _one_completion(cfg: RunConfig,
                           budget: float) -> ConsumeStreamResult | None:
     """One completion request under the module retry policy.
 
-    Retries within the wall-clock ``budget`` (config.api_retry_time for
-    every context kind; see the rationale at the top of this module);
-    a budget of zero or less means a single attempt and no retries.
-    Backoff grows 1.2x per attempt, clamped to a per-sleep maximum so
-    one sleep cannot swallow hours of the budget. Returns the consumed
-    stream, or None when the budget is spent or a non-retryable error
-    came back (the caller turns that into NO_RESPONSE_MESSAGE).
-    Cancellation propagates immediately, so /stop and subagent_stop
-    interrupt the retry sleep.
-
-    Fail-fast is 401/403 only. Exceptions from building the request are
-    not caught: _request_kwargs is pure assembly, so an exception there
-    is a bug (or broken history) and propagates to the caller.
+    Retries within the wall-clock ``budget``; a budget of zero or less
+    means a single attempt. Returns the consumed stream, or None when the
+    budget is spent or a non-retryable error came back (the caller turns
+    that into NO_RESPONSE_MESSAGE). Cancellation propagates immediately,
+    so /stop and subagent_stop interrupt the retry sleep. Fail-fast is
+    401/403 only.
     """
     # A non-positive budget means "no retries", never "unbounded": the
     # first attempt always runs, and the first failure gives up.
@@ -310,14 +275,11 @@ async def _one_completion(cfg: RunConfig,
     time_to_wait = 1.0
     attempt = 0
     while True:
-        # The first attempt always runs; after that, no attempt starts
-        # once the budget is spent.
         if attempt and _loop_time() >= give_up_at:
             break
         attempt += 1
-        # Outside the retry try: request assembly is deterministic, so an
-        # exception here is a bug or broken history, not a transient
-        # condition to wait out.
+        # Outside the retry try: assembly is deterministic, so a failure
+        # here is a bug (or broken history), not a transient condition.
         create_kwargs = _request_kwargs(cfg, settings)
         try:
             streamer.new_round()
@@ -341,8 +303,6 @@ async def _one_completion(cfg: RunConfig,
                 'retry budget left', attempt, type(e).__name__, e,
                 max(0.0, give_up_at - _loop_time()))
             if _loop_time() >= give_up_at:
-                # Budget already spent (e.g. a zero budget): no point
-                # sleeping before a next attempt that will not run.
                 break
             await _sleep(time_to_wait)
             time_to_wait = min(time_to_wait * RETRY_BACKOFF_GROWTH,
@@ -356,7 +316,6 @@ async def _one_completion(cfg: RunConfig,
 async def _announce_tool_call(assistant_message: ConversationMessage,
                               chat: ChatUpdateContext, name: str,
                               args: str) -> None:
-    """Post one tool-call announcement and link it to the tool round."""
     message_ids = await chat.messaging.send_json(
         f"Tool call: `{name}`", args)
     assistant_message.add_telegram_message_id(message_ids)
@@ -370,11 +329,9 @@ async def _dispatch_tool_calls(ctx: AgentContext,
                                ) -> None:
     """Record one tool-call turn in history and execute every call.
 
-    Appends the assistant message (with the reasoning passback thinking
-    models require), announces each call to Telegram when announcements
-    are on, executes it, and appends its result - images attached by
-    tools ride along as a follow-up user message. Leaves the history
-    ready for the next completion round.
+    Announces each call when announcements are on, executes it, appends
+    its result, and attaches tool-supplied images as a follow-up user
+    message, leaving history ready for the next completion round.
     """
     assistant_message = conversation.add_assistant(message.content or '')
     if message.reasoning_content:
@@ -426,22 +383,13 @@ async def run_llm(ctx: AgentContext,
                   announce_tools: bool = True) -> str:
     """Run a model conversation to completion, executing tool calls as needed.
 
-    ``ctx`` may be either kind of context: the interactive parent context or
-    a subagent's silent one. Chat interaction (drafts, tool announcements,
-    inbox receipts) is type-checked here and simply does not happen without
-    an interactive context; everything else (history, tools, inbox) is
-    identical for both agents.
-
-    tools is a ToolSurface (see tool_registry.surface_for); None means
-    no tools (nested calls such as compaction). A model that
-    hallucinates a name outside the surface simply gets 'Unknown tool'.
-
-    inbox, when given, is drained into the conversation as user turns at
-    the top of every loop iteration - the only injection point, so queued
-    messages never split a tool-call batch.
-
-    conversation defaults to ctx.conversation. Nested calls with their own
-    history (subagent, compaction) construct their own Conversation, whose
+    ``ctx`` may be the interactive parent context or a subagent's silent
+    one; chat interaction (drafts, announcements, receipts) simply does not
+    happen without an interactive context. tools is a ToolSurface (see
+    tool_registry.surface_for); None means no tools. A hallucinated name
+    outside the surface gets 'Unknown tool'. inbox, when given, is drained
+    at the top of every iteration - the only injection point. conversation
+    defaults to ctx.conversation; nested calls construct their own, whose
     fresh id becomes that request's x-opencode-session.
     """
     conversation = (conversation if conversation is not None
@@ -466,9 +414,6 @@ async def run_llm(ctx: AgentContext,
             caps.streamer.new_round()
             return NO_RESPONSE_MESSAGE
 
-        # Cutoff is request time: mail arriving mid-flight waits for the
-        # next wakeup (a queued one was scheduled when it was delivered;
-        # a finished subagent has no use for it).
         if caps.think_chat is not None:
             await _maybe_post_thinking(conversation, caps.think_chat,
                                        message.reasoning_content)

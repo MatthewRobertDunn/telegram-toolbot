@@ -71,6 +71,6 @@ async def upload_handler(ctx: ChatUpdateContext):
     content = f"{caption}\n\n{notification}" if caption else notification
 
     # Same single submission point as text replies: the queue appends the
-    # user turn and generates the reply, stopping included.
+    # user turn and generates the reply.
     await submit_generation(ctx, content,
                             telegram_message_id=msg.message_id)
