@@ -14,9 +14,9 @@ from config import OPENAI_KEY, OPENAI_BASE_URL
 logger = logging.getLogger(__name__)
 
 
-# Usage syntax for the commands in this module. Each constant is both
-# rendered here and declared in the command table (commands.COMMANDS), so
-# a handler's usage line and its /help entry cannot drift apart.
+# Usage syntax for this module's commands: rendered by the handlers and
+# declared in the command table (commands.COMMANDS), so the two cannot
+# drift apart.
 SYSTEMPROMPT_USAGE = '<text>'
 MODEL_USAGE = '<model_id>'
 SUBAGENT_MODEL_USAGE = '<model_id>'
@@ -29,10 +29,8 @@ USER_PROFILE_USAGE = '<text>'
 @handler
 async def start_restart_command(ctx: ChatUpdateContext):
     stop_generation(ctx)
-    # Best-effort teardown of the old conversation's background work. A
-    # bug here must not stop the fresh conversation from being built, but
-    # it must also not stay silent: silent failure is exactly how subagent
-    # tasks end up orphaned.
+    # Best-effort: a failure here must not block the new conversation, but
+    # staying silent is how subagent tasks end up orphaned.
     try:
         from tools.subagent import cancel_all_subagents
         cancel_all_subagents(ctx)
@@ -40,20 +38,18 @@ async def start_restart_command(ctx: ChatUpdateContext):
         logger.error('Could not cancel subagents for user %d before /start',
                      ctx.user_id, exc_info=True)
     try:
-        # Any wakeup already queued in the worker carries the old epoch
-        # and skips instead of injecting into the fresh conversation. This
-        # must happen even if the cancel above failed, so the bump is its
-        # own best-effort block.
+        # A wakeup already queued in the worker carries the old epoch and
+        # skips instead of injecting into the fresh conversation. Its own
+        # block, so it runs even when the cancel above failed.
         from agent_inbox import bump_conversation_epoch
         bump_conversation_epoch(ctx)
     except Exception:
         logger.error('Could not bump the conversation epoch for user %d '
                      'before /start', ctx.user_id, exc_info=True)
     ctx.conversation = Conversation()
-    # Persist before announcing: the status message must not outlive its
-    # own save. A failed write now surfaces through the handler error
-    # boundary instead of being followed by a message claiming a start
-    # that did not happen.
+    # Persist before announcing: a failed write must surface through the
+    # handler error boundary, never as a message claiming a start that
+    # did not happen.
     await save_conversation(ctx.user_id, ctx.message_thread_id,
                             ctx.conversation)
     await ctx.messaging.send_message(f"Starting conversation with model `{ctx.model}`")
@@ -62,11 +58,9 @@ async def start_restart_command(ctx: ChatUpdateContext):
 def _drop_queued(queue: "asyncio.Queue") -> int:
     """Release every still-queued work item so its submitter resumes.
 
-    Nothing is closed: a queued item's job is a thunk, so no coroutine
-    was ever created for an item the worker did not dequeue. Items the
-    worker already dequeued are deliberately not touched: their job is
-    mid-flight, and stopping that is the generation task cancel's job
-    (``stop_generation``), not the queue's.
+    Nothing is closed: a queued item's job is a thunk, so no coroutine was
+    created for it. Items the worker already dequeued belong to
+    ``stop_generation``, not the queue.
     """
     dropped = 0
     while not queue.empty():
@@ -117,10 +111,8 @@ async def systemprompt_reset_command(ctx: ChatUpdateContext):
     await ctx.messaging.send_message("System prompt reset to default.")
 
 # One lazily created sync client, shared across /model_list calls: the
-# OpenAI client owns an httpx pool, and building one per invocation
-# churned sockets for a list that rarely changes. (The async HTTP layer
-# being added for generation does not cover this path, so the sync client
-# stays and is simply run off the event loop.)
+# OpenAI client owns an httpx pool, and building one per invocation churned
+# sockets. Calls run off the event loop via asyncio.to_thread.
 _openai_client: openai.OpenAI | None = None
 
 

@@ -26,8 +26,7 @@ from tokens import estimate_conversation_tokens, token_count
 
 logger = logging.getLogger(__name__)
 
-# Seconds before a command's own message and its status replies are
-# deleted, so the chat is left tidy without leaving debris behind.
+# Seconds before a command's own message and its status replies are deleted.
 COMMAND_CLEAR_DELAY = 10
 
 # /compact's argument syntax: the handler renders it and the command
@@ -42,18 +41,18 @@ _PENDING_CLEAR_TASKS: set[asyncio.Task] = set()
 
 async def _schedule_command_clear(ctx: ChatUpdateContext,
                                   message_ids: list) -> None:
-    """Delete the command message and the status replies it sent
-    after a short delay. Fire-and-forget: the handler returns at once and
-    this task cleans up later, so a slow Telegram delete never blocks the
-    next update."""
+    """Delete the command message and the status replies after
+    COMMAND_CLEAR_DELAY seconds."""
     await asyncio.sleep(COMMAND_CLEAR_DELAY)
     await delete_from_telegram(ctx, message_ids)
 
 
 def _clear_command_later(ctx: ChatUpdateContext, message_ids) -> None:
-    """Schedule deletion of the command message plus the status replies
-    `message_ids` a short while later. Fire-and-forget, with a strong
-    reference kept to the task (asyncio does not keep one)."""
+    """Delete the command message plus ``message_ids`` a short while later.
+
+    Fire-and-forget: the handler returns at once and this task cleans up
+    later, so a slow Telegram delete never blocks the next update.
+    """
     task = asyncio.create_task(_schedule_command_clear(
         ctx, [_command_message_id(ctx), *message_ids]))
     _PENDING_CLEAR_TASKS.add(task)
@@ -61,12 +60,10 @@ def _clear_command_later(ctx: ChatUpdateContext, message_ids) -> None:
 
 
 def _command_message_id(ctx: ChatUpdateContext) -> int | None:
-    """The Telegram message id of the command itself, if known."""
     return getattr(ctx.message, 'message_id', None)
 
 
 async def delete_from_telegram(ctx: ChatUpdateContext, message_ids) -> None:
-    """Delete the Telegram messages with those ids, logging failures."""
     for message_id in message_ids or []:
         try:
             await ctx.messaging.delete_message(message_id)
@@ -76,13 +73,12 @@ async def delete_from_telegram(ctx: ChatUpdateContext, message_ids) -> None:
 
 
 def stored_message_ids(message: dict) -> list:
-    """The Telegram message ids recorded in a message's custom metadata."""
     return telegram_ids_of(message)
 
 
 def _tool_call_name(call_id, context: list | None) -> str:
-    """The function name a tool result's tool_call_id refers to, looked
-    up among the tool calls of the other messages in the conversation."""
+    """The function name a tool result's tool_call_id refers to, looked up
+    among the conversation's other tool calls."""
     for message in context or []:
         for call in message.get('tool_calls') or []:
             if (call or {}).get('id') == call_id:
@@ -92,10 +88,10 @@ def _tool_call_name(call_id, context: list | None) -> str:
 
 def message_preview(message: dict, limit: int = 100,
                     context: list | None = None) -> str:
-    """A short identification of a message's contents, for feedback like
-    /undo: the text inside a code fence, trimmed to `limit` characters.
-    Tool calls and results are prefixed with the tool's name and dump
-    their raw json; multimodal parts become placeholders."""
+    """A short identification of a message's contents for feedback such as
+    /undo: fenced text trimmed to ``limit`` characters. Tool calls and
+    results are prefixed with the tool's name; multimodal parts become
+    placeholders."""
     content = message.get('content')
     if isinstance(content, str):
         text = content
@@ -127,9 +123,8 @@ def message_preview(message: dict, limit: int = 100,
 
 
 def _has_content(messages: list) -> bool:
-    """Whether the history holds anything beyond the system head and
-    kept thinking blocks - anything the "Nothing to X yet." commands
-    (/retry, /impersonate) could act on."""
+    """Whether history holds anything beyond the system head and kept
+    thinking blocks, i.e. something /retry and /impersonate could act on."""
     return any(message.get('role') != 'system'
                and not is_thinking_message(message)
                for message in messages)
@@ -137,27 +132,24 @@ def _has_content(messages: list) -> bool:
 
 @handler
 async def undo_command(ctx: ChatUpdateContext):
-    """Remove the tail of the conversation back to and including the last
-    user prompt, deleting the removed messages from Telegram when they
-    have a known message id. When a removed message references tool call
-    ids, every message sharing those ids is stripped too - a call left
-    without its results (or vice versa) can't be replayed.
+    """Remove the tail back to and including the last user prompt, deleting
+    the removed messages from Telegram where their ids are known. Tool-call
+    ids are followed too: a call left without its results (or vice versa)
+    can't be replayed.
 
-    Runs as a queued unit of work like /compact; the queue tracks it in
-    ctx.generation_task, so /stop stops it like any other work.
-
-    The /undo command message and the status replies it sends are deleted
-    a short while later, so the chat is left tidy."""
+    Runs as a queued unit of work like /compact, so /stop stops it; the
+    command message and its status replies are deleted shortly after.
+    """
     await submit_task(ctx, lambda: undo_turn(ctx),
                       stopped_message='Undo stopped.')
 
 
 async def undo_turn(ctx: ChatUpdateContext) -> None:
-    """The undo itself, runs inside the queued unit of work.
+    """The undo itself, inside the queued unit of work.
 
-    High-level orchestration only: the history trim lives in
-    Conversation.undo_last_exchange, this just deletes the Telegram posts
-    and reports what went."""
+    Only the Telegram deletes and the report: the trim lives in
+    Conversation.undo_last_exchange.
+    """
     removed_messages = ctx.conversation.undo_last_exchange()
     if not removed_messages:
         message_ids = await ctx.messaging.send_message("Nothing to undo.")
@@ -189,28 +181,23 @@ async def undo_turn(ctx: ChatUpdateContext) -> None:
 @handler
 async def regenerate_command(ctx: ChatUpdateContext):
     """Drop the last assistant turn (conversation and Telegram) and answer
-    again, or - if the history ends on the user's turn - just answer it
-    without re-adding it.
+    again; when history ends on the user's turn, answer it without
+    re-adding it. An impersonated last user turn is removed and the
+    impersonation flow reruns instead.
 
-    When the last user turn is an impersonation, that turn is removed and
-    the impersonation flow runs again instead.
-
-    Runs as a queued unit of work like /compact; the queue tracks it in
-    ctx.generation_task, so /stop stops it like any other work.
-
-    The /regenerate command message is deleted a short while later, so
-    the chat is left tidy: the queued generation replies on its own and
-    is not touched."""
+    Runs as a queued unit of work like /compact; only the command message
+    is deleted afterwards, never the queued reply.
+    """
     await submit_task(ctx, lambda: regeneration_turn(ctx),
                       stopped_message='Regeneration stopped.')
 
 
 async def regeneration_turn(ctx: ChatUpdateContext) -> None:
-    """The regeneration itself, runs inside the queued unit of work.
+    """The regeneration itself, inside the queued unit of work.
 
-    High-level orchestration only: the history trim lives in
-    Conversation.prepare_regeneration, this just deletes the Telegram
-    posts and runs the next flow (answer again or redo impersonation)."""
+    Only deletes the Telegram posts and runs the next flow: the trim lives
+    in Conversation.prepare_regeneration.
+    """
     removed, action = ctx.conversation.prepare_regeneration()
     for message in removed:
         await delete_from_telegram(ctx, stored_message_ids(message))
@@ -221,11 +208,9 @@ async def regeneration_turn(ctx: ChatUpdateContext) -> None:
         return
 
     if action is RegenerationAction.IMPERSONATE:
-        # The last turn was an impersonation: it is already removed, so
-        # run the impersonation flow again instead of answering as usual.
         # Already inside the worker: run the flow directly instead of
-        # submitting a second queued item (which would deadlock waiting
-        # for itself).
+        # submitting a second queued item, which would deadlock waiting
+        # for itself.
         await run_impersonation(ctx)
         _clear_command_later(ctx, [])
         return
@@ -235,18 +220,17 @@ async def regeneration_turn(ctx: ChatUpdateContext) -> None:
     # model answers it again. Already inside the worker: call directly
     # instead of submitting a second queued item.
     await generate_response(ctx, None)
-    # The command message itself goes away shortly after; the queued
-    # generation replies on its own and is left alone.
     _clear_command_later(ctx, [])
 
 
 @handler
 async def retry_command(ctx: ChatUpdateContext):
-    """Answer the conversation again exactly as it stands: nothing is
-    popped or deleted, a fresh reply is appended after the history.
+    """Answer the conversation again exactly as it stands: nothing is popped
+    or deleted, a fresh reply is appended.
 
     Runs as a queued unit of work like /compact, so it waits for any
-    in-flight work instead of refusing."""
+    in-flight work instead of refusing.
+    """
     if not _has_content(ctx.conversation.messages):
         await ctx.messaging.send_message("Nothing to retry yet.")
         return
@@ -259,23 +243,21 @@ async def retry_command(ctx: ChatUpdateContext):
 
 @handler
 async def impersonate_command(ctx: ChatUpdateContext):
-    """Fake a user turn: a clone of the whole conversation (system head
-    with the user profile, full history) is shown to the model, which
-    impersonates the user to write their next message. The response is
-    added to the real conversation as a user message and posted as a
+    """Fake a user turn: the model sees a clone of the whole conversation
+    (system head with the user profile, full history) and writes the user's
+    next message, which is added to the real conversation and posted as a
     user-labelled reply.
 
-    Runs as a queued unit of work like /compact; the queue tracks it in
-    ctx.generation_task, so /stop stops it like any other work."""
-    #We don't clear the impersonate command because it helps the user know the text below is the impersonated text and not the original user text
+    Runs as a queued unit of work like /compact, so /stop stops it.
+    """
+    # Not cleared: its text tells the user the reply below is impersonated,
+    # not their own.
     await submit_task(ctx, lambda: run_impersonation(ctx),
                       stopped_message='Impersonation stopped.')
 
 
 async def run_impersonation(ctx: ChatUpdateContext) -> None:
-    """One unit of work: clone the conversation, impersonate the user
-    against the clone, then add the response to the real conversation as
-    a user message and post it."""
+    """The queued unit of work behind /impersonate, reused by /regenerate."""
     # Check here, not in the command handler: earlier queued work may
     # empty the history after the command arrives but before it runs.
     if not _has_content(ctx.conversation.messages):
@@ -287,11 +269,11 @@ async def run_impersonation(ctx: ChatUpdateContext) -> None:
 
 
 async def impersonate_turn(ctx: ChatUpdateContext) -> None:
-    """The impersonation itself, runs inside the queued unit of work.
+    """The impersonation itself, inside the queued unit of work.
 
-    High-level orchestration only: the detached clone lives in
-    Conversation.clone_for_impersonation, this just runs the model and
-    records the fake turn."""
+    Only runs the model and records the fake turn: the clone lives in
+    Conversation.clone_for_impersonation.
+    """
     clone = ctx.conversation.clone_for_impersonation(IMPERSONATE_PROMPT)
 
     response = (await run_llm(ctx, conversation=clone)
@@ -300,11 +282,10 @@ async def impersonate_turn(ctx: ChatUpdateContext) -> None:
         await ctx.messaging.send_message('Impersonation failed: the model produced nothing usable.')
         return
 
-    # The real conversation gets the bare text as a user turn, tagged as
-    # an impersonation so /regenerate can redo this flow. The posted
-    # message ids are attached, so /undo and /regenerate can delete it
-    # from the chat too. Atomic keeps /stop from tearing that post away
-    # from its history row.
+    # The real conversation gets the bare text as a tagged user turn so
+    # /regenerate can redo this flow, with the posted ids attached so
+    # /undo can delete it from the chat too. Atomic keeps /stop from
+    # tearing the post away from its history row.
     await atomic_call(
         lambda: ctx.messaging.send_message(response, parse_mode='LLM'),
         lambda message_ids: ctx.conversation.add_user(
