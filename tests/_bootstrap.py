@@ -248,8 +248,15 @@ def setup() -> None:
     _install_connect_guard()
     ensure_schema()
 
-    # aiosqlite logs every open/close at DEBUG; pin that one logger to
-    # WARNING so suite output stays readable. The root logger keeps its
-    # default configuration, so warnings from the code under test are
-    # still visible and assertLogs keeps working.
-    logging.getLogger('aiosqlite').setLevel(logging.WARNING)
+    # The suite asserts behaviour, not log output. Tests deliberately drive
+    # failure paths (a queue job that raises, a download that fails, an
+    # image endpoint that errors), and every one of those logs an ERROR
+    # with a traceback: the suite output ends up covered in red herrings
+    # that look like failures but are not. Silence the root logger so
+    # nothing reaches stderr; a test that genuinely needs to see a log
+    # uses assertLogs, which installs its own handler and is unaffected.
+    root = logging.getLogger()
+    root.setLevel(logging.CRITICAL + 1)
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+    root.addHandler(logging.NullHandler())
