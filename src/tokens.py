@@ -12,9 +12,7 @@ Two metrics live here and must not be mixed up:
   thresholds (compaction.MIN_COMPACT_TOKENS, the trivial-summary
   fraction) are enforced against this metric, consistently on both sides
   of every comparison. The raw estimate and the transcript size are close
-  but not equal; comparing one against the other is how /compact used to
-  end up refusing nothing, summarizing nothing, and reporting a token
-  increase.
+  but not equal, so the two are never compared against each other.
 
 Thinking blocks are display-only (never sent to the endpoint), so every
 estimate skips them exactly like to_openai() does.
@@ -31,7 +29,6 @@ IMAGE_TOKEN_ESTIMATE = 1_500
 
 
 def token_count(text: str) -> int:
-    """Rough token estimate for text: about a quarter token per character."""
     return int(len(text) * TOKENS_PER_CHAR)
 
 
@@ -55,9 +52,6 @@ def estimate_message_tokens(message: dict) -> int:
 
 
 def estimate_conversation_tokens(conversation: Iterable[dict]) -> int:
-    """Estimated tokens of a whole conversation, images included.
-
-    Thinking blocks are display-only (never sent to the endpoint), so
-    they are excluded like the endpoint excludes them."""
+    """Estimated tokens of a whole conversation, images included."""
     return sum(estimate_message_tokens(message) for message in conversation
                if not is_thinking(message))

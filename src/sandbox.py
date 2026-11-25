@@ -27,12 +27,9 @@ _EXEC_GRACE_SECONDS = 30.0
 # wrapped command exits with it too.
 _TIMEOUT_EXIT_CODE = 124
 
-# 128+SIGKILL: how a command that ignored the deadline's SIGTERM dies when
-# timeout's -k escalation fires (observed on the image's coreutils), and
-# also what an in-container SIGKILL death looks like - e.g. the OOM killer
-# under the memory limit. The two are told apart by elapsed time in
-# _exec_locked: only a 137 arriving after the deadline plus the kill grace
-# can be our escalation; an earlier one is an ordinary command failure.
+# 128+SIGKILL. Both the deadline's -k escalation and an in-container kill
+# (e.g. the OOM killer under the memory limit) exit 137; _exec_locked
+# tells them apart by elapsed time (see its timeout computation).
 _KILL_EXIT_CODE = 137
 _KILL_GRACE_SECONDS = 5.0  # matches the -k 5 in _deadline_command
 
@@ -96,7 +93,6 @@ def _parse_docker_time(value: str) -> float | None:
 
 
 class _ContainerState(NamedTuple):
-    """Container state read back from docker inspect."""
     running: bool
     finished_at: float | None
     user_id: int | None
@@ -128,7 +124,6 @@ printf '%s' "$p"
 
 
 def _store_script(name: str) -> str:
-    """Build the atomic upload write for `name` (see _STORE_SCRIPT)."""
     return _STORE_SCRIPT.format(dir=shlex.quote(UPLOADS_DIR),
                                 name=shlex.quote(name))
 
@@ -212,8 +207,6 @@ class SandboxManager:
         self._clock = clock
         self._sandboxes: dict[int, Sandbox] = {}
         self._locks: dict[int, asyncio.Lock] = {}
-        # Where each user's read marks live (see watch_read_marks); held
-        # weakly, cleared by destroy().
         self._read_marks: dict[int, list[weakref.ref[ReadMarkHolder]]] = {}
 
     def _lock_for(self, user_id: int) -> asyncio.Lock:
@@ -361,8 +354,8 @@ class SandboxManager:
                 args, timeout=timeout + _EXEC_GRACE_SECONDS,
                 input=stdin_data)
         except DockerTimeoutError:
-            # The backstop fired: the docker CLI hung past deadline plus
-            # grace, so whatever the command had produced is lost with it.
+            # Backstop fired: the docker CLI hung past the deadline, so the
+            # command's output is lost with it.
             logger.warning(
                 "docker exec for user %d hung past %ss; killed the client",
                 user_id, timeout + _EXEC_GRACE_SECONDS)
@@ -408,10 +401,7 @@ class SandboxManager:
                          name: str) -> tuple[str | None, str | None]:
         """Store bytes in the sandbox uploads dir under a unique name.
 
-        The mkdir, name pick and write happen in a single exec
-        (_store_script) so concurrent uploads cannot race into the same
-        name, under a bounded timeout. Returns (path, error); exactly one
-        of the two is not None.
+        Returns (path, error); exactly one of the two is not None.
         """
         result = await self.exec(user_id, _store_script(name),
                                  stdin_data=data,
@@ -465,8 +455,6 @@ class SandboxManager:
         rc, _, _ = await self._docker(["stop", sandbox.container_name])
         if rc == 0:
             sandbox.running = False
-        # A failed stop leaves running True: the container is still
-        # there, so reap_idle() retries on the next pass.
         return rc == 0
 
     async def reap_idle(self) -> tuple[list[int], list[int]]:
@@ -489,7 +477,6 @@ class SandboxManager:
         stopped: list[int] = []
         destroyed: list[int] = []
         for user_id, sandbox in list(self._sandboxes.items()):
-            # Cheap pre-filter; the real decision happens under the lock.
             if now - sandbox.last_activity < config.SANDBOX_IDLE_STOP_TIMEOUT:
                 continue
             async with self._with_container(user_id):
