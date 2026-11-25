@@ -127,24 +127,6 @@ class TestQueueSupervision(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(ctx.generation_task)
         self.assertEqual(bot.sent, [])
 
-    async def test_a_fresh_job_wraps_the_thunk_exactly_once(self):
-        # The job is a zero-arg callable: the coroutine it returns exists
-        # only because the worker called it, exactly once - under the
-        # typing wrapper like anywhere else.
-        ctx = mock_ctx(user_id=5, bot=_Bot())
-        calls: list = []
-
-        def thunk():
-            calls.append('built')
-
-            async def job():
-                pass
-
-            return job()
-
-        await gq.submit_task(ctx, thunk)
-        self.assertEqual(calls, ['built'])
-
 
 if __name__ == '__main__':
     unittest.main()

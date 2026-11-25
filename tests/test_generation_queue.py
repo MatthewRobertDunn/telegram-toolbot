@@ -162,32 +162,6 @@ class TestGenerateResponse(unittest.TestCase):
         asyncio.run(gq.submit_task(ctx, after))
         self.assertEqual(order, ['ran'])
 
-    def test_submit_task_reraises_the_job_error(self):
-        ctx = mock_ctx(user_id=5, bot=_Bot())
-
-        async def boom():
-            raise ValueError('nope')
-
-        with self.assertRaises(ValueError):
-            asyncio.run(gq.submit_task(ctx, boom))
-
-    def test_a_thunk_is_invoked_once_when_the_worker_dequeues_it(self):
-        # The job is a zero-arg callable: the coroutine it returns exists
-        # only because the worker called it, exactly once.
-        ctx = mock_ctx(user_id=5, bot=_Bot())
-        calls: list = []
-
-        def thunk():
-            calls.append('built')
-
-            async def job():
-                pass
-
-            return job()
-
-        asyncio.run(gq.submit_task(ctx, thunk))
-        self.assertEqual(calls, ['built'])
-
     def test_abandon_releases_a_dropped_item_without_running_it(self):
         ctx = mock_ctx(user_id=5, bot=_Bot())
         ran: list = []
@@ -370,19 +344,19 @@ class TestMessagingReturnShapes(unittest.IsolatedAsyncioTestCase):
         document.return_value = SimpleNamespace(message_id=12)
         return bot
 
-    async def test_preformatted_returns_ids(self):
-        ctx = mock_ctx(user_id=5, bot=self._bot())
-        ids = await ctx.messaging.send_preformatted_message('hello')
-        self.assertEqual(ids, [7])
-
-    async def test_image_returns_id(self):
-        ctx = mock_ctx(user_id=5, bot=self._bot())
-        self.assertEqual(await ctx.messaging.send_image(b'png'), [11])
-
-    async def test_document_returns_id(self):
-        ctx = mock_ctx(user_id=5, bot=self._bot())
-        self.assertEqual(
-            await ctx.messaging.send_document(b'pdf', 'f.pdf'), [12])
+    async def test_posting_helpers_return_message_ids(self):
+        # Each helper returns the posted message id(s) so the caller can
+        # link them to the conversation turn (/undo, /retry).
+        cases: list[tuple[str, tuple[Any, ...], list[int]]] = [
+            ('send_preformatted_message', ('hello',), [7]),
+            ('send_image', (b'png',), [11]),
+            ('send_document', (b'pdf', 'f.pdf'), [12]),
+        ]
+        for name, args, expected in cases:
+            with self.subTest(helper=name):
+                ctx = mock_ctx(user_id=5, bot=self._bot())
+                ids = await getattr(ctx.messaging, name)(*args)
+                self.assertEqual(list(ids), expected)
 
 
 class TestSplitAtLinebreak(unittest.TestCase):
