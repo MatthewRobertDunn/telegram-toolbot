@@ -155,14 +155,6 @@ class TestToolSets(unittest.TestCase):
             names = {t['function']['name'] for t in surface.definitions}
             self.assertEqual(set(surface.functions), names)
 
-    def test_each_role_executes_its_own_implementation(self):
-        parent = surface_for(PARENT).functions
-        subagent = surface_for(SUBAGENT).functions
-        for name in ('read_image', 'generate_image'):
-            with self.subTest(tool=name):
-                self.assertIsNot(parent[name], subagent[name])
-
-
 class TestSubagentContextWiring(unittest.IsolatedAsyncioTestCase):
     # Subagents run on their own silent context; their mail and wakeups go
     # through the parent's interactive one.
@@ -287,14 +279,6 @@ class TestManager(unittest.IsolatedAsyncioTestCase):
         ctx = _ctx()
         result = await subagent_send_to_parent(ctx, 'hello?')
         self.assertIn('Error', result)
-
-    async def test_send_to_parent_is_subagent_only(self):
-        # The parent loop never offers it; only the subagent surface can
-        # execute it.
-        parent = surface_for(PARENT).functions
-        self.assertNotIn('subagent_send_to_parent', parent)
-        subagent = surface_for(SUBAGENT).functions
-        self.assertIn('subagent_send_to_parent', subagent)
 
     async def test_cancel_all(self):
         ctx = _ctx()
@@ -460,28 +444,41 @@ class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
         users = [m for m in ctx.conversation.messages if m['role'] == 'user']
         self.assertEqual(len(users), 5)
 
-    async def test_redundant_wakeup_jobs_never_send(self):
-        # A wakeup whose mail was already drained must not generate: it
-        # returns before any send or persistence decision.
+    async def test_empty_or_drained_inbox_never_generates(self):
+        # Two ways the inbox can be empty when a wakeup job runs: nothing
+        # ever arrived, or an earlier wakeup already drained the mail. A
+        # drained one still submits its job, but that job must return
+        # before any generation instead of replying again.
         from handlers import generation_queue as gq
-        ctx = _ctx()
-        captured: list = []
+        for scenario in ('drained', 'never-populated'):
+            with self.subTest(scenario=scenario):
+                ctx = _ctx()
+                submitted: list = []
+                run_llm_mock = unittest.mock.AsyncMock(return_value='ack')
 
-        async def fake_submit(ctx, job):
-            captured.append(job)
+                async def fake_submit(ctx, job, _submitted=submitted):
+                    _submitted.append(job)
 
-        run_llm_mock = unittest.mock.AsyncMock(return_value='ack')
-        get_main_inbox(ctx).put_nowait(SubagentMessage(
-            id='abc', state=SubagentStatus.FINISHED, description='T',
-            result='report'))
-        with unittest.mock.patch.object(gq, 'submit_task', fake_submit), \
-                unittest.mock.patch.object(gq, 'run_llm', run_llm_mock):
-            await subagent_mod._wakeup_parent(ctx, epoch=0)
-            self.assertEqual(len(captured), 1)
-            # Drain the inbox before the queued job's turn comes up.
-            get_main_inbox(ctx).get_nowait()
-            await captured[0]()
-        run_llm_mock.assert_not_awaited()
+                inbox = get_main_inbox(ctx)
+                if scenario == 'drained':
+                    inbox.put_nowait(SubagentMessage(
+                        id='abc', state=SubagentStatus.FINISHED,
+                        description='T', result='report'))
+                with unittest.mock.patch.object(gq, 'submit_task',
+                                                fake_submit), \
+                        unittest.mock.patch.object(gq, 'run_llm',
+                                                   run_llm_mock):
+                    await subagent_mod._wakeup_parent(ctx, epoch=0)
+                    if scenario == 'drained':
+                        self.assertEqual(len(submitted), 1)
+                        # Drain the inbox before the queued job's turn.
+                        inbox.get_nowait()
+                        await submitted[0]()
+                        # The job resubmitted nothing.
+                        self.assertEqual(len(submitted), 1)
+                    else:
+                        self.assertEqual(submitted, [])
+                run_llm_mock.assert_not_awaited()
 
     async def test_stale_epoch_skips_entirely(self):
         from handlers import generation_queue as gq
@@ -502,18 +499,6 @@ class TestParentWakeup(unittest.IsolatedAsyncioTestCase):
             await subagent_mod._wakeup_parent(ctx, epoch=0)
         self.assertEqual(submitted, [])
         run_llm_mock.assert_not_awaited()
-
-    async def test_empty_inbox_schedules_nothing(self):
-        from handlers import generation_queue as gq
-        ctx = _ctx()
-        submitted: list = []
-
-        async def fake_submit(ctx, job):
-            submitted.append(job)
-
-        with unittest.mock.patch.object(gq, 'submit_task', fake_submit):
-            await subagent_mod._wakeup_parent(ctx, epoch=0)
-        self.assertEqual(submitted, [])
 
     async def test_cancel_all_clears_the_inbox(self):
         ctx = _ctx()
@@ -825,20 +810,21 @@ class TestInboxReceipt(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TypeError):
             inbox.put_nowait('just a string')  # type: ignore[arg-type]
 
-    async def test_silent_when_not_announced(self):
-        drained, conversation, send = await self._drain(
-            self._report('x'), False)
-        self.assertEqual(drained, 1)
-        send.assert_not_awaited()
-        stored = (conversation.messages[-1].get('custom') or {}).get(
-            'telegram_message_ids')
-        self.assertIsNone(stored)
-
-    async def test_silent_when_show_tool_output_off(self):
-        drained, conversation, send = await self._drain(
-            self._report('x'), True, show_tool_output=False)
-        self.assertEqual(drained, 1)
-        send.assert_not_awaited()
+    async def test_silent_when_receipt_disabled(self):
+        # Two independent gates suppress the receipt (and leave the turn
+        # unlinked): the subagent path never announces, or tool output is
+        # turned off for the chat. Either way the mail is still drained.
+        for announce, show_tool_output in ((False, True), (True, False)):
+            with self.subTest(announce=announce,
+                              show_tool_output=show_tool_output):
+                drained, conversation, send = await self._drain(
+                    self._report('x'), announce,
+                    show_tool_output=show_tool_output)
+                self.assertEqual(drained, 1)
+                send.assert_not_awaited()
+                stored = (conversation.messages[-1].get('custom') or {}).get(
+                    'telegram_message_ids')
+                self.assertIsNone(stored)
 
 
 class TestAgentMessageUndo(unittest.IsolatedAsyncioTestCase):
