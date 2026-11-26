@@ -6,6 +6,7 @@ import logging
 
 from async_utils import atomic_call
 from chat_update_context import ChatUpdateContext
+from command_registry import command
 from command_spec import usage_line
 from compaction import DEFAULT_KEEP_TOKENS, CompactionError, compact_context
 from conversation import (ConversationMessageType, RegenerationAction,
@@ -16,7 +17,6 @@ from handlers.generation_queue import (
     submit_task,
 )
 from handlers.impersonate_prompt import IMPERSONATE_PROMPT
-from handlers.middleware import handler
 from handlers.run_llm import (NO_CONTENT_MESSAGE, NO_RESPONSE_MESSAGE,
                               run_llm)
 from messages import iter_parts, telegram_ids_of
@@ -130,7 +130,7 @@ def _has_content(messages: list) -> bool:
                for message in messages)
 
 
-@handler
+@command('undo', 'Undo the last message')
 async def undo_command(ctx: ChatUpdateContext):
     """Remove the tail back to and including the last user prompt, deleting
     the removed messages from Telegram where their ids are known. Tool-call
@@ -178,7 +178,7 @@ async def undo_turn(ctx: ChatUpdateContext) -> None:
     _clear_command_later(ctx, message_ids)
 
 
-@handler
+@command('regenerate', 'Regenerate the last response')
 async def regenerate_command(ctx: ChatUpdateContext):
     """Drop the last assistant turn (conversation and Telegram) and answer
     again; when history ends on the user's turn, answer it without
@@ -223,7 +223,7 @@ async def regeneration_turn(ctx: ChatUpdateContext) -> None:
     _clear_command_later(ctx, [])
 
 
-@handler
+@command('retry', 'Retry the conversation', aliases=('continue',))
 async def retry_command(ctx: ChatUpdateContext):
     """Answer the conversation again exactly as it stands: nothing is popped
     or deleted, a fresh reply is appended.
@@ -241,7 +241,7 @@ async def retry_command(ctx: ChatUpdateContext):
     await submit_generation(ctx, None)
 
 
-@handler
+@command('impersonate', 'Impersonate your next message')
 async def impersonate_command(ctx: ChatUpdateContext):
     """Fake a user turn: the model sees a clone of the whole conversation
     (system head with the user profile, full history) and writes the user's
@@ -293,7 +293,7 @@ async def impersonate_turn(ctx: ChatUpdateContext) -> None:
             message_type=ConversationMessageType.IMPERSONATION))
 
 
-@handler
+@command('compact', 'Compact the conversation context', usage=COMPACT_USAGE)
 async def compact_command(ctx: ChatUpdateContext):
     keep_tokens = DEFAULT_KEEP_TOKENS
     if ctx.command_text:

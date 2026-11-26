@@ -5,7 +5,8 @@ import openai
 from chat_update_context import ChatUpdateContext
 from command_spec import usage_line
 from conversation import Conversation
-from handlers.middleware import handler, settings
+from command_registry import command
+from handlers.middleware import settings
 from handlers.generation_queue import generation_queue
 from handlers.message_handlers import stop_generation
 from persistence.settings_store import save_conversation
@@ -15,8 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 # Usage syntax for this module's commands: rendered by the handlers and
-# declared in the command table (commands.COMMANDS), so the two cannot
-# drift apart.
+# passed to their @command declarations, so the two cannot drift apart.
 SYSTEMPROMPT_USAGE = '<text>'
 MODEL_USAGE = '<model_id>'
 SUBAGENT_MODEL_USAGE = '<model_id>'
@@ -26,7 +26,7 @@ TIMEZONE_USAGE = '<IANA timezone, e.g. Australia/Sydney>'
 USER_PROFILE_USAGE = '<text>'
 
 
-@handler
+@command('start', 'Start a new conversation')
 async def start_restart_command(ctx: ChatUpdateContext):
     stop_generation(ctx)
     # Best-effort: a failure here must not block the new conversation, but
@@ -72,7 +72,7 @@ def _drop_queued(queue: "asyncio.Queue") -> int:
     return dropped
 
 
-@handler
+@command('stop', 'Stop the current AI response')
 async def stop_command(ctx: ChatUpdateContext):
     stopped = stop_generation(ctx)
     # Clear anything waiting behind the running unit: queued items are
@@ -91,7 +91,8 @@ async def stop_command(ctx: ChatUpdateContext):
         await ctx.messaging.send_message("No response is currently being generated.")
 
 
-@handler
+@command('systemprompt', 'Set a custom system prompt',
+         usage=SYSTEMPROMPT_USAGE)
 @settings
 async def systemprompt_command(ctx: ChatUpdateContext):
     new_prompt = ctx.command_text
@@ -104,7 +105,7 @@ async def systemprompt_command(ctx: ChatUpdateContext):
     ctx.settings.system_prompt = new_prompt
     await ctx.messaging.send_message("System prompt updated.")
 
-@handler
+@command('systemprompt_reset', 'Reset system prompt to default')
 @settings
 async def systemprompt_reset_command(ctx: ChatUpdateContext):
     ctx.settings.system_prompt = None
@@ -137,7 +138,7 @@ def _fetch_model_ids() -> list[str]:
                    client.models.list(extra_query={"available": "true"})})
 
 
-@handler
+@command('model_list', 'List available NVIDIA NIM models')
 async def model_list_command(ctx: ChatUpdateContext):
     try:
         models = await asyncio.to_thread(_fetch_model_ids)
@@ -155,7 +156,7 @@ async def model_list_command(ctx: ChatUpdateContext):
     await ctx.messaging.send_message(message, parse_mode='HTML')
 
 
-@handler
+@command('model', 'Set the model to use', usage=MODEL_USAGE)
 @settings
 async def model_command(ctx: ChatUpdateContext):
     model = ctx.command_text
@@ -169,14 +170,15 @@ async def model_command(ctx: ChatUpdateContext):
     await ctx.messaging.send_message(f'Model set to `{model}`.')
 
 
-@handler
+@command('model_reset', 'Reset model to default')
 @settings
 async def model_reset_command(ctx: ChatUpdateContext):
     ctx.settings.model = None
     await ctx.messaging.send_message(f'Model reset to default `{ctx.model}`.')
 
 
-@handler
+@command('subagent_model', 'Set the model used by the subagent tool',
+         usage=SUBAGENT_MODEL_USAGE)
 @settings
 async def subagent_model_command(ctx: ChatUpdateContext):
     model = ctx.command_text
@@ -190,13 +192,13 @@ async def subagent_model_command(ctx: ChatUpdateContext):
     await ctx.messaging.send_message(f'Subagent model set to `{model}`.')
 
 
-@handler
+@command('subagent_model_reset', 'Reset subagent model to default')
 @settings
 async def subagent_model_reset_command(ctx: ChatUpdateContext):
     ctx.settings.subagent_model = None
     await ctx.messaging.send_message(f'Subagent model reset to default `{ctx.settings.subagent_model}`.')
 
-@handler
+@command('top_p', 'Set top_p sampling parameter', usage=TOP_P_USAGE)
 @settings
 async def top_p_command(ctx: ChatUpdateContext):
     val = ctx.command_text
@@ -213,14 +215,15 @@ async def top_p_command(ctx: ChatUpdateContext):
         return
 
 
-@handler
+@command('top_p_reset', 'Reset top_p to default')
 @settings
 async def top_p_reset_command(ctx: ChatUpdateContext):
     ctx.settings.top_p = None
     await ctx.messaging.send_message(f'top\\_p reset to default `{ctx.settings.top_p}`.')
 
 
-@handler
+@command('temperature', 'Set temperature parameter',
+         usage=TEMPERATURE_USAGE)
 @settings
 async def temperature_command(ctx: ChatUpdateContext):
     val = ctx.command_text
@@ -237,14 +240,15 @@ async def temperature_command(ctx: ChatUpdateContext):
         return
 
 
-@handler
+@command('temperature_reset', 'Reset temperature to default')
 @settings
 async def temperature_reset_command(ctx: ChatUpdateContext):
     ctx.settings.temperature = None
     await ctx.messaging.send_message(f'Temperature reset to default `{ctx.settings.temperature}`.')
 
 
-@handler
+@command('timezone', 'Set your timezone (e.g. Australia/Sydney)',
+         usage=TIMEZONE_USAGE)
 @settings
 async def timezone_command(ctx: ChatUpdateContext):
     zone = ctx.command_text.strip()
@@ -261,14 +265,14 @@ async def timezone_command(ctx: ChatUpdateContext):
         return
 
 
-@handler
+@command('settings_reset', 'Reset all user settings to default')
 @settings
 async def settings_reset_command(ctx: ChatUpdateContext):
     ctx.settings = ctx.settings.default()
     await ctx.messaging.send_message('Settings reset to default.')
 
 
-@handler
+@command('tool_output', 'Toggle tool call output on/off')
 @settings
 async def tool_output_command(ctx: ChatUpdateContext):
     current = ctx.settings.show_tool_output
@@ -277,7 +281,7 @@ async def tool_output_command(ctx: ChatUpdateContext):
     await ctx.messaging.send_message(f'Tool output is now {state}.')
 
 
-@handler
+@command('thinking_keep', 'Toggle thinking output on/off')
 @settings
 async def thinking_keep_command(ctx: ChatUpdateContext):
     current = ctx.settings.thinking_keep
@@ -288,7 +292,8 @@ async def thinking_keep_command(ctx: ChatUpdateContext):
         await ctx.messaging.send_message('Thinking will be discarded.')
 
 
-@handler
+@command('user_profile', 'Set your profile/biography',
+         usage=USER_PROFILE_USAGE)
 @settings
 async def user_profile_command(ctx: ChatUpdateContext):
     profile = ctx.command_text
@@ -307,7 +312,7 @@ async def user_profile_command(ctx: ChatUpdateContext):
     await ctx.messaging.send_message("Profile updated.")
 
 
-@handler
+@command('user_profile_reset', 'Reset your profile to empty')
 @settings
 async def user_profile_reset_command(ctx: ChatUpdateContext):
     ctx.settings.user_profile = None
