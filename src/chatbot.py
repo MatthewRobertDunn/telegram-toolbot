@@ -98,7 +98,8 @@ def main():
         'allowed_ids': config.ALLOWED_IDS,
     })
 
-    # Every command handler: one row in commands.COMMANDS.
+    # Every handler declares its command with @command; commands.py imports
+    # those modules so the declarations run and the menu is built from them.
     register_commands(application)
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), callback_adapter(text_message_handler)))
     application.add_handler(MessageHandler(filters.ATTACHMENT, callback_adapter(upload_handler)))

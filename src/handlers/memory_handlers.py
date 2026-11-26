@@ -1,15 +1,15 @@
 from chat_update_context import ChatUpdateContext
+from command_registry import command
 from command_spec import usage_line
-from handlers.middleware import handler
 from persistence.memory_store import create_memory_store
 
-# Usage syntax for this module's commands, also declared in the command
-# table (commands.COMMANDS) so the two cannot drift apart.
+# Usage syntax for this module's commands, also passed to their @command
+# declarations so the two cannot drift apart.
 MEMORY_USAGE = '<key> [value]'
 MEMORY_DELETE_USAGE = '<key>'
 
 
-@handler
+@command('memory_list', 'List everything I remember')
 async def memory_list_command(ctx: ChatUpdateContext):
     async with create_memory_store() as memory:
         keys = await memory.get_all_keys(ctx.user_id)
@@ -20,7 +20,7 @@ async def memory_list_command(ctx: ChatUpdateContext):
         await ctx.messaging.send_message("I don't remember anything yet.")
 
 
-@handler
+@command('memory', 'Get or remember a memory', usage=MEMORY_USAGE)
 async def memory_command(ctx: ChatUpdateContext):
     parts = ctx.command_text.split(maxsplit=1)
     if not parts:
@@ -43,7 +43,8 @@ async def memory_command(ctx: ChatUpdateContext):
         await ctx.messaging.send_message(f"Remembered '{key}'.")
 
 
-@handler
+@command('memory_delete', 'Forget a remembered key',
+         usage=MEMORY_DELETE_USAGE)
 async def memory_delete_command(ctx: ChatUpdateContext):
     key = ctx.command_text
     if not key:
@@ -55,7 +56,7 @@ async def memory_delete_command(ctx: ChatUpdateContext):
     await ctx.messaging.send_message(f"Forgot ```{key}```")
 
 
-@handler
+@command('memory_delete_all', 'Forget everything I remember')
 async def memory_delete_all_command(ctx: ChatUpdateContext):
     async with create_memory_store() as memory:
         await memory.delete_all(ctx.user_id)

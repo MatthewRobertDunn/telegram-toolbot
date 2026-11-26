@@ -21,6 +21,7 @@ import handlers.command_handlers as command_handlers
 import handlers.conversation_handlers as conversation_handlers
 import handlers.memory_handlers as memory_handlers
 from chat_update_context import create_chat_update_context
+from command_registry import CommandRegistry
 from command_spec import usage_line
 from commands import COMMANDS, bot_commands, lookup_command, register_commands
 from handlers.middleware import handler
@@ -124,6 +125,12 @@ class CommandTableTest(unittest.TestCase):
         self.assertEqual(menu, [c.name for c in COMMANDS])
         self.assertNotIn('continue', menu)
 
+    def test_menu_is_alphabetical_shortest_first(self):
+        names = [command.name for command in COMMANDS]
+        self.assertEqual(
+            names, sorted(names, key=lambda name: (name, len(name))),
+            'the command menu is not alphabetical')
+
 
 class RegistrationAgreementTest(unittest.TestCase):
 
@@ -155,6 +162,55 @@ class RegistrationAgreementTest(unittest.TestCase):
                 found[key] = getattr(ptb_handler.callback, '__wrapped__',
                                      ptb_handler.callback)
         return found
+
+
+class CommandDeclarationTest(unittest.IsolatedAsyncioTestCase):
+    """``@command`` records the row and applies the handler middleware.
+
+    Commands are no longer stacked with ``@handler`` by hand, so losing
+    that wrap would silently drop authorisation and the error boundary.
+    """
+
+    def test_declaration_records_the_row_and_metadata(self):
+        registry = CommandRegistry()
+
+        @registry.command('ping', 'Ping the bot', usage='<n>',
+                          aliases=('p',))
+        async def ping(ctx):
+            return 'pong'
+
+        row = registry.declared()[0]
+        self.assertEqual(row.name, 'ping')
+        self.assertEqual(row.help, 'Ping the bot')
+        self.assertEqual(row.usage, '<n>')
+        self.assertEqual(row.aliases, ('p',))
+        self.assertIs(row.callback, ping)
+        self.assertTrue(callable(getattr(ping, '__wrapped__', None)))
+
+    async def test_declaration_applies_the_handler_middleware(self):
+        registry = CommandRegistry()
+        ran = []
+
+        @registry.command('ping', 'Ping the bot')
+        async def ping(ctx):
+            ran.append(ctx)
+
+        # An unauthorised user is stopped by the middleware before the
+        # command body runs...
+        blocked_bot = _Bot()
+        blocked = mock_ctx(user_id=5, bot=blocked_bot)
+        blocked.context.bot_data['allowed_ids'] = [999]
+        with _isolated_stores():
+            await ping(blocked)
+        self.assertEqual(ran, [])
+        self.assertIn('not authorized', blocked_bot.sent[0])
+
+        # ...and an authorised one reaches the body.
+        allowed = mock_ctx(user_id=5, bot=_Bot())
+        allowed.context.bot_data['allowed_ids'] = [5]
+        with _isolated_stores():
+            await ping(allowed)
+        self.assertEqual(ran, [allowed])
 
 
 class CommandParsingTest(unittest.TestCase):

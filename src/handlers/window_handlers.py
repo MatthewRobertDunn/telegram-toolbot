@@ -3,14 +3,14 @@ import random
 from telegram.error import TelegramError
 
 from chat_update_context import ChatUpdateContext
-from handlers.middleware import handler
+from command_registry import command
 from words import WORDS
 
 # Telegram caps forum topic titles at 128 characters.
 MAX_TOPIC_NAME = 128
 
 
-@handler
+@command('window_new', 'Open a new thread in this chat')
 async def window_new_command(ctx: ChatUpdateContext):
     """Open a new forum topic (thread), titled by the command text.
 
