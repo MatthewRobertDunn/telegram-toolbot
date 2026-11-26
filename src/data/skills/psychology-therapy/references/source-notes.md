@@ -35,7 +35,6 @@ This package is a new synthesis. It does not reproduce the source projects in fu
 Some source recommendations were deliberately not carried over as universal rules:
 - No mandatory suicide screen at the start of every ordinary conversation. Safety checks should be responsive to context and relevant signals.
 - No fixed risk classification or automated declaration that a person is safe.
-- No universal crisis phone numbers. Resources must match the user's location; Australian examples are provided in `safety-and-scope.md`.
 - No automatic treatment selection based only on a screening score.
 - No unsupervised EMDR, exposure therapy or trauma processing.
 - No claim that the assistant is a licensed clinician.
